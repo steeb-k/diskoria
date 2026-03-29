@@ -1,9 +1,13 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <base href="/diskoria/">
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Diskoria — Storage Health &amp; Performance Testing</title>
+  <link rel="icon" href="/favicon-kznjk.ico" />
+  <link rel="icon" type="image/png" href="/favicon-kznjk.png" />
+  <link rel="apple-touch-icon" href="/favicon-kznjk.png" />
   <link rel="stylesheet" href="fonts/inter.css" />
   <link rel="stylesheet" href="icons/bootstrap-icons.min.css" />
   <link rel="stylesheet" href="style.css" />
@@ -12,7 +16,10 @@
 
 <!-- ── NAV ──────────────────────────────────────────────── -->
 <nav>
-  <a class="nav-home" href="https://kznjk.com" target="_blank" rel="noopener">kznjk.com</a>
+  <a class="nav-home" href="#">
+    <img src="applogo.png" alt="Diskoria" />
+    Diskoria
+  </a>
   <ul class="nav-links">
     <li><a href="#features">Features</a></li>
     <li><a href="#screenshots">Screenshots</a></li>
@@ -204,40 +211,33 @@
   <h2>Choose the right test</h2>
   <p>Three different approaches for three different scenarios. When in doubt, start with Sector Test.</p>
 
-  <table class="compare-table">
-    <thead>
-      <tr>
-        <th>Test</th>
-        <th>Target</th>
-        <th>Access</th>
-        <th>Data risk</th>
-        <th>Best for</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td><i class="bi bi-grid-3x3" style="color:var(--plum-light);margin-right:8px"></i>Sector Test</td>
-        <td>Physical disk</td>
-        <td>Read-only</td>
-        <td><span class="chip chip-green"><i class="bi bi-check-lg"></i> None</span></td>
-        <td>Diagnosing media and cabling issues on a live system</td>
-      </tr>
-      <tr>
-        <td><i class="bi bi-exclamation-triangle" style="color:var(--red);margin-right:8px"></i>Destructive Test</td>
-        <td>Physical disk</td>
-        <td>Read + Write all sectors</td>
-        <td><span class="chip chip-red"><i class="bi bi-x-lg"></i> Complete data loss</span></td>
-        <td>Certifying refurbished drives or secure erasure before disposal</td>
-      </tr>
-      <tr>
-        <td><i class="bi bi-speedometer2" style="color:var(--amber);margin-right:8px"></i>Speed Test</td>
-        <td>Volume (file)</td>
-        <td>Read + Write temp file</td>
-        <td><span class="chip chip-green"><i class="bi bi-check-lg"></i> Temp file only</span></td>
-        <td>Benchmarking a volume's real-world throughput before deployment</td>
-      </tr>
-    </tbody>
-  </table>
+  <div style="border: 1px solid #3a3a3a; border-radius: 10px; overflow: hidden; font-size: 14px;">
+    <div style="display: flex; background: #252525; font-weight: 700; font-size: 13px; text-transform: uppercase; color: #9e9e9e; border-bottom: 1px solid #3a3a3a;">
+      <div style="flex: 0 0 200px; padding: 14px 20px; border-right: 1px solid #3a3a3a; color: #a35bc4;">Test</div>
+      <div style="flex: 1 1 auto; padding: 14px 20px;">Best for</div>
+    </div>
+    <div style="display: flex; background: #2d2d2d; border-bottom: 1px solid #3a3a3a;">
+      <div style="flex: 0 0 200px; padding: 14px 20px; border-right: 1px solid #3a3a3a;">
+        <div style="font-weight: 600; color: #fff; margin-bottom: 8px;"><i class="bi bi-grid-3x3" style="color:#a35bc4;margin-right:8px"></i>Sector Test</div>
+        <span class="chip chip-green"><i class="bi bi-check-lg"></i> Safe</span>
+      </div>
+      <div style="flex: 1 1 auto; padding: 14px 20px; color: #9e9e9e;">Diagnosing media and cabling issues on a live system</div>
+    </div>
+    <div style="display: flex; background: rgba(45, 45, 45, 0.5); border-bottom: 1px solid #3a3a3a;">
+      <div style="flex: 0 0 200px; padding: 14px 20px; border-right: 1px solid #3a3a3a;">
+        <div style="font-weight: 600; color: #fff; margin-bottom: 8px;"><i class="bi bi-exclamation-triangle" style="color:#f44336;margin-right:8px"></i>Destructive Test</div>
+        <span class="chip chip-red"><i class="bi bi-x-lg"></i> Destructive</span>
+      </div>
+      <div style="flex: 1 1 auto; padding: 14px 20px; color: #9e9e9e;">Certifying refurbished drives or secure erasure before disposal</div>
+    </div>
+    <div style="display: flex; background: #2d2d2d;">
+      <div style="flex: 0 0 200px; padding: 14px 20px; border-right: 1px solid #3a3a3a;">
+        <div style="font-weight: 600; color: #fff; margin-bottom: 8px;"><i class="bi bi-speedometer2" style="color:#ffc107;margin-right:8px"></i>Speed Test</div>
+        <span class="chip chip-green"><i class="bi bi-check-lg"></i> Safe</span>
+      </div>
+      <div style="flex: 1 1 auto; padding: 14px 20px; color: #9e9e9e;">Benchmarking a volume's real-world throughput before deployment</div>
+    </div>
+  </div>
 </section>
 
 <!-- ── CTA ────────────────────────────────────────────────── -->
@@ -264,10 +264,7 @@
 <!-- ── FOOTER ─────────────────────────────────────────────── -->
 <footer>
   <div class="footer-inner">
-    <a class="footer-logo" href="#">
-      <img src="../applogo.png" alt="Diskoria" />
-      Diskoria
-    </a>
+    <a class="footer-logo" href="https://kznjk.com" target="_blank" rel="noopener">kznjk.com</a>
     <ul class="footer-links">
       <li><a href="#features">Features</a></li>
       <li><a href="#screenshots">Screenshots</a></li>

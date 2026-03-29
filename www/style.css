@@ -20,7 +20,10 @@
   --radius-sm: 6px;
 }
 
-html { scroll-behavior: smooth; }
+html {
+  scroll-behavior: smooth;
+  overflow-x: hidden; /* grid/table quirks must not widen the scroll canvas */
+}
 
 body {
   background: var(--bg);
@@ -47,11 +50,21 @@ nav {
 }
 
 .nav-home {
+  display: flex;
+  align-items: center;
+  gap: 9px;
   text-decoration: none;
   color: var(--text);
   font-weight: 700;
   font-size: 15px;
   letter-spacing: -0.3px;
+}
+
+.nav-home img {
+  height: 22px;
+  width: 22px;
+  object-fit: contain;
+  opacity: 0.7;
 }
 
 .nav-links {
@@ -275,7 +288,8 @@ section > p {
 /* ── FEATURES GRID ───────────────────────────────── */
 .features-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  /* min(260px, 100%) keeps tracks inside narrow viewports (padding + minmax(260px) overflowed <~360px) */
+  grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
   gap: 20px;
 }
 
@@ -401,54 +415,61 @@ section > p {
   flex-shrink: 0;
 }
 
-/* ── COMPARISON TABLE ────────────────────────────── */
-.compare-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 14px;
+/* ── COMPARISON LIST ────────────────────────────── */
+.compare-list {
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius);
   overflow: hidden;
-  border: 1px solid var(--border-subtle);
+  font-size: 14px;
 }
 
-.compare-table thead tr {
-  background: var(--bg-subtle);
-}
-
-.compare-table th {
-  padding: 14px 20px;
-  text-align: left;
-  font-weight: 700;
-  font-size: 13px;
-  letter-spacing: 0.3px;
-  color: var(--text-muted);
-  text-transform: uppercase;
+.compare-row {
+  display: flex;
   border-bottom: 1px solid var(--border-subtle);
 }
 
-.compare-table th:first-child {
-  color: var(--plum-light);
+.compare-row:last-child {
+  border-bottom: none;
 }
 
-.compare-table td {
-  padding: 14px 20px;
-  border-bottom: 1px solid var(--border-subtle);
-  color: var(--text-muted);
-}
-
-.compare-table tr:last-child td { border-bottom: none; }
-
-.compare-table tbody tr:nth-child(odd) {
+.compare-row:nth-child(odd):not(.compare-header) {
   background: var(--bg-card);
 }
 
-.compare-table tbody tr:nth-child(even) {
+.compare-row:nth-child(even) {
   background: rgba(45, 45, 45, 0.5);
 }
 
-.compare-table td:first-child {
-  color: var(--text);
+.compare-header {
+  background: var(--bg-subtle);
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.compare-header .compare-col-test {
+  color: var(--plum-light);
+}
+
+.compare-col-test {
+  flex: 0 0 auto;
+  padding: 14px 20px;
+  border-right: 1px solid var(--border-subtle);
+}
+
+.compare-col-desc {
+  flex: 1 1 auto;
+  padding: 14px 20px;
+  color: var(--text-muted);
+}
+
+.compare-test-name {
   font-weight: 600;
+  color: var(--text);
+  margin-bottom: 8px;
+  line-height: 1.35;
 }
 
 .chip {
@@ -596,6 +617,10 @@ footer {
   align-items: center;
   justify-content: center;
   padding: 24px;
+  box-sizing: border-box;
+  overflow: hidden;
+  /* lets flex children use the padded box, not overflow past it (esp. Firefox) */
+  min-width: 0;
 }
 
 #lightbox.open {
@@ -603,8 +628,13 @@ footer {
 }
 
 #lightbox img {
+  /* flex item default min-width:auto uses intrinsic image width → horizontal overflow */
+  min-width: 0;
+  min-height: 0;
   max-width: 100%;
   max-height: 100%;
+  width: auto;
+  height: auto;
   object-fit: contain;
   border-radius: var(--radius);
   box-shadow: 0 32px 80px rgba(0, 0, 0, 0.8);
