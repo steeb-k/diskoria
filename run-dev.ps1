@@ -1,19 +1,19 @@
-# Runs the Rust app from jf-storage-tester/. `cargo run` always recompiles when sources (or
+# Runs the Rust app from diskoria/. `cargo run` always recompiles when sources (or
 # Cargo.toml) change, then executes the fresh binary. It does not rebuild for unrelated file edits.
-# Optional: $env:JFST_FORCE_CLEAN = "1" to `cargo clean -p jf-storage-tester` before run (slow).
+# Optional: $env:DISKORIA_FORCE_CLEAN = "1" to `cargo clean -p diskoria` before run (slow).
 $ErrorActionPreference = "Stop"
-$CargoDir = Join-Path $PSScriptRoot "jf-storage-tester"
+$CargoDir = Join-Path $PSScriptRoot "diskoria"
 if (-not (Test-Path (Join-Path $CargoDir "Cargo.toml"))) {
     Write-Error "Expected Cargo.toml at $CargoDir"
 }
 Push-Location $CargoDir
 try {
-    if ($env:JFST_FORCE_CLEAN -eq "1") {
-        Write-Host "[run-dev] JFST_FORCE_CLEAN=1: cargo clean -p jf-storage-tester" -ForegroundColor Yellow
-        cargo clean -p jf-storage-tester
+    if ($env:DISKORIA_FORCE_CLEAN -eq "1") {
+        Write-Host "[run-dev] DISKORIA_FORCE_CLEAN=1: cargo clean -p diskoria" -ForegroundColor Yellow
+        cargo clean -p diskoria
     }
     if (-not $env:RUST_LOG) {
-        $env:RUST_LOG = "jf_surface=debug,warn"
+        $env:RUST_LOG = "diskoria=debug,warn"
     }
     Write-Host "[run-dev] RUST_LOG=$($env:RUST_LOG)" -ForegroundColor Cyan
     Write-Host "[run-dev] $CargoDir -> cargo run (rebuilds when Rust sources change)" -ForegroundColor DarkGray

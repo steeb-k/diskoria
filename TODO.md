@@ -1,4 +1,4 @@
-# TODO — JF Storage Tester (Rust / egui)
+# TODO — Diskoria (Rust / egui)
 
 Informal backlog. Priorities and designs can change.
 
@@ -21,7 +21,7 @@ Informal backlog. Priorities and designs can change.
 
 ## Sector test speed optimization
 
-**Preliminary work (done):** The surface / sector scan engine now uses **larger sequential read chunks** (1 MiB instead of 64 KiB in `jf-storage-tester/src/surface_test.rs`), cutting syscall overhead on the hot path. In practice this has produced **much faster full-disk scans on NVMe** versus the old chunk size. Cancel checks on the worker use `Relaxed` atomics (minor cleanup).
+**Preliminary work (done):** The surface / sector scan engine now uses **larger sequential read chunks** (1 MiB instead of 64 KiB in `diskoria/src/surface_test.rs`), cutting syscall overhead on the hot path. In practice this has produced **much faster full-disk scans on NVMe** versus the old chunk size. Cancel checks on the worker use `Relaxed` atomics (minor cleanup).
 
 **Original observation:** The scan had felt **slower than typical dedicated drive testers** (vendor tools, mature open-source scanners, etc.). The chunk-size change addresses a large part of that for fast media; further gains may still exist.
 
@@ -33,11 +33,9 @@ Informal backlog. Priorities and designs can change.
 
 - **UI / repaint cadence:** While a test runs, the app calls `ctx.request_repaint()` **every frame** (`any_test_running()`), so the GPU/UI cost is continuous even when the sector map only changes on ~1000 progress steps. Consider **repainting only when** progress messages arrive (or at a capped FPS) if profiling shows UI as non-trivial on weak GPUs.
 
-- **Logging (small polish):** The disk **worker** does not log inside the read loop. On the UI side, `poll_surface_test` emits `log::debug!` whenever a non-empty batch arrives; with default `jf_surface=debug` that can mean many lines over a run. Lowering the default filter (e.g. `jf_surface=warn`), gating that line behind `trace`, or dropping it is **minor** vs disk I/O but reduces console noise and a bit of UI-thread work when a console is attached.
+- **Logging (small polish):** The disk **worker** does not log inside the read loop. On the UI side, `poll_surface_test` emits `log::debug!` whenever a non-empty batch arrives; with default `diskoria=debug` that can mean many lines over a run. Lowering the default filter (e.g. `diskoria=warn`), gating that line behind `trace`, or dropping it is **minor** vs disk I/O but reduces console noise and a bit of UI-thread work when a console is attached.
 
-- **Parity with WPF:** `_original/Services/SurfaceTestService.cs` still uses **64 KiB** chunks; bumping it to **1 MiB** (same alignment rules as Rust) would align legacy and Rust behavior and performance if the WPF build remains in use.
-
-- **Comparability / targets:** Benchmark Rust vs `_original` WPF and vs one or two external tools on the **same** disk; record throughput (MB/s) or wall time for a fixed range so future changes don’t regress without notice.
+- **Comparability / targets:** Benchmark Diskoria vs one or two external tools on the **same** disk; record throughput (MB/s) or wall time for a fixed range so future changes don’t regress without notice.
 
 **Goal:** Match or approach “good enough” industry-adjacent throughput on NVMe/SATA/USB where the hardware allows, without sacrificing correctness of bad/slow sector reporting.
 
