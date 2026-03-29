@@ -3993,8 +3993,10 @@ impl JfStorageTesterApp {
                     .add_filter("PNG Image", &["png"])
                     .save_file()
                 {
-                    let test_label = if is_surface { "Read-only sector test" } else { "Read and write sector test" };
-                    if let Err(e) = export_performance_chart_png(&path, &drive_label, test_label, &raw_points_clone, &chart_points_clone, max_speed, total_gb) {
+                    let test_type = if is_surface { "Read-only sector test" } else { "Read and write sector test" };
+                    let now = chrono::Local::now();
+                    let test_label = format!("{} - {}", now.format("%m/%d/%Y"), test_type);
+                    if let Err(e) = export_performance_chart_png(&path, &drive_label, &test_label, &raw_points_clone, &chart_points_clone, max_speed, total_gb) {
                         log::warn!("Performance chart export failed: {}", e);
                     }
                 }
