@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Diskoria — Storage Health &amp; Performance Testing</title>
+  <link rel="stylesheet" href="fonts/inter.css" />
+  <link rel="stylesheet" href="icons/bootstrap-icons.min.css" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- ── NAV ──────────────────────────────────────────────── -->
+<nav>
+  <a class="nav-home" href="https://kznjk.com" target="_blank" rel="noopener">kznjk.com</a>
+  <ul class="nav-links">
+    <li><a href="#features">Features</a></li>
+    <li><a href="#screenshots">Screenshots</a></li>
+    <li><a href="#tests">Tests</a></li>
+  </ul>
+  <a class="btn btn-plum" href="https://github.com/steeb-k/diskoria-binaries/releases" target="_blank" rel="noopener">
+    <i class="bi bi-download"></i> Download
+  </a>
+</nav>
+
+<!-- ── HERO ─────────────────────────────────────────────── -->
+<div style="max-width:1100px;margin:0 auto;padding:0 32px">
+  <div class="hero" style="padding-left:0;padding-right:0">
+    <div class="hero-text">
+      <div class="hero-badge">
+        <i class="bi bi-windows"></i> Windows 10 &amp; 11
+      </div>
+      <h1>Storage health you can <span>rely on.</span></h1>
+      <p>
+        Diskoria is a portable Windows utility for sector scanning, full-disk verification, volume speed benchmarking, and SMART health checks — all in a clean, fast interface that requires no installation.
+      </p>
+      <div class="hero-actions">
+        <a class="btn btn-plum btn-lg" href="https://github.com/steeb-k/diskoria-binaries/releases" target="_blank" rel="noopener">
+          <i class="bi bi-download"></i> Download Free
+        </a>
+        <a class="btn btn-outline btn-lg" href="#features">
+          <i class="bi bi-play-circle"></i> See features
+        </a>
+      </div>
+    </div>
+    <div class="hero-visual">
+      <img class="hero-screenshot" src="theme_0.png" alt="Diskoria application screenshot" />
+      <div class="hero-badge-win">
+        <i class="bi bi-shield-check"></i>
+        Single portable .exe — no install required
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── METRICS ───────────────────────────────────────────── -->
+<div class="metrics">
+  <div class="metrics-inner">
+    <div class="metric">
+      <div class="metric-value">3</div>
+      <div class="metric-label">Tests</div>
+    </div>
+    <div class="metric">
+      <div class="metric-value">1</div>
+      <div class="metric-label">Executable</div>
+    </div>
+    <div class="metric">
+      <div class="metric-value">0</div>
+      <div class="metric-label">Dependencies</div>
+    </div>
+    <div class="metric">
+      <div class="metric-value">Free</div>
+      <div class="metric-label">For personal use</div>
+    </div>
+  </div>
+</div>
+
+<!-- ── FEATURES ──────────────────────────────────────────── -->
+<section id="features">
+  <div class="section-label">What it does</div>
+  <h2>Everything your drives need</h2>
+  <p>Four test modes cover the full spectrum of storage health visibility — from safe read-only scans to thorough destructive verification.</p>
+
+  <div class="features-grid">
+
+    <div class="feature-card">
+      <div class="feature-icon"><i class="bi bi-grid-3x3"></i></div>
+      <h3>Sector Test</h3>
+      <p>Sequentially reads every sector of a physical disk in 1 MiB aligned chunks. Reports good, slow (&ge;200 ms), and bad sectors with a real-time heatmap grid — without touching your data.</p>
+      <span class="feature-tag tag-safe"><i class="bi bi-shield-check" style="margin-right:4px"></i>Read-only · Non-destructive</span>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon"><i class="bi bi-speedometer2"></i></div>
+      <h3>Speed Test</h3>
+      <p>File-based benchmarks on any volume: sequential read &amp; write plus random 4 KiB I/O. Workload profiles are automatically tuned for NVMe, SATA, USB, and removable media.</p>
+      <span class="feature-tag tag-safe"><i class="bi bi-file-earmark" style="margin-right:4px"></i>Temp file only</span>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon"><i class="bi bi-exclamation-triangle"></i></div>
+      <h3>Destructive Test</h3>
+      <p>Writes a deterministic pattern to every sector, then reads it back to verify. Locks and dismounts all volumes before writing. Use to fully certify or sanitize a disk you intend to wipe.</p>
+      <span class="feature-tag tag-danger"><i class="bi bi-trash" style="margin-right:4px"></i>Erases all data</span>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon"><i class="bi bi-activity"></i></div>
+      <h3>SMART Health</h3>
+      <p>Surfaces WMI-backed SMART health hints alongside each sector scan — status, partition layout, BitLocker awareness, and drive metadata visible at a glance.</p>
+      <span class="feature-tag tag-caution"><i class="bi bi-database" style="margin-right:4px"></i>WMI · Read-only</span>
+    </div>
+
+  </div>
+</section>
+
+<hr class="divider" />
+
+<!-- ── SCREENSHOTS ────────────────────────────────────────── -->
+<div class="screenshots-section">
+<section id="screenshots" style="max-width:1200px">
+  <div class="section-label">In action</div>
+  <h2>See it for yourself</h2>
+  <p>Clean, dense information — no wasted space, no popups, no installer.</p>
+
+  <div class="screenshots-grid">
+
+    <div class="screenshot-item">
+      <img src="sector_test_0.png" alt="Sector Test heatmap and performance chart" />
+      <div class="screenshot-caption">
+        <strong>Sector Map &amp; Performance Chart</strong>
+        <span>1000-cell heatmap with per-cell average read times and a live performance line chart</span>
+      </div>
+    </div>
+
+    <div class="screenshot-item">
+      <img src="sector_test_1.png" alt="Sector Test results panel" />
+      <img src="speed_test_0.png" alt="Speed Test benchmark results" style="border-top:1px solid var(--border-subtle)" />
+      <div class="screenshot-caption">
+        <strong>Results &amp; Benchmarks</strong>
+        <span>Sector test statistics (good/bad/slow sectors, average speed) alongside speed test throughput cards</span>
+      </div>
+    </div>
+
+    <div class="screenshot-item">
+      <img src="theme_0.png" alt="Full application window with sidebar" />
+      <div class="screenshot-caption">
+        <strong>Application Overview</strong>
+        <span>Sidebar navigation, drive selector, SMART status, and customizable accent color theme</span>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Heatmap legend -->
+  <div style="margin-top:48px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:var(--radius);padding:28px 32px">
+    <strong style="font-size:15px;display:block;margin-bottom:6px">Reading the Sector Map</strong>
+    <p style="color:var(--text-muted);font-size:14px;margin-bottom:20px">
+      Each of the 1000 cells represents a contiguous span of the disk's capacity in address order. Color encodes both correctness and speed in a single glance.
+    </p>
+    <div class="heatmap-legend">
+      <div class="legend-item">
+        <div class="legend-swatch" style="background:#3c3c3c;border:1px solid #5a5a5a"></div>
+        <span><strong>Not scanned</strong> — pending or not yet started</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-swatch" style="background:linear-gradient(90deg,#0f3212,#4caf50)"></div>
+        <span><strong>Good (heat)</strong> — darker = slower, brighter = faster</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-swatch" style="background:#ffc107"></div>
+        <span><strong>Slow</strong> — average read &ge; 200 ms</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-swatch" style="background:#f44336"></div>
+        <span><strong>Bad / Error</strong> — at least one read failure</span>
+      </div>
+    </div>
+  </div>
+</section>
+</div>
+
+<hr class="divider" />
+
+<!-- ── EXPORT ────────────────────────────────────────────── -->
+<section id="export">
+  <div class="section-label">Export</div>
+  <h2>Save your results</h2>
+  <p>Performance charts can be exported as a PNG file — handy for record-keeping, comparisons over time, or sharing results with a team.</p>
+  <div class="screenshot-item" style="max-width:720px">
+    <img src="export_chart_0.png" alt="Exported performance chart" />
+    <div class="screenshot-caption">
+      <strong>Exported Chart</strong>
+      <span>A full-resolution PNG of the read performance chart, including drive info, scan date, and position along the disk</span>
+    </div>
+  </div>
+</section>
+
+<hr class="divider" />
+
+<!-- ── TEST COMPARISON ────────────────────────────────────── -->
+<section id="tests">
+  <div class="section-label">Compare</div>
+  <h2>Choose the right test</h2>
+  <p>Three different approaches for three different scenarios. When in doubt, start with Sector Test.</p>
+
+  <table class="compare-table">
+    <thead>
+      <tr>
+        <th>Test</th>
+        <th>Target</th>
+        <th>Access</th>
+        <th>Data risk</th>
+        <th>Best for</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><i class="bi bi-grid-3x3" style="color:var(--plum-light);margin-right:8px"></i>Sector Test</td>
+        <td>Physical disk</td>
+        <td>Read-only</td>
+        <td><span class="chip chip-green"><i class="bi bi-check-lg"></i> None</span></td>
+        <td>Diagnosing media and cabling issues on a live system</td>
+      </tr>
+      <tr>
+        <td><i class="bi bi-exclamation-triangle" style="color:var(--red);margin-right:8px"></i>Destructive Test</td>
+        <td>Physical disk</td>
+        <td>Read + Write all sectors</td>
+        <td><span class="chip chip-red"><i class="bi bi-x-lg"></i> Complete data loss</span></td>
+        <td>Certifying refurbished drives or secure erasure before disposal</td>
+      </tr>
+      <tr>
+        <td><i class="bi bi-speedometer2" style="color:var(--amber);margin-right:8px"></i>Speed Test</td>
+        <td>Volume (file)</td>
+        <td>Read + Write temp file</td>
+        <td><span class="chip chip-green"><i class="bi bi-check-lg"></i> Temp file only</span></td>
+        <td>Benchmarking a volume's real-world throughput before deployment</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ── CTA ────────────────────────────────────────────────── -->
+<section id="download" style="padding-top:0">
+  <div class="cta-banner">
+    <h2>Ready to see what's on your drives?</h2>
+    <p>Download the single portable executable. No installer, no dependencies — just run it elevated and go.</p>
+    <div class="cta-actions">
+      <a class="btn btn-white btn-lg" href="https://github.com/steeb-k/diskoria-binaries/releases" target="_blank" rel="noopener">
+        <i class="bi bi-download"></i> Download Diskoria
+      </a>
+      <a class="btn btn-ghost btn-lg" href="https://ko-fi.com/kznjk" target="_blank" rel="noopener">
+        <i class="bi bi-cup-hot"></i> Support me on Ko-fi
+      </a>
+    </div>
+    <div class="cta-actions" style="margin-top:12px">
+      <a class="btn btn-ghost btn-lg" href="https://github.com/steeb-k/diskoria-binaries/issues" target="_blank" rel="noopener">
+        <i class="bi bi-github"></i> GitHub Issues Tracker
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- ── FOOTER ─────────────────────────────────────────────── -->
+<footer>
+  <div class="footer-inner">
+    <a class="footer-logo" href="#">
+      <img src="../applogo.png" alt="Diskoria" />
+      Diskoria
+    </a>
+    <ul class="footer-links">
+      <li><a href="#features">Features</a></li>
+      <li><a href="#screenshots">Screenshots</a></li>
+      <li><a href="#tests">Tests</a></li>
+    </ul>
+    <span class="footer-note">
+      &copy; <script>document.write(new Date().getFullYear())</script> Steve Kzenjak
+    </span>
+  </div>
+</footer>
+
+<!-- ── LIGHTBOX ───────────────────────────────────────────── -->
+<div id="lightbox" role="dialog" aria-modal="true" aria-label="Image viewer">
+  <button id="lightbox-close" aria-label="Close"><i class="bi bi-x"></i></button>
+  <img id="lightbox-img" src="" alt="" />
+</div>
+
+<script>
+  const lightbox = document.getElementById('lightbox');
+  const lightboxImg = document.getElementById('lightbox-img');
+
+  function openLightbox(src, alt) {
+    lightboxImg.src = src;
+    lightboxImg.alt = alt;
+    lightbox.classList.add('open');
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closeLightbox() {
+    lightbox.classList.remove('open');
+    document.body.style.overflow = '';
+    lightboxImg.src = '';
+  }
+
+  document.querySelectorAll('.screenshot-item img').forEach(img => {
+    img.addEventListener('click', () => openLightbox(img.src, img.alt));
+  });
+
+  document.getElementById('lightbox-close').addEventListener('click', closeLightbox);
+
+  lightbox.addEventListener('click', e => {
+    if (e.target === lightbox) closeLightbox();
+  });
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeLightbox();
+  });
+</script>
+</body>
+</html>
