@@ -1994,12 +1994,10 @@ impl JfStorageTesterApp {
             if total_gb > self.destructive_chart_total_gb {
                 self.destructive_chart_total_gb = total_gb;
             }
-            if p.current_speed_mbps > self.destructive_chart_max_speed {
-                self.destructive_chart_max_speed = p.current_speed_mbps;
-            }
             chart_bucket_accumulate(
                 p.bytes_scanned, p.total_bytes, p.current_speed_mbps,
                 &mut self.destructive_chart_points,
+                &mut self.destructive_chart_max_speed,
                 &mut self.destructive_chart_bucket_sum,
                 &mut self.destructive_chart_bucket_count,
                 &mut self.destructive_chart_bucket_idx,
@@ -2284,12 +2282,10 @@ impl JfStorageTesterApp {
             if total_gb > self.surface_chart_total_gb {
                 self.surface_chart_total_gb = total_gb;
             }
-            if p.current_speed_mbps > self.surface_chart_max_speed {
-                self.surface_chart_max_speed = p.current_speed_mbps;
-            }
             chart_bucket_accumulate(
                 p.bytes_scanned, p.total_bytes, p.current_speed_mbps,
                 &mut self.surface_chart_points,
+                &mut self.surface_chart_max_speed,
                 &mut self.surface_chart_bucket_sum,
                 &mut self.surface_chart_bucket_count,
                 &mut self.surface_chart_bucket_idx,
@@ -5070,6 +5066,7 @@ fn chart_bucket_accumulate(
     total_bytes: i64,
     speed_mbps: f64,
     points: &mut Vec<[f64; 2]>,
+    max_speed: &mut f64,
     bucket_sum: &mut f64,
     bucket_count: &mut u32,
     bucket_idx: &mut usize,
@@ -5082,6 +5079,9 @@ fn chart_bucket_accumulate(
         let total_gb = total_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
         let mid_gb = (*bucket_idx as f64 + 0.5) / CHART_BUCKETS as f64 * total_gb;
         points.push([mid_gb, avg]);
+        if avg > *max_speed {
+            *max_speed = avg;
+        }
         *bucket_sum = 0.0;
         *bucket_count = 0;
     }
