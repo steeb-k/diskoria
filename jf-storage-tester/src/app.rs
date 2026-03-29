@@ -3236,11 +3236,16 @@ impl JfStorageTesterApp {
         section_w: f32,
     ) {
         let left = content_x + margin;
-        let drive_stem = {
+        let (drive_stem, drive_label) = {
             let sel = self.selected_destructive_drive.min(self.drives.len().saturating_sub(1));
-            if self.drives.is_empty() { "drive".to_string() } else { self.drives[sel].safe_filename_stem() }
+            if self.drives.is_empty() {
+                ("drive".to_string(), String::new())
+            } else {
+                let d = &self.drives[sel];
+                (d.safe_filename_stem(), format!("{} \u{2014} {}", d.model, d.serial))
+            }
         };
-        self.draw_tabbed_map_card(ui, t, left, section_w, false, drive_stem);
+        self.draw_tabbed_map_card(ui, t, left, section_w, false, drive_stem, drive_label);
 
         ui.add_space(16.0);
 
@@ -3722,6 +3727,7 @@ impl JfStorageTesterApp {
         section_w: f32,
         is_surface: bool,
         drive_filename_stem: String,
+        drive_label: String,
     ) {
         const TAB_H: f32 = 36.0;
         const SEP_H: f32 = 1.0;
@@ -3940,7 +3946,7 @@ impl JfStorageTesterApp {
                             plot_ui.points(
                                 Points::new(PlotPoints::from(raw_points_clone.clone()))
                                     .color(dot_color)
-                                    .radius(1.5)
+                                    .radius(1.0)
                                     .shape(MarkerShape::Circle),
                             );
                         }
@@ -3987,7 +3993,7 @@ impl JfStorageTesterApp {
                     .add_filter("PNG Image", &["png"])
                     .save_file()
                 {
-                    if let Err(e) = export_performance_chart_png(&path, &raw_points_clone, &chart_points_clone, max_speed, total_gb) {
+                    if let Err(e) = export_performance_chart_png(&path, &drive_label, &raw_points_clone, &chart_points_clone, max_speed, total_gb) {
                         log::warn!("Performance chart export failed: {}", e);
                     }
                 }
@@ -4006,11 +4012,16 @@ impl JfStorageTesterApp {
         section_w: f32,
     ) {
         let left = content_x + margin;
-        let drive_stem = {
+        let (drive_stem, drive_label) = {
             let sel = self.selected_drive.min(self.drives.len().saturating_sub(1));
-            if self.drives.is_empty() { "drive".to_string() } else { self.drives[sel].safe_filename_stem() }
+            if self.drives.is_empty() {
+                ("drive".to_string(), String::new())
+            } else {
+                let d = &self.drives[sel];
+                (d.safe_filename_stem(), format!("{} \u{2014} {}", d.model, d.serial))
+            }
         };
-        self.draw_tabbed_map_card(ui, t, left, section_w, true, drive_stem);
+        self.draw_tabbed_map_card(ui, t, left, section_w, true, drive_stem, drive_label);
 
         ui.add_space(16.0);
 
@@ -5153,6 +5164,7 @@ fn nice_y_max(max_speed: f64) -> f64 {
 #[cfg(windows)]
 fn export_performance_chart_png(
     path: &std::path::Path,
+    drive_label: &str,
     raw_points: &[[f64; 2]],
     chart_points: &[[f64; 2]],
     max_speed: f64,
@@ -5160,7 +5172,7 @@ fn export_performance_chart_png(
 ) -> Result<(), String> {
     use plotters::prelude::*;
 
-    let root = BitMapBackend::new(path, (960, 400))
+    let root = BitMapBackend::new(path, (960, 440))
         .into_drawing_area();
     root.fill(&WHITE).map_err(|e| e.to_string())?;
 
@@ -5171,6 +5183,7 @@ fn export_performance_chart_png(
         .margin(20)
         .x_label_area_size(45)
         .y_label_area_size(70)
+        .caption(drive_label, ("sans-serif", 18).into_font().color(&BLACK))
         .build_cartesian_2d(0.0_f64..x_max, 0.0_f64..nice_max)
         .map_err(|e| e.to_string())?;
 
@@ -5185,7 +5198,7 @@ fn export_performance_chart_png(
     if !raw_points.is_empty() {
         chart
             .draw_series(raw_points.iter().map(|p| {
-                Circle::new((p[0], p[1]), 2, ShapeStyle::from(&dot_color).filled())
+                Circle::new((p[0], p[1]), 1, ShapeStyle::from(&dot_color).filled())
             }))
             .map_err(|e| e.to_string())?;
     }
