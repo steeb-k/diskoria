@@ -163,6 +163,7 @@ pub struct JfStorageTesterApp {
     surface_bad_sectors: i64,
     surface_slow_sectors: i64,
     surface_test_started: Option<Instant>,
+    surface_elapsed_label: String,
     surface_remaining_label: String,
     surface_show_result_overlay: bool,
     surface_test_passed: bool,
@@ -239,6 +240,7 @@ pub struct JfStorageTesterApp {
     destructive_bad_sectors: i64,
     destructive_slow_sectors: i64,
     destructive_test_started: Option<Instant>,
+    destructive_elapsed_label: String,
     destructive_remaining_label: String,
     destructive_show_result_overlay: bool,
     destructive_test_passed: bool,
@@ -392,6 +394,7 @@ impl JfStorageTesterApp {
             surface_bad_sectors: 0,
             surface_slow_sectors: 0,
             surface_test_started: None,
+            surface_elapsed_label: "00:00:00".to_string(),
             surface_remaining_label: "--:--:--".to_string(),
             surface_show_result_overlay: false,
             surface_test_passed: false,
@@ -449,6 +452,7 @@ impl JfStorageTesterApp {
             destructive_bad_sectors: 0,
             destructive_slow_sectors: 0,
             destructive_test_started: None,
+            destructive_elapsed_label: "00:00:00".to_string(),
             destructive_remaining_label: "--:--:--".to_string(),
             destructive_show_result_overlay: false,
             destructive_test_passed: false,
@@ -1788,6 +1792,7 @@ impl JfStorageTesterApp {
         self.surface_good_sectors = 0;
         self.surface_bad_sectors = 0;
         self.surface_slow_sectors = 0;
+        self.surface_elapsed_label = "00:00:00".to_string();
         self.surface_remaining_label = "--:--:--".to_string();
         self.surface_show_result_overlay = false;
         self.surface_last_error = None;
@@ -1867,6 +1872,7 @@ impl JfStorageTesterApp {
         self.destructive_good_sectors = 0;
         self.destructive_bad_sectors = 0;
         self.destructive_slow_sectors = 0;
+        self.destructive_elapsed_label = "00:00:00".to_string();
         self.destructive_remaining_label = "--:--:--".to_string();
         self.destructive_show_result_overlay = false;
         self.destructive_last_error = None;
@@ -1998,6 +2004,12 @@ impl JfStorageTesterApp {
                 &mut self.destructive_chart_bucket_count,
                 &mut self.destructive_chart_bucket_idx,
             );
+        }
+
+        if let Some(start) = self.destructive_test_started {
+            let e = start.elapsed().as_secs();
+            self.destructive_elapsed_label =
+                format!("{:02}:{:02}:{:02}", e / 3600, (e % 3600) / 60, e % 60);
         }
 
         if p.progress_percent > 0.0 {
@@ -2282,6 +2294,12 @@ impl JfStorageTesterApp {
                 &mut self.surface_chart_bucket_count,
                 &mut self.surface_chart_bucket_idx,
             );
+        }
+
+        if let Some(start) = self.surface_test_started {
+            let e = start.elapsed().as_secs();
+            self.surface_elapsed_label =
+                format!("{:02}:{:02}:{:02}", e / 3600, (e % 3600) / 60, e % 60);
         }
 
         if p.progress_percent > 0.0 {
@@ -3253,12 +3271,7 @@ impl JfStorageTesterApp {
                         });
                     };
 
-                    let elapsed_str = if let Some(s) = self.destructive_test_started {
-                        let e = s.elapsed().as_secs();
-                        format!("{:02}:{:02}:{:02}", e / 3600, (e % 3600) / 60, e % 60)
-                    } else {
-                        "00:00:00".to_string()
-                    };
+                    let elapsed_str = self.destructive_elapsed_label.clone();
 
                     ui.columns(2, |cols| {
                         cols[0].vertical(|ui| {
@@ -4014,12 +4027,7 @@ impl JfStorageTesterApp {
                         });
                     };
 
-                    let elapsed_str = if let Some(s) = self.surface_test_started {
-                        let e = s.elapsed().as_secs();
-                        format!("{:02}:{:02}:{:02}", e / 3600, (e % 3600) / 60, e % 60)
-                    } else {
-                        "00:00:00".to_string()
-                    };
+                    let elapsed_str = self.surface_elapsed_label.clone();
 
                     ui.columns(2, |cols| {
                         cols[0].vertical(|ui| {
