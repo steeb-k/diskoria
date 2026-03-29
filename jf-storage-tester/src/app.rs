@@ -5059,7 +5059,7 @@ impl JfStorageTesterApp {
 /// speed samples that fall within it and emits a single chart point at its
 /// midpoint.  200 buckets ≈ 0.5% of the disk each — smooth enough to read
 /// while still showing real dips/spikes.
-const CHART_BUCKETS: usize = 200;
+const CHART_BUCKETS: usize = 100;
 
 /// Accumulate a speed sample into a positional bucket.  When the position
 /// crosses into the next bucket, the average of the old bucket is emitted as a
