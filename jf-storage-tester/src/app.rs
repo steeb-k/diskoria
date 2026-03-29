@@ -3927,7 +3927,7 @@ impl JfStorageTesterApp {
             let x_max = total_gb.max(1.0);
             let plot_id = if is_surface { "perf_chart_surface" } else { "perf_chart_destructive" };
             let accent = t.accent;
-            let dot_color = t.txt_sec;
+            let dot_color = t.txt_sec.gamma_multiply(0.75);
 
             ui.allocate_new_ui(egui::UiBuilder::new().max_rect(chart_rect), |ui| {
                 Plot::new(plot_id)
@@ -5198,7 +5198,7 @@ fn export_performance_chart_png(
     if !raw_points.is_empty() {
         chart
             .draw_series(raw_points.iter().map(|p| {
-                Circle::new((p[0], p[1]), 1, ShapeStyle::from(&dot_color).filled())
+                Circle::new((p[0], p[1]), 2, ShapeStyle::from(&dot_color).filled())
             }))
             .map_err(|e| e.to_string())?;
     }
