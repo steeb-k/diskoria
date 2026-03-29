@@ -3954,7 +3954,7 @@ impl JfStorageTesterApp {
                             plot_ui.line(
                                 Line::new(PlotPoints::from(chart_points_clone.clone()))
                                     .color(accent)
-                                    .width(2.5),
+                                    .width(4.0),
                             );
                         }
                     });
