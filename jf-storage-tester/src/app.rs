@@ -5195,6 +5195,8 @@ fn export_performance_chart_png(
         .configure_mesh()
         .x_desc("Position (GB)")
         .y_desc("Disk Performance (MB/s)")
+        .axis_desc_style(("sans-serif", 16).into_font())
+        .label_style(("sans-serif", 14).into_font())
         .draw()
         .map_err(|e| e.to_string())?;
 
@@ -5219,7 +5221,7 @@ fn export_performance_chart_png(
     root.draw(&Text::new(
         test_label,
         (480, 444),
-        ("sans-serif", 14).into_font().color(&RGBColor(100, 100, 100))
+        ("sans-serif", 16).into_font().color(&RGBColor(100, 100, 100))
             .pos(plotters::style::text_anchor::Pos::new(
                 plotters::style::text_anchor::HPos::Center,
                 plotters::style::text_anchor::VPos::Top,
