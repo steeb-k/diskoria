@@ -15,8 +15,9 @@ This file helps AI coding agents (and humans) work effectively on this repositor
 | Drive enumeration | **WMI** via `System.Management`, `Microsoft.Management.Infrastructure` |
 | Low-level I/O | **P/Invoke** to `kernel32` (`CreateFile`, `ReadFile`, unbuffered I/O, etc.) |
 | Patterns | **MVVM**, singleton **services**, `INotifyPropertyChanged` |
+| Rust UI (in progress) | **`jf-storage-tester/`** — `eframe` + **egui** (glow), Windows 11–style shell patterned after **rust-egui-winui-example** (read-only template on the maintainer machine; do not commit or edit that folder from this repo) |
 
-There is **no** ASP.NET, no cross-platform UI layer — assume **Win32 + WPF** unless the project explicitly migrates (e.g. to Rust with a different UI stack).
+There is **no** ASP.NET, no cross-platform UI layer — assume **Win32 + WPF** for `_original/` unless working in the Rust crate.
 
 ## Repository layout
 
@@ -33,7 +34,16 @@ _original/
   Themes/                       DarkTheme.xaml, LightTheme.xaml, SharedStyles.xaml
   Converters/                   Value converters registered in App.xaml
   installer/                    Inno Setup script (`.iss`); publish output paths are relative to this tree
+
+jf-storage-tester/              Rust replacement UI shell (egui): sidebar, sector/speed/about/settings placeholders
+  src/app.rs                    Main window layout and pages
+  src/drive_enumeration.rs      WMI (`Win32_DiskDrive`, `MSFT_PhysicalDisk`) — physical disk list for Windows
+  src/detected_drive.rs         `DetectedDrive`, `MediaKind`, `BusKind` for UI chips
+  src/theme.rs                  `Theme` tokens + `apply_visuals` (aligned with style guide)
+  src/chrome.rs                 Title bar, fonts, logo textures, Win32 resize + DWM rounding
 ```
+
+**Rust style reference:** Copy patterns from `rust-egui-winui-example` (e.g. `WINDOWS11_EGUI_STYLE_GUIDE.md`, Inter + Bootstrap Icons fonts). Treat that directory as read-only; implement changes only under `jf-storage-tester/`.
 
 ## Architecture conventions
 
@@ -44,6 +54,8 @@ _original/
 - **Updates**: `UpdateService` uses the GitHub API for **`jjfbno/JF-Storage-Tester`** releases. If the fork or repo ownership changes, update owner/repo constants and any release pipeline expectations.
 
 ## Operational constraints (do not ignore)
+
+0. **Git safety commits** — Create a `git commit` before any operation that modifies more than ~30 lines across multiple files, and after completing each discrete working feature or fix. A session once deleted large sections of `app.rs` through a bad regex replacement with no git history to recover from. Run `cargo check` first; only commit Rust code that compiles. See `.cursor/rules/git-safety-commits.mdc` for the full policy.
 
 1. **Administrator elevation** — `_original/app.manifest` requests `requireAdministrator`. Features that touch raw disks or perform privileged operations assume this.
 2. **Single instance** — `App` holds a named mutex (`JFStorageTester_SingleInstance`) for **Inno Setup** (`AppMutex` in `.iss`) and clean upgrades. `App.ReleaseAppMutex()` exists for the update/install path. Avoid removing or renaming without updating the installer script under `_original/installer/`.
@@ -63,6 +75,8 @@ dotnet run
 The `_original/JFStorageTester.csproj` sets **single-file**, **self-contained**, **`win-x64`** publish defaults. For a release-like binary, run `dotnet publish` from `_original/`.
 
 **Installer**: `_original/installer/JFStorageTester.iss` references `..\publish\JFStorageTester.exe` (paths relative to that folder) — align publish output and version defines (`MyAppVersion`) when bumping versions.
+
+**Rust app:** From the repo root, `.\run-dev.ps1` runs `cargo run` in `jf-storage-tester/`. For a release binary copied to `portable-build/`, run `.\build-portable.ps1` (same idea as `rust-egui-winui-example`). You can also `cd jf-storage-tester` and use `cargo` directly. Uses root `applogo.png` and `appicon.ico` via paths relative to the crate. `cargo build` produces `jf-storage-tester/target/...` (ignored by git); root `portable-build/` is ignored too. **Drive list:** On Windows, disks are enumerated via WMI (see `src/drive_enumeration.rs`), aligned with `_original/Services/DriveDetectionService.cs`; enumeration runs off the UI thread. Non-Windows builds show an error instead of listing disks.
 
 ## UI / AI collaboration tips
 

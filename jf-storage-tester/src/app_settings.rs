@@ -1,0 +1,159 @@
+//! Theme / accent preferences — persisted under ProgramData (aligned with rust-egui-winui-example).
+
+use std::path::{Path, PathBuf};
+
+use egui::Color32;
+
+// Copynaut accent palette (8 swatches)
+pub const ACCENT_PALETTE: [Color32; 8] = [
+    Color32::from_rgb(142, 68, 173),
+    Color32::from_rgb(52, 152, 219),
+    Color32::from_rgb(46, 204, 113),
+    Color32::from_rgb(26, 188, 156),
+    Color32::from_rgb(241, 196, 15),
+    Color32::from_rgb(230, 126, 34),
+    Color32::from_rgb(231, 76, 60),
+    Color32::from_rgb(160, 160, 160),
+];
+
+/// Short labels for palette swatch tooltips (neutral; colors match [`ACCENT_PALETTE`]).
+pub const ACCENT_PALETTE_LABELS: [&str; 8] = [
+    "Purple",
+    "Blue",
+    "Green",
+    "Teal",
+    "Yellow",
+    "Orange",
+    "Red",
+    "Gray",
+];
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum ThemePref {
+    Auto,
+    Dark,
+    Light,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum AccentSourcePref {
+    Windows,
+    Palette,
+}
+
+pub struct Settings {
+    pub theme: ThemePref,
+    pub accent_source: AccentSourcePref,
+    pub accent_palette_idx: usize,
+    pub accent_use_custom: bool,
+    pub accent_custom_hex: String,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            theme: ThemePref::Auto,
+            accent_source: AccentSourcePref::Windows,
+            accent_palette_idx: 0,
+            accent_use_custom: false,
+            accent_custom_hex: "#8E44AD".to_string(),
+        }
+    }
+}
+
+fn settings_path() -> PathBuf {
+    let base = std::env::var("PROGRAMDATA").unwrap_or_else(|_| "C:\\ProgramData".into());
+    Path::new(&base)
+        .join("JFStorageTester")
+        .join("settings.txt")
+}
+
+pub fn load_settings() -> Settings {
+    let mut s = Settings::default();
+    if let Ok(text) = std::fs::read_to_string(settings_path()) {
+        for line in text.lines() {
+            if let Some(v) = line.strip_prefix("theme=") {
+                s.theme = match v.trim() {
+                    "dark" => ThemePref::Dark,
+                    "light" => ThemePref::Light,
+                    _ => ThemePref::Auto,
+                };
+            } else if let Some(v) = line.strip_prefix("accent_source=") {
+                s.accent_source = match v.trim() {
+                    "palette" => AccentSourcePref::Palette,
+                    _ => AccentSourcePref::Windows,
+                };
+            } else if let Some(v) = line.strip_prefix("accent_palette_idx=") {
+                if let Ok(parsed) = v.trim().parse::<usize>() {
+                    s.accent_palette_idx = parsed.min(7);
+                }
+            } else if let Some(v) = line.strip_prefix("accent_use_custom=") {
+                s.accent_use_custom = v.trim() == "true";
+            } else if let Some(v) = line.strip_prefix("accent_custom_hex=") {
+                s.accent_custom_hex = v.trim().to_string();
+            }
+        }
+    }
+    s
+}
+
+pub fn save_settings(s: &Settings) {
+    let path = settings_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let theme_s = match s.theme {
+        ThemePref::Auto => "auto",
+        ThemePref::Dark => "dark",
+        ThemePref::Light => "light",
+    };
+    let accent_src = match s.accent_source {
+        AccentSourcePref::Windows => "windows",
+        AccentSourcePref::Palette => "palette",
+    };
+    let text = format!(
+        "theme={}\naccent_source={}\naccent_palette_idx={}\naccent_use_custom={}\naccent_custom_hex={}\n",
+        theme_s,
+        accent_src,
+        s.accent_palette_idx,
+        s.accent_use_custom,
+        s.accent_custom_hex,
+    );
+    let _ = std::fs::write(path, text);
+}
+
+pub fn parse_hex_color_6(hex: &str) -> Option<Color32> {
+    let t = hex.trim();
+    let t = t.strip_prefix('#').unwrap_or(t);
+    if t.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&t[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&t[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&t[4..6], 16).ok()?;
+    Some(Color32::from_rgb(r, g, b))
+}
+
+pub fn color_to_hex_6(c: Color32) -> String {
+    format!("#{:02X}{:02X}{:02X}", c.r(), c.g(), c.b())
+}
+
+pub fn accent_from_palette(palette_idx: usize, use_custom: bool, custom_hex: &str) -> Color32 {
+    if use_custom {
+        if let Some(c) = parse_hex_color_6(custom_hex) {
+            return c;
+        }
+    }
+    ACCENT_PALETTE[palette_idx.min(7)]
+}
+
+pub fn initial_accent_color(s: &Settings) -> Color32 {
+    match s.accent_source {
+        AccentSourcePref::Palette => accent_from_palette(
+            s.accent_palette_idx,
+            s.accent_use_custom,
+            &s.accent_custom_hex,
+        ),
+        AccentSourcePref::Windows => crate::theme::windows_accent_color().unwrap_or(ACCENT_PALETTE[0]),
+    }
+}

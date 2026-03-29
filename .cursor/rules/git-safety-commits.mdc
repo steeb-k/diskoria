@@ -1,0 +1,37 @@
+---
+description: Require safety git commits before and after major code changes to prevent accidental code loss
+alwaysApply: true
+---
+
+# Git Safety Commits
+
+A previous session accidentally deleted significant sections of `app.rs` through overly broad regex replacements and had no git history to recover from. Prevent this by creating safety commits at key checkpoints.
+
+## When to commit (without being asked)
+
+**Before** any operation that touches more than ~30 lines across multiple files, or that uses multi-line find-and-replace on a large file:
+```
+git add -A && git commit -m "chore: safety checkpoint before <description>"
+```
+
+**After** completing a discrete, working feature or fix — even mid-session:
+```
+git add -A && git commit -m "<type>: <short description>"
+```
+
+## Mandatory checkpoints
+
+| Situation | Action |
+|---|---|
+| About to do a large refactor (moving/renaming methods, restructuring structs) | Safety commit first |
+| About to run a script or shell command that modifies source files | Safety commit first |
+| Completed a working build after a multi-step feature | Commit the result |
+| Completed a bug fix that compiles cleanly | Commit the result |
+
+## Rules
+
+- Always run `cargo check` before committing Rust code — only commit if it compiles
+- Use conventional commit prefixes: `feat:`, `fix:`, `refactor:`, `chore:`
+- Never amend commits that have already been pushed
+- Do not commit `.env` files, secrets, or build artifacts (`target/`, `portable-build/`)
+- When in doubt, commit — a checkpoint commit is always better than losing work
