@@ -29,7 +29,7 @@ mod windows {
     struct FailurePredictRow {
         InstanceName: Option<String>,
         PredictFailure: Option<bool>,
-        Reason: Option<String>,
+        Reason: Option<u32>,
     }
 
     fn variant_to_u16_vec(v: &wmi::Variant) -> Vec<u16> {
@@ -89,19 +89,33 @@ mod windows {
     ///   `SCSI\Disk&Ven_ATA&Prod_Samsung_SSD_850\4&ed1fbf&0&020400_0`
     fn failure_predict_for_disk(pnp_device_id: &str) -> Option<(bool, String)> {
         if pnp_device_id.is_empty() {
+            log::warn!(target: "jf_surface", "SMART: pnp_device_id is empty, skipping FailurePredict lookup");
             return None;
         }
+        log::info!(target: "jf_surface", "SMART: looking up FailurePredict for pnp_device_id={pnp_device_id:?}");
         let wmi = match WMIConnection::with_namespace_path(r"ROOT\WMI") {
             Ok(w) => w,
-            Err(_) => return None,
+            Err(e) => {
+                log::warn!(target: "jf_surface", "SMART: failed to connect to ROOT\\WMI: {e}");
+                return None;
+            }
         };
         let rows: Vec<FailurePredictRow> = match wmi.raw_query(
             "SELECT InstanceName, PredictFailure, Reason FROM MSStorageDriver_FailurePredictStatus",
         ) {
             Ok(r) => r,
-            Err(_) => return None,
+            Err(e) => {
+                log::warn!(target: "jf_surface", "SMART: FailurePredictStatus query failed: {e}");
+                return None;
+            }
         };
+        log::info!(target: "jf_surface", "SMART: got {} FailurePredictStatus rows", rows.len());
         let needle_upper = pnp_device_id.to_uppercase();
+        for row in &rows {
+            if let Some(name) = &row.InstanceName {
+                log::info!(target: "jf_surface", "SMART:   row InstanceName={name:?}");
+            }
+        }
         for row in rows {
             let Some(name) = row.InstanceName else {
                 continue;
@@ -110,9 +124,16 @@ mod windows {
                 continue;
             }
             let pred = row.PredictFailure.unwrap_or(false);
-            let reason = row.Reason.unwrap_or_default().trim().to_string();
+            let reason_code = row.Reason.unwrap_or(0);
+            let reason = if reason_code != 0 {
+                format!("SMART reason code: {reason_code}")
+            } else {
+                String::new()
+            };
+            log::info!(target: "jf_surface", "SMART: matched! predict_failure={pred}, reason_code={reason_code}");
             return Some((pred, reason));
         }
+        log::warn!(target: "jf_surface", "SMART: no InstanceName matched needle {needle_upper:?}");
         None
     }
 
