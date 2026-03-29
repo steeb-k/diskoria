@@ -3888,7 +3888,7 @@ impl JfStorageTesterApp {
                 btn_rect.center(),
                 Align2::CENTER_CENTER,
                 "\u{f30a}",
-                FontId::new(16.0, FontFamily::Name("BootstrapIcons".into())),
+                FontId::new(16.0, FontFamily::Proportional),
                 btn_fg,
             );
 
