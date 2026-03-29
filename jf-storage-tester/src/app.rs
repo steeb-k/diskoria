@@ -3922,7 +3922,7 @@ impl JfStorageTesterApp {
                             plot_ui.line(
                                 Line::new(PlotPoints::from(chart_points_clone.clone()))
                                     .color(accent)
-                                    .width(1.5),
+                                    .width(2.5),
                             );
                         }
                     });
@@ -5158,7 +5158,7 @@ fn export_performance_chart_png(
         chart
             .draw_series(LineSeries::new(
                 chart_points.iter().map(|p| (p[0], p[1])),
-                &BLUE,
+                ShapeStyle::from(&BLUE).stroke_width(2),
             ))
             .map_err(|e| e.to_string())?;
     }
