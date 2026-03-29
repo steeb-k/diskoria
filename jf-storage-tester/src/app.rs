@@ -169,7 +169,7 @@ pub struct JfStorageTesterApp {
     surface_test_warnings: bool,
     surface_last_error: Option<String>,
     surface_drive_removed_msg: Option<String>,
-    /// Performance chart: (position_gb, speed_mbps) data points accumulated during a surface scan.
+    /// Performance chart: averaged (position_gb, speed_mbps) points for display.
     surface_chart_points: Vec<[f64; 2]>,
     /// Running maximum speed seen during surface scan (for Y-axis scaling).
     surface_chart_max_speed: f64,
@@ -177,6 +177,10 @@ pub struct JfStorageTesterApp {
     surface_chart_total_gb: f64,
     /// Active visualization tab: 0 = Sector Map, 1 = Performance Chart.
     surface_chart_tab: usize,
+    /// Bucket averaging state for chart smoothing.
+    surface_chart_bucket_sum: f64,
+    surface_chart_bucket_count: u32,
+    surface_chart_bucket_idx: usize,
 
     /// Manual Tab order on Sector Test (copynaut-style): idle 0=Refresh, 1=Drive combo, 2=Start; running 0=Stop.
     sector_focus: Option<usize>,
@@ -241,7 +245,7 @@ pub struct JfStorageTesterApp {
     destructive_test_warnings: bool,
     destructive_last_error: Option<String>,
     destructive_drive_removed_msg: Option<String>,
-    /// Performance chart: (position_gb, speed_mbps) data points accumulated during a destructive scan.
+    /// Performance chart: averaged (position_gb, speed_mbps) points for display.
     destructive_chart_points: Vec<[f64; 2]>,
     /// Running maximum speed seen during destructive scan (for Y-axis scaling).
     destructive_chart_max_speed: f64,
@@ -249,6 +253,10 @@ pub struct JfStorageTesterApp {
     destructive_chart_total_gb: f64,
     /// Active visualization tab: 0 = Sector Map, 1 = Performance Chart.
     destructive_chart_tab: usize,
+    /// Bucket averaging state for chart smoothing.
+    destructive_chart_bucket_sum: f64,
+    destructive_chart_bucket_count: u32,
+    destructive_chart_bucket_idx: usize,
     /// Tab order: gate page 0=Continue; test page idle 0=Refresh, 1=Combo, 2=Start; running 0=Stop.
     destructive_focus: Option<usize>,
     destructive_refresh_id: Option<Id>,
@@ -394,6 +402,9 @@ impl JfStorageTesterApp {
             surface_chart_max_speed: 0.0,
             surface_chart_total_gb: 0.0,
             surface_chart_tab: 0,
+            surface_chart_bucket_sum: 0.0,
+            surface_chart_bucket_count: 0,
+            surface_chart_bucket_idx: 0,
             sector_focus: None,
             speed_focus: None,
             sector_refresh_id: None,
@@ -448,6 +459,9 @@ impl JfStorageTesterApp {
             destructive_chart_max_speed: 0.0,
             destructive_chart_total_gb: 0.0,
             destructive_chart_tab: 0,
+            destructive_chart_bucket_sum: 0.0,
+            destructive_chart_bucket_count: 0,
+            destructive_chart_bucket_idx: 0,
             destructive_focus: None,
             destructive_refresh_id: None,
             destructive_combo_id: None,
@@ -1780,6 +1794,9 @@ impl JfStorageTesterApp {
         self.surface_chart_points.clear();
         self.surface_chart_max_speed = 0.0;
         self.surface_chart_total_gb = 0.0;
+        self.surface_chart_bucket_sum = 0.0;
+        self.surface_chart_bucket_count = 0;
+        self.surface_chart_bucket_idx = 0;
     }
 
     fn start_surface_test(&mut self, ctx: &egui::Context) {
@@ -1856,6 +1873,9 @@ impl JfStorageTesterApp {
         self.destructive_chart_points.clear();
         self.destructive_chart_max_speed = 0.0;
         self.destructive_chart_total_gb = 0.0;
+        self.destructive_chart_bucket_sum = 0.0;
+        self.destructive_chart_bucket_count = 0;
+        self.destructive_chart_bucket_idx = 0;
     }
 
     fn start_destructive_test(&mut self, ctx: &egui::Context) {
@@ -1964,15 +1984,20 @@ impl JfStorageTesterApp {
         }
 
         if p.current_speed_mbps > 0.0 && p.total_bytes > 0 {
-            let pos_gb = p.bytes_scanned as f64 / (1024.0 * 1024.0 * 1024.0);
-            self.destructive_chart_points.push([pos_gb, p.current_speed_mbps]);
-            if p.current_speed_mbps > self.destructive_chart_max_speed {
-                self.destructive_chart_max_speed = p.current_speed_mbps;
-            }
             let total_gb = p.total_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
             if total_gb > self.destructive_chart_total_gb {
                 self.destructive_chart_total_gb = total_gb;
             }
+            if p.current_speed_mbps > self.destructive_chart_max_speed {
+                self.destructive_chart_max_speed = p.current_speed_mbps;
+            }
+            chart_bucket_accumulate(
+                p.bytes_scanned, p.total_bytes, p.current_speed_mbps,
+                &mut self.destructive_chart_points,
+                &mut self.destructive_chart_bucket_sum,
+                &mut self.destructive_chart_bucket_count,
+                &mut self.destructive_chart_bucket_idx,
+            );
         }
 
         if p.progress_percent > 0.0 {
@@ -1999,6 +2024,14 @@ impl JfStorageTesterApp {
         );
         self.recalibrate_destructive_heat_colors();
         self.destructive_remaining_label = "00:00:00".to_string();
+        let total_bytes = (self.destructive_chart_total_gb * 1024.0 * 1024.0 * 1024.0) as i64;
+        chart_bucket_flush(
+            total_bytes,
+            &mut self.destructive_chart_points,
+            &mut self.destructive_chart_bucket_sum,
+            &mut self.destructive_chart_bucket_count,
+            &mut self.destructive_chart_bucket_idx,
+        );
         if self.destructive_progress_pct >= 99.9 {
             self.destructive_progress_pct = 100.0;
             self.destructive_test_passed = self.destructive_bad_sectors == 0;
@@ -2235,15 +2268,20 @@ impl JfStorageTesterApp {
         }
 
         if p.current_speed_mbps > 0.0 && p.total_bytes > 0 {
-            let pos_gb = p.bytes_scanned as f64 / (1024.0 * 1024.0 * 1024.0);
-            self.surface_chart_points.push([pos_gb, p.current_speed_mbps]);
-            if p.current_speed_mbps > self.surface_chart_max_speed {
-                self.surface_chart_max_speed = p.current_speed_mbps;
-            }
             let total_gb = p.total_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
             if total_gb > self.surface_chart_total_gb {
                 self.surface_chart_total_gb = total_gb;
             }
+            if p.current_speed_mbps > self.surface_chart_max_speed {
+                self.surface_chart_max_speed = p.current_speed_mbps;
+            }
+            chart_bucket_accumulate(
+                p.bytes_scanned, p.total_bytes, p.current_speed_mbps,
+                &mut self.surface_chart_points,
+                &mut self.surface_chart_bucket_sum,
+                &mut self.surface_chart_bucket_count,
+                &mut self.surface_chart_bucket_idx,
+            );
         }
 
         if p.progress_percent > 0.0 {
@@ -2270,6 +2308,14 @@ impl JfStorageTesterApp {
         );
         self.recalibrate_sector_heat_colors();
         self.surface_remaining_label = "00:00:00".to_string();
+        let total_bytes = (self.surface_chart_total_gb * 1024.0 * 1024.0 * 1024.0) as i64;
+        chart_bucket_flush(
+            total_bytes,
+            &mut self.surface_chart_points,
+            &mut self.surface_chart_bucket_sum,
+            &mut self.surface_chart_bucket_count,
+            &mut self.surface_chart_bucket_idx,
+        );
         if self.surface_progress_pct >= 99.9 {
             self.surface_progress_pct = 100.0;
             self.surface_test_passed = self.surface_bad_sectors == 0;
@@ -4998,6 +5044,60 @@ impl JfStorageTesterApp {
                 );
             });
         }
+    }
+}
+
+/// Number of position buckets for chart smoothing.  Each bucket averages all
+/// speed samples that fall within it and emits a single chart point at its
+/// midpoint.  200 buckets ≈ 0.5% of the disk each — smooth enough to read
+/// while still showing real dips/spikes.
+const CHART_BUCKETS: usize = 200;
+
+/// Accumulate a speed sample into a positional bucket.  When the position
+/// crosses into the next bucket, the average of the old bucket is emitted as a
+/// chart point.  This keeps the chart smooth regardless of how many raw I/O
+/// samples arrive per bucket.
+fn chart_bucket_accumulate(
+    bytes_scanned: i64,
+    total_bytes: i64,
+    speed_mbps: f64,
+    points: &mut Vec<[f64; 2]>,
+    bucket_sum: &mut f64,
+    bucket_count: &mut u32,
+    bucket_idx: &mut usize,
+) {
+    let frac = bytes_scanned as f64 / total_bytes.max(1) as f64;
+    let idx = ((frac * CHART_BUCKETS as f64) as usize).min(CHART_BUCKETS.saturating_sub(1));
+
+    if idx != *bucket_idx && *bucket_count > 0 {
+        let avg = *bucket_sum / *bucket_count as f64;
+        let total_gb = total_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+        let mid_gb = (*bucket_idx as f64 + 0.5) / CHART_BUCKETS as f64 * total_gb;
+        points.push([mid_gb, avg]);
+        *bucket_sum = 0.0;
+        *bucket_count = 0;
+    }
+
+    *bucket_idx = idx;
+    *bucket_sum += speed_mbps;
+    *bucket_count += 1;
+}
+
+/// Flush any remaining samples in the current bucket (call at test completion).
+fn chart_bucket_flush(
+    total_bytes: i64,
+    points: &mut Vec<[f64; 2]>,
+    bucket_sum: &mut f64,
+    bucket_count: &mut u32,
+    bucket_idx: &mut usize,
+) {
+    if *bucket_count > 0 {
+        let avg = *bucket_sum / *bucket_count as f64;
+        let total_gb = total_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+        let mid_gb = (*bucket_idx as f64 + 0.5) / CHART_BUCKETS as f64 * total_gb;
+        points.push([mid_gb, avg]);
+        *bucket_sum = 0.0;
+        *bucket_count = 0;
     }
 }
 
