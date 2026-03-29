@@ -10,7 +10,7 @@ use egui::{
     Pos2, Rect, ScrollArea, Sense, Stroke, StrokeKind, Ui, Vec2,
 };
 use egui::text::{LayoutJob, TextFormat};
-use egui_plot::{Line, Plot, PlotPoints};
+use egui_plot::{Line, MarkerShape, Plot, PlotPoints, Points};
 
 use crate::app_settings::{
     self, accent_from_palette, color_to_hex_6, initial_accent_color, parse_hex_color_6,
@@ -172,6 +172,8 @@ pub struct JfStorageTesterApp {
     surface_drive_removed_msg: Option<String>,
     /// Performance chart: averaged (position_gb, speed_mbps) points for display.
     surface_chart_points: Vec<[f64; 2]>,
+    /// Raw (position_gb, speed_mbps) samples for scatter dot overlay.
+    surface_chart_raw_points: Vec<[f64; 2]>,
     /// Running maximum speed seen during surface scan (for Y-axis scaling).
     surface_chart_max_speed: f64,
     /// Total disk size in GB (for X-axis range).
@@ -249,6 +251,8 @@ pub struct JfStorageTesterApp {
     destructive_drive_removed_msg: Option<String>,
     /// Performance chart: averaged (position_gb, speed_mbps) points for display.
     destructive_chart_points: Vec<[f64; 2]>,
+    /// Raw (position_gb, speed_mbps) samples for scatter dot overlay.
+    destructive_chart_raw_points: Vec<[f64; 2]>,
     /// Running maximum speed seen during destructive scan (for Y-axis scaling).
     destructive_chart_max_speed: f64,
     /// Total disk size in GB (for X-axis range).
@@ -402,6 +406,7 @@ impl JfStorageTesterApp {
             surface_last_error: None,
             surface_drive_removed_msg: None,
             surface_chart_points: Vec::new(),
+            surface_chart_raw_points: Vec::new(),
             surface_chart_max_speed: 0.0,
             surface_chart_total_gb: 0.0,
             surface_chart_tab: 0,
@@ -460,6 +465,7 @@ impl JfStorageTesterApp {
             destructive_last_error: None,
             destructive_drive_removed_msg: None,
             destructive_chart_points: Vec::new(),
+            destructive_chart_raw_points: Vec::new(),
             destructive_chart_max_speed: 0.0,
             destructive_chart_total_gb: 0.0,
             destructive_chart_tab: 0,
@@ -1797,6 +1803,7 @@ impl JfStorageTesterApp {
         self.surface_show_result_overlay = false;
         self.surface_last_error = None;
         self.surface_chart_points.clear();
+        self.surface_chart_raw_points.clear();
         self.surface_chart_max_speed = 0.0;
         self.surface_chart_total_gb = 0.0;
         self.surface_chart_bucket_sum = 0.0;
@@ -1877,6 +1884,7 @@ impl JfStorageTesterApp {
         self.destructive_show_result_overlay = false;
         self.destructive_last_error = None;
         self.destructive_chart_points.clear();
+        self.destructive_chart_raw_points.clear();
         self.destructive_chart_max_speed = 0.0;
         self.destructive_chart_total_gb = 0.0;
         self.destructive_chart_bucket_sum = 0.0;
@@ -1994,10 +2002,14 @@ impl JfStorageTesterApp {
             if total_gb > self.destructive_chart_total_gb {
                 self.destructive_chart_total_gb = total_gb;
             }
+            let pos_gb = p.bytes_scanned as f64 / (1024.0 * 1024.0 * 1024.0);
+            self.destructive_chart_raw_points.push([pos_gb, p.current_speed_mbps]);
+            if p.current_speed_mbps > self.destructive_chart_max_speed {
+                self.destructive_chart_max_speed = p.current_speed_mbps;
+            }
             chart_bucket_accumulate(
                 p.bytes_scanned, p.total_bytes, p.current_speed_mbps,
                 &mut self.destructive_chart_points,
-                &mut self.destructive_chart_max_speed,
                 &mut self.destructive_chart_bucket_sum,
                 &mut self.destructive_chart_bucket_count,
                 &mut self.destructive_chart_bucket_idx,
@@ -2282,10 +2294,14 @@ impl JfStorageTesterApp {
             if total_gb > self.surface_chart_total_gb {
                 self.surface_chart_total_gb = total_gb;
             }
+            let pos_gb = p.bytes_scanned as f64 / (1024.0 * 1024.0 * 1024.0);
+            self.surface_chart_raw_points.push([pos_gb, p.current_speed_mbps]);
+            if p.current_speed_mbps > self.surface_chart_max_speed {
+                self.surface_chart_max_speed = p.current_speed_mbps;
+            }
             chart_bucket_accumulate(
                 p.bytes_scanned, p.total_bytes, p.current_speed_mbps,
                 &mut self.surface_chart_points,
-                &mut self.surface_chart_max_speed,
                 &mut self.surface_chart_bucket_sum,
                 &mut self.surface_chart_bucket_count,
                 &mut self.surface_chart_bucket_idx,
@@ -3894,12 +3910,18 @@ impl JfStorageTesterApp {
             } else {
                 self.destructive_chart_points.clone()
             };
+            let raw_points_clone: Vec<[f64; 2]> = if is_surface {
+                self.surface_chart_raw_points.clone()
+            } else {
+                self.destructive_chart_raw_points.clone()
+            };
             let max_speed = if is_surface { self.surface_chart_max_speed } else { self.destructive_chart_max_speed };
             let total_gb = if is_surface { self.surface_chart_total_gb } else { self.destructive_chart_total_gb };
             let nice_max = nice_y_max(max_speed);
             let x_max = total_gb.max(1.0);
             let plot_id = if is_surface { "perf_chart_surface" } else { "perf_chart_destructive" };
             let accent = t.accent;
+            let dot_color = t.txt_sec;
 
             ui.allocate_new_ui(egui::UiBuilder::new().max_rect(chart_rect), |ui| {
                 Plot::new(plot_id)
@@ -3914,6 +3936,14 @@ impl JfStorageTesterApp {
                     .x_axis_label("Position (GB)")
                     .y_axis_label("MB/s")
                     .show(ui, |plot_ui| {
+                        if !raw_points_clone.is_empty() {
+                            plot_ui.points(
+                                Points::new(PlotPoints::from(raw_points_clone.clone()))
+                                    .color(dot_color)
+                                    .radius(1.5)
+                                    .shape(MarkerShape::Circle),
+                            );
+                        }
                         if !chart_points_clone.is_empty() {
                             plot_ui.line(
                                 Line::new(PlotPoints::from(chart_points_clone.clone()))
@@ -3957,7 +3987,7 @@ impl JfStorageTesterApp {
                     .add_filter("PNG Image", &["png"])
                     .save_file()
                 {
-                    if let Err(e) = export_performance_chart_png(&path, &chart_points_clone, max_speed, total_gb) {
+                    if let Err(e) = export_performance_chart_png(&path, &raw_points_clone, &chart_points_clone, max_speed, total_gb) {
                         log::warn!("Performance chart export failed: {}", e);
                     }
                 }
@@ -5066,7 +5096,6 @@ fn chart_bucket_accumulate(
     total_bytes: i64,
     speed_mbps: f64,
     points: &mut Vec<[f64; 2]>,
-    max_speed: &mut f64,
     bucket_sum: &mut f64,
     bucket_count: &mut u32,
     bucket_idx: &mut usize,
@@ -5079,9 +5108,6 @@ fn chart_bucket_accumulate(
         let total_gb = total_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
         let mid_gb = (*bucket_idx as f64 + 0.5) / CHART_BUCKETS as f64 * total_gb;
         points.push([mid_gb, avg]);
-        if avg > *max_speed {
-            *max_speed = avg;
-        }
         *bucket_sum = 0.0;
         *bucket_count = 0;
     }
@@ -5127,6 +5153,7 @@ fn nice_y_max(max_speed: f64) -> f64 {
 #[cfg(windows)]
 fn export_performance_chart_png(
     path: &std::path::Path,
+    raw_points: &[[f64; 2]],
     chart_points: &[[f64; 2]],
     max_speed: f64,
     total_gb: f64,
@@ -5153,6 +5180,15 @@ fn export_performance_chart_png(
         .y_desc("Disk Performance (MB/s)")
         .draw()
         .map_err(|e| e.to_string())?;
+
+    let dot_color = RGBColor(160, 160, 160);
+    if !raw_points.is_empty() {
+        chart
+            .draw_series(raw_points.iter().map(|p| {
+                Circle::new((p[0], p[1]), 2, ShapeStyle::from(&dot_color).filled())
+            }))
+            .map_err(|e| e.to_string())?;
+    }
 
     if !chart_points.is_empty() {
         chart
