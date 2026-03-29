@@ -3993,7 +3993,8 @@ impl JfStorageTesterApp {
                     .add_filter("PNG Image", &["png"])
                     .save_file()
                 {
-                    if let Err(e) = export_performance_chart_png(&path, &drive_label, &raw_points_clone, &chart_points_clone, max_speed, total_gb) {
+                    let test_label = if is_surface { "Read-only sector test" } else { "Read and write sector test" };
+                    if let Err(e) = export_performance_chart_png(&path, &drive_label, test_label, &raw_points_clone, &chart_points_clone, max_speed, total_gb) {
                         log::warn!("Performance chart export failed: {}", e);
                     }
                 }
@@ -5165,6 +5166,7 @@ fn nice_y_max(max_speed: f64) -> f64 {
 fn export_performance_chart_png(
     path: &std::path::Path,
     drive_label: &str,
+    test_label: &str,
     raw_points: &[[f64; 2]],
     chart_points: &[[f64; 2]],
     max_speed: f64,
@@ -5172,7 +5174,7 @@ fn export_performance_chart_png(
 ) -> Result<(), String> {
     use plotters::prelude::*;
 
-    let root = BitMapBackend::new(path, (960, 440))
+    let root = BitMapBackend::new(path, (960, 460))
         .into_drawing_area();
     root.fill(&WHITE).map_err(|e| e.to_string())?;
 
@@ -5211,6 +5213,16 @@ fn export_performance_chart_png(
             ))
             .map_err(|e| e.to_string())?;
     }
+
+    root.draw(&Text::new(
+        test_label,
+        (480, 444),
+        ("sans-serif", 14).into_font().color(&RGBColor(100, 100, 100))
+            .pos(plotters::style::text_anchor::Pos::new(
+                plotters::style::text_anchor::HPos::Center,
+                plotters::style::text_anchor::VPos::Top,
+            )),
+    )).map_err(|e| e.to_string())?;
 
     root.present().map_err(|e| e.to_string())?;
     Ok(())
