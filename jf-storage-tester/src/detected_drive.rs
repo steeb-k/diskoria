@@ -77,6 +77,8 @@ pub struct DetectedDrive {
     pub model: String,
     /// Serial number from WMI `Win32_DiskDrive.SerialNumber` (trimmed). Falls back to `"unknown"`.
     pub serial: String,
+    /// PNP device ID from WMI, used to correlate with SMART `MSStorageDriver_FailurePredictStatus`.
+    pub pnp_device_id: String,
     /// Raw size in bytes from Win32_DiskDrive.
     #[allow(dead_code)]
     pub size_bytes: i64,

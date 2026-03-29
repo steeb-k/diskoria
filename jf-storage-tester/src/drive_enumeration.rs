@@ -20,6 +20,7 @@ mod windows {
         Size: Option<wmi::Variant>,
         MediaType: Option<String>,
         InterfaceType: Option<String>,
+        PNPDeviceID: Option<String>,
     }
 
     #[derive(Debug, Deserialize)]
@@ -348,7 +349,7 @@ mod windows {
 
         let wmi = WMIConnection::new().map_err(|e| e.to_string())?;
         let rows: Vec<Win32DiskDriveRow> = wmi
-            .raw_query("SELECT Index, Model, SerialNumber, Size, MediaType, InterfaceType FROM Win32_DiskDrive")
+            .raw_query("SELECT Index, Model, SerialNumber, Size, MediaType, InterfaceType, PNPDeviceID FROM Win32_DiskDrive")
             .map_err(|e| e.to_string())?;
 
         let mut out: Vec<DetectedDrive> = Vec::with_capacity(rows.len());
@@ -373,6 +374,12 @@ mod windows {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "unknown".to_string());
+
+            let pnp_device_id = row
+                .PNPDeviceID
+                .as_deref()
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
 
             let size_bytes = variant_to_i64(&row.Size);
             let wmi_media = row.MediaType.as_deref().unwrap_or("");
@@ -402,6 +409,7 @@ mod windows {
                 device_id,
                 model,
                 serial,
+                pnp_device_id,
                 size_bytes,
                 media,
                 bus,

@@ -1690,7 +1690,8 @@ impl JfStorageTesterApp {
                 return;
             }
 
-            let disk = self.drives[self.active_page_selected_drive_idx()].disk_number;
+            let drive = &self.drives[self.active_page_selected_drive_idx()];
+            let disk = drive.disk_number;
 
             if self.smart_health_inflight {
                 return;
@@ -1703,11 +1704,12 @@ impl JfStorageTesterApp {
             self.smart_health_inflight = true;
             self.smart_health = None;
             self.smart_health_err = None;
+            let pnp_id = drive.pnp_device_id.clone();
             let (tx, rx) = mpsc::channel();
             self.smart_health_rx = Some(rx);
             let ctx2 = ctx.clone();
             std::thread::spawn(move || {
-                let r = crate::smart_health::query_smart_health(disk);
+                let r = crate::smart_health::query_smart_health(disk, &pnp_id);
                 let _ = tx.send((disk, r));
                 ctx2.request_repaint();
             });

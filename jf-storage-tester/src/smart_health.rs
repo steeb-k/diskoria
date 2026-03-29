@@ -82,7 +82,15 @@ mod windows {
     /// Returns `None` when no `MSStorageDriver_FailurePredictStatus` entry exists for this disk
     /// (i.e. the drive does not expose SMART data — typical for USB flash drives, SD cards, etc.).
     /// Returns `Some((predict_failure, reason))` when a SMART entry is present.
-    fn failure_predict_for_disk(disk_number: u32) -> Option<(bool, String)> {
+    ///
+    /// Matching uses the PNP device ID from `Win32_DiskDrive` (case-insensitive).
+    /// The InstanceName in `MSStorageDriver_FailurePredictStatus` is the PNP device ID
+    /// with a `_0` suffix appended, e.g.:
+    ///   `SCSI\Disk&Ven_ATA&Prod_Samsung_SSD_850\4&ed1fbf&0&020400_0`
+    fn failure_predict_for_disk(pnp_device_id: &str) -> Option<(bool, String)> {
+        if pnp_device_id.is_empty() {
+            return None;
+        }
         let wmi = match WMIConnection::with_namespace_path(r"ROOT\WMI") {
             Ok(w) => w,
             Err(_) => return None,
@@ -93,23 +101,22 @@ mod windows {
             Ok(r) => r,
             Err(_) => return None,
         };
-        let needle = format!(r"PhysicalDrive{}", disk_number);
+        let needle_upper = pnp_device_id.to_uppercase();
         for row in rows {
             let Some(name) = row.InstanceName else {
                 continue;
             };
-            if !name.contains(&needle) {
+            if !name.to_uppercase().contains(&needle_upper) {
                 continue;
             }
             let pred = row.PredictFailure.unwrap_or(false);
             let reason = row.Reason.unwrap_or_default().trim().to_string();
             return Some((pred, reason));
         }
-        // No entry found — drive does not expose SMART through this interface.
         None
     }
 
-    pub fn query_smart_health(disk_number: u32) -> Result<SmartHealth, String> {
+    pub fn query_smart_health(disk_number: u32, pnp_device_id: &str) -> Result<SmartHealth, String> {
         let wmi = WMIConnection::with_namespace_path(r"ROOT\Microsoft\Windows\Storage")
             .map_err(|e| e.to_string())?;
 
@@ -136,7 +143,7 @@ mod windows {
             .map(|v| variant_to_string_vec(v))
             .unwrap_or_default();
 
-        let smart_entry = failure_predict_for_disk(disk_number);
+        let smart_entry = failure_predict_for_disk(pnp_device_id);
         let smart_available = smart_entry.is_some();
         let (predict_failure, predict_reason) = smart_entry.unwrap_or((false, String::new()));
 
@@ -209,6 +216,6 @@ mod windows {
 pub use windows::query_smart_health;
 
 #[cfg(not(windows))]
-pub fn query_smart_health(_disk_number: u32) -> Result<SmartHealth, String> {
+pub fn query_smart_health(_disk_number: u32, _pnp_device_id: &str) -> Result<SmartHealth, String> {
     Err("Storage health is only queried on Windows.".to_string())
 }
