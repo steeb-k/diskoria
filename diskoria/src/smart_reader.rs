@@ -235,7 +235,17 @@ pub fn query_smart_detail(device_path: &str, bus: crate::detected_drive::BusKind
     }
 }
 
-/// Send an ATA SMART self-test or abort command.
+/// Send an ATA SMART Execute Off-line Immediate command (ATA command 0xB0, feature 0xD4).
+///
+/// ATA register layout for SMART Execute Off-line Immediate:
+///   bFeaturesReg    = 0xD4  (Execute Off-line Immediate — the SMART "feature" selecting this op)
+///   bSectorCountReg = 0x00
+///   bSectorNumberReg = subcommand (0x01 = short, 0x02 = extended, 0x7F = abort)
+///   bCylLowReg      = 0x4F
+///   bCylHighReg     = 0xC2
+///   bDriveHeadReg   = 0xA0
+///   bCommandReg     = 0xB0  (ATA SMART command)
+///
 /// Returns `true` if the IOCTL was accepted by the driver.
 #[cfg(windows)]
 fn send_self_test_cmd(device_path: &str, subcommand: u8) -> bool {
@@ -248,7 +258,8 @@ fn send_self_test_cmd(device_path: &str, subcommand: u8) -> bool {
     const GENERIC_READ: u32 = 0x80000000;
     const GENERIC_WRITE: u32 = 0x40000000;
     const SMART_SEND_DRIVE_COMMAND: u32 = 0x0007C084;
-    const EXECUTE_OFFLINE_DIAGS: u8 = 0xD4;
+    const ATA_SMART_CMD: u8 = 0xB0;
+    const SMART_EXECUTE_OFFLINE_DIAGS: u8 = 0xD4;
 
     let path_wide: Vec<u16> = device_path
         .encode_utf16()
@@ -272,18 +283,23 @@ fn send_self_test_cmd(device_path: &str, subcommand: u8) -> bool {
         return false;
     }
 
-    // SENDCMDINPARAMS: 32 bytes (IDEREGS layout)
+    // SENDCMDINPARAMS (32 bytes):
+    //   [0..3]  cBufferSize  = 0 (no data buffer for a send-only command)
+    //   [4..11] irDriveRegs  = IDEREGS (see above)
+    //   [12]    bDriveNumber = 0 (unused by modern drivers)
+    //   [13..31] reserved    = 0
     let mut cmd_in = [0u8; 32];
-    cmd_in[0..4].copy_from_slice(&512u32.to_le_bytes()); // cBufferSize
-    cmd_in[4] = subcommand;      // bFeaturesReg (subcommand)
-    cmd_in[5] = 0x00;            // bSectorCountReg
-    cmd_in[6] = 0x00;            // bSectorNumberReg
-    cmd_in[7] = 0x4F;            // bCylLowReg
-    cmd_in[8] = 0xC2;            // bCylHighReg
-    cmd_in[9] = 0xA0;            // bDriveHeadReg
-    cmd_in[10] = EXECUTE_OFFLINE_DIAGS; // bCommandReg
-    cmd_in[11] = 0x00;           // bReserved
+    cmd_in[0..4].copy_from_slice(&0u32.to_le_bytes()); // cBufferSize = 0
+    cmd_in[4] = SMART_EXECUTE_OFFLINE_DIAGS;           // bFeaturesReg
+    cmd_in[5] = 0x00;                                  // bSectorCountReg
+    cmd_in[6] = subcommand;                            // bSectorNumberReg = self-test subcommand
+    cmd_in[7] = 0x4F;                                  // bCylLowReg
+    cmd_in[8] = 0xC2;                                  // bCylHighReg
+    cmd_in[9] = 0xA0;                                  // bDriveHeadReg
+    cmd_in[10] = ATA_SMART_CMD;                        // bCommandReg
+    cmd_in[11] = 0x00;                                 // bReserved
 
+    // SENDCMDOUTPARAMS header only (16 bytes)
     let mut cmd_out = [0u8; 16];
     let mut bytes_returned = 0u32;
 
@@ -315,11 +331,12 @@ fn send_self_test_cmd(device_path: &str, subcommand: u8) -> bool {
 /// Returns true if the command was accepted.
 #[cfg(windows)]
 pub fn trigger_self_test(device_path: &str, long_test: bool) -> bool {
-    let sub = if long_test { 0xC1u8 } else { 0x01u8 };
+    // 0x01 = short offline, 0x02 = extended offline (per ATA SMART spec)
+    let sub = if long_test { 0x02u8 } else { 0x01u8 };
     send_self_test_cmd(device_path, sub)
 }
 
-/// Abort any running ATA self-test.
+/// Abort any running ATA self-test (subcommand 0x7F).
 /// Returns true if the abort command was accepted.
 #[cfg(windows)]
 pub fn abort_self_test(device_path: &str) -> bool {
