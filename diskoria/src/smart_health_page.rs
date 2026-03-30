@@ -206,10 +206,11 @@ fn draw_drive_picker(
         },
     );
 
-    // If selection changed, clear the old report so we re-poll
+    // If selection changed, clear the old report and timer so we re-poll immediately
     if app.health_selected_drive != prev_sel {
         app.health_report = None;
         app.health_poll_running = false;
+        app.health_last_poll = None;
     }
 
     if !app.drives.is_empty() {
@@ -1227,6 +1228,7 @@ impl DiskoriaApp {
                 if refresh.clicked() {
                     self.health_report = None;
                     self.health_poll_running = false;
+                    self.health_last_poll = None;
                     self.spawn_drive_enumeration(ctx);
                 }
             });
@@ -1327,12 +1329,26 @@ impl DiskoriaApp {
     // ── Poll lifecycle ────────────────────────────────────────────────────────
 
     fn spawn_health_poll_if_needed(&mut self, ctx: &egui::Context) {
-        if self.health_poll_running || self.health_report.is_some() {
+        const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+        if self.health_poll_running {
             return;
         }
         if self.drives.is_empty() {
             return;
         }
+        // If we already have a report, wait for the interval before re-polling.
+        if self.health_report.is_some() {
+            if let Some(last) = self.health_last_poll {
+                if last.elapsed() < POLL_INTERVAL {
+                    // Wake ourselves up when the interval expires.
+                    let remaining = POLL_INTERVAL.saturating_sub(last.elapsed());
+                    ctx.request_repaint_after(remaining);
+                    return;
+                }
+            }
+        }
+
         let sel = self.health_selected_drive.min(self.drives.len().saturating_sub(1));
         let drive = &self.drives[sel];
         let device_path = drive.device_id.clone();
@@ -1359,10 +1375,12 @@ impl DiskoriaApp {
             Ok(report) => {
                 self.health_report = Some(report);
                 self.health_poll_running = false;
+                self.health_last_poll = Some(std::time::Instant::now());
                 ctx.request_repaint();
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {
                 self.health_poll_rx = Some(rx);
+                ctx.request_repaint_after(std::time::Duration::from_millis(200));
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.health_poll_running = false;
