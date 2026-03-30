@@ -578,8 +578,10 @@ fn query_nvme(device_path: &str) -> SmartReport {
     const GENERIC_WRITE: u32 = 0x40000000;
     // IOCTL_STORAGE_QUERY_PROPERTY = CTL_CODE(0x2D, 0x500, 0, 0) = 0x002D1400
     const IOCTL_STORAGE_QUERY_PROPERTY: u32 = 0x002D1400;
-    // StorageDeviceProtocolSpecificProperty = 49 (Win10 20H1+)
-    const STORAGE_DEVICE_PROTOCOL_SPECIFIC_PROPERTY: u32 = 49;
+    // StorageDeviceProtocolSpecificProperty = 50 on Win10 20H1+ SDKs.
+    // Value 49 is StorageAdapterProtocolSpecificProperty (adapter-level) and returns
+    // ERROR_INVALID_FUNCTION (1) when sent to a \\.\PhysicalDriveN handle.
+    const STORAGE_DEVICE_PROTOCOL_SPECIFIC_PROPERTY: u32 = 50;
     // PropertyStandardQuery = 0
     const PROPERTY_STANDARD_QUERY: u32 = 0;
     // ProtocolTypeNvme = 3
