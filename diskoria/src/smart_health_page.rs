@@ -313,7 +313,7 @@ fn draw_section_label(
     );
 
     if live_badge {
-        let badge_text = "LIVE";
+        let badge_text = "\u{F309} LIVE";
         let badge_galley = ui.ctx().fonts(|f| {
             f.layout_no_wrap(badge_text.to_owned(), FontId::proportional(11.0), Color32::WHITE)
         });
