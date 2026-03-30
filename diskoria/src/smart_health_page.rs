@@ -381,6 +381,61 @@ fn paint_vitals_kv(
     }
 }
 
+// ── Wear-level bar (absolute-Y version) ──────────────────────────────────────
+
+fn paint_wear_bar(
+    ui: &mut egui::Ui,
+    t: &Theme,
+    card_x: f32,
+    card_inner_w: f32,
+    pad: f32,
+    row_y: f32,
+    row_h: f32,
+    pct_used: u8,
+) {
+    let label_col_w = (card_inner_w * 0.30).max(150.0);
+    let bar_h = 8.0_f32;
+    let range_reserve = 50.0_f32;   // "100%" is short — only needs ~40px
+    let bar_x = card_x + pad + label_col_w + 8.0;
+    let full_bar_w = (card_inner_w - label_col_w - 8.0 - range_reserve).max(20.0);
+
+    ui.painter().text(
+        Pos2::new(card_x + pad + label_col_w, row_y + row_h * 0.5),
+        Align2::RIGHT_CENTER,
+        "Wear Level",
+        FontId::proportional(13.0),
+        t.txt_sec,
+    );
+
+    let bar_y = row_y + (row_h - bar_h) * 0.5;
+    let bar_rect = Rect::from_min_size(Pos2::new(bar_x, bar_y), Vec2::new(full_bar_w, bar_h));
+    ui.painter().rect_filled(bar_rect, 4.0, t.border);
+
+    let pct = (pct_used as f32 / 100.0).clamp(0.0, 1.0);
+    let fill_color = if pct_used < 75 {
+        Color32::from_rgb(39, 174, 96)
+    } else if pct_used < 90 {
+        Color32::from_rgb(241, 196, 15)
+    } else {
+        Color32::from_rgb(231, 76, 60)
+    };
+    let fill_rect = Rect::from_min_size(bar_rect.min, Vec2::new(bar_rect.width() * pct, bar_h));
+    if fill_rect.width() > 0.0 {
+        ui.painter().rect_filled(fill_rect, 4.0, fill_color);
+    }
+
+    // Percentage value — right-anchored so it never overflows
+    let right_inner = card_x + pad + card_inner_w;
+    ui.painter().text(
+        Pos2::new(right_inner, row_y + row_h * 0.5),
+        Align2::RIGHT_CENTER,
+        format!("{}%", pct_used),
+        FontId::proportional(12.0),
+        fill_color,
+    );
+    // No cursor advance — caller owns layout.
+}
+
 // ── Temperature bar (absolute-Y version) ─────────────────────────────────────
 
 fn paint_temp_bar(
@@ -536,13 +591,7 @@ fn draw_nvme_vitals(
     paint_temp_bar(ui, t, card_x, inner_w, pad, row_y, row_h, data.temperature_c as i32);
     row_y += row_step;
 
-    paint_vitals_kv(
-        ui, t, card_x, inner_w, pad, row_y, row_h,
-        "Wear Level",
-        &format!("{}%", data.percentage_used),
-        t.txt_pri,
-        Some("Controller-estimated drive endurance consumed. 100% does not necessarily mean the drive has failed."),
-    );
+    paint_wear_bar(ui, t, card_x, inner_w, pad, row_y, row_h, data.percentage_used);
     row_y += row_step;
 
     paint_vitals_kv(
