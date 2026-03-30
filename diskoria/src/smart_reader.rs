@@ -14,7 +14,6 @@ pub enum SmartReport {
 #[derive(Debug, Clone, Default)]
 pub struct AtaSmartData {
     pub attributes: Vec<AtaAttribute>,
-    pub self_test: Option<SelfTestResult>,
     pub power_on_hours: Option<u64>,
     pub power_cycles: Option<u64>,
     pub temperature_c: Option<i32>,
@@ -52,39 +51,6 @@ pub struct NvmeHealthData {
     pub unsafe_shutdowns: u64,
     pub media_errors: u64,
     pub critical_warning: u8,
-}
-
-#[derive(Debug, Clone)]
-pub struct SelfTestResult {
-    pub kind: SelfTestKind,
-    pub status: SelfTestStatus,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SelfTestKind {
-    Short,
-    Long,
-    Unknown,
-}
-
-impl SelfTestKind {
-    pub fn label(self) -> &'static str {
-        match self {
-            SelfTestKind::Short => "Short",
-            SelfTestKind::Long => "Extended",
-            SelfTestKind::Unknown => "Unknown",
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum SelfTestStatus {
-    Passed,
-    Failed { reason: String },
-    InProgress { pct_remaining: u8 },
-    Aborted,
-    NeverRun,
-    Unknown,
 }
 
 // ── Static attribute name table ───────────────────────────────────────────────
@@ -215,12 +181,6 @@ pub fn query_smart_detail(_device_path: &str, _bus: crate::detected_drive::BusKi
     }
 }
 
-#[cfg(not(windows))]
-pub fn trigger_self_test(_device_path: &str, _long_test: bool) -> bool { false }
-
-#[cfg(not(windows))]
-pub fn abort_self_test(_device_path: &str) -> bool { false }
-
 // ── Windows implementation ────────────────────────────────────────────────────
 
 #[cfg(windows)]
@@ -233,114 +193,6 @@ pub fn query_smart_detail(device_path: &str, bus: crate::detected_drive::BusKind
             reason: "SMART is not available over USB or UFS connections.".to_string(),
         },
     }
-}
-
-/// Send an ATA SMART Execute Off-line Immediate command (ATA command 0xB0, feature 0xD4).
-///
-/// ATA register layout for SMART Execute Off-line Immediate:
-///   bFeaturesReg    = 0xD4  (Execute Off-line Immediate — the SMART "feature" selecting this op)
-///   bSectorCountReg = 0x00
-///   bSectorNumberReg = subcommand (0x01 = short, 0x02 = extended, 0x7F = abort)
-///   bCylLowReg      = 0x4F
-///   bCylHighReg     = 0xC2
-///   bDriveHeadReg   = 0xA0
-///   bCommandReg     = 0xB0  (ATA SMART command)
-///
-/// Returns `true` if the IOCTL was accepted by the driver.
-#[cfg(windows)]
-fn send_self_test_cmd(device_path: &str, subcommand: u8) -> bool {
-    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
-    use windows_sys::Win32::Storage::FileSystem::{
-        CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
-    };
-    use windows_sys::Win32::System::IO::DeviceIoControl;
-
-    const GENERIC_READ: u32 = 0x80000000;
-    const GENERIC_WRITE: u32 = 0x40000000;
-    const SMART_SEND_DRIVE_COMMAND: u32 = 0x0007C084;
-    const ATA_SMART_CMD: u8 = 0xB0;
-    const SMART_EXECUTE_OFFLINE_DIAGS: u8 = 0xD4;
-
-    let path_wide: Vec<u16> = device_path
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-
-    let handle = unsafe {
-        CreateFileW(
-            path_wide.as_ptr(),
-            GENERIC_READ | GENERIC_WRITE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
-            std::ptr::null(),
-            OPEN_EXISTING,
-            0,
-            0,
-        )
-    };
-    if handle == INVALID_HANDLE_VALUE {
-        let err = unsafe { windows_sys::Win32::Foundation::GetLastError() };
-        log::warn!(target: "diskoria", "send_self_test_cmd: CreateFileW failed path={device_path} err={err}");
-        return false;
-    }
-
-    // SENDCMDINPARAMS (32 bytes):
-    //   [0..3]  cBufferSize  = 0 (no data buffer for a send-only command)
-    //   [4..11] irDriveRegs  = IDEREGS (see above)
-    //   [12]    bDriveNumber = 0 (unused by modern drivers)
-    //   [13..31] reserved    = 0
-    let mut cmd_in = [0u8; 32];
-    cmd_in[0..4].copy_from_slice(&0u32.to_le_bytes()); // cBufferSize = 0
-    cmd_in[4] = SMART_EXECUTE_OFFLINE_DIAGS;           // bFeaturesReg
-    cmd_in[5] = 0x00;                                  // bSectorCountReg
-    cmd_in[6] = subcommand;                            // bSectorNumberReg = self-test subcommand
-    cmd_in[7] = 0x4F;                                  // bCylLowReg
-    cmd_in[8] = 0xC2;                                  // bCylHighReg
-    cmd_in[9] = 0xA0;                                  // bDriveHeadReg
-    cmd_in[10] = ATA_SMART_CMD;                        // bCommandReg
-    cmd_in[11] = 0x00;                                 // bReserved
-
-    // SENDCMDOUTPARAMS header only (16 bytes)
-    let mut cmd_out = [0u8; 16];
-    let mut bytes_returned = 0u32;
-
-    let ok = unsafe {
-        let result = DeviceIoControl(
-            handle,
-            SMART_SEND_DRIVE_COMMAND,
-            cmd_in.as_mut_ptr() as *mut _,
-            cmd_in.len() as u32,
-            cmd_out.as_mut_ptr() as *mut _,
-            cmd_out.len() as u32,
-            &mut bytes_returned,
-            std::ptr::null_mut(),
-        ) != 0;
-        windows_sys::Win32::Foundation::CloseHandle(handle);
-        result
-    };
-
-    if ok {
-        log::info!(target: "diskoria", "send_self_test_cmd: OK path={device_path} sub={subcommand:#04X}");
-    } else {
-        let err = unsafe { windows_sys::Win32::Foundation::GetLastError() };
-        log::warn!(target: "diskoria", "send_self_test_cmd: DeviceIoControl failed path={device_path} sub={subcommand:#04X} err={err}");
-    }
-    ok
-}
-
-/// Start an ATA short (long_test=false) or extended (long_test=true) self-test.
-/// Returns true if the command was accepted.
-#[cfg(windows)]
-pub fn trigger_self_test(device_path: &str, long_test: bool) -> bool {
-    // 0x01 = short offline, 0x02 = extended offline (per ATA SMART spec)
-    let sub = if long_test { 0x02u8 } else { 0x01u8 };
-    send_self_test_cmd(device_path, sub)
-}
-
-/// Abort any running ATA self-test (subcommand 0x7F).
-/// Returns true if the abort command was accepted.
-#[cfg(windows)]
-pub fn abort_self_test(device_path: &str) -> bool {
-    send_self_test_cmd(device_path, 0x7F)
 }
 
 // ── ATA SMART via SMART_RCV_DRIVE_DATA ───────────────────────────────────────
@@ -358,7 +210,6 @@ fn query_ata(device_path: &str) -> SmartReport {
     const SMART_RCV_DRIVE_DATA: u32 = 0x0007C088;
     const SMART_READ_DATA: u8 = 0xD0;
     const SMART_READ_THRESHOLDS: u8 = 0xD1;
-    const READ_LOG_SECTOR: u8 = 0xD5;
     const SMART_CMD: u8 = 0xB0;
 
     let path_wide: Vec<u16> = device_path
@@ -458,24 +309,6 @@ fn query_ata(device_path: &str) -> SmartReport {
         )
     } != 0;
 
-    // --- Read self-test log (log address 0x06) ---
-    let mut self_test_result: Option<SelfTestResult> = None;
-    let mut cmd_log = make_cmd(READ_LOG_SECTOR);
-    cmd_log[6] = 0x06; // bSectorNumberReg = log address
-    let mut out_log = vec![0u8; OUT_SZ];
-    let ok_log = unsafe {
-        DeviceIoControl(
-            handle,
-            SMART_RCV_DRIVE_DATA,
-            cmd_log.as_ptr() as *mut _,
-            cmd_log.len() as u32,
-            out_log.as_mut_ptr() as *mut _,
-            out_log.len() as u32,
-            &mut br,
-            std::ptr::null_mut(),
-        )
-    } != 0;
-
     unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
 
     // --- Parse attribute data (30 entries × 12 bytes at offset 2 in the payload) ---
@@ -551,44 +384,6 @@ fn query_ata(device_path: &str) -> SmartReport {
         });
     }
 
-    // --- Parse self-test log ---
-    if ok_log {
-        let log_payload = &out_log[OUT_HDR..OUT_HDR + DATA_SZ];
-        // Most recent entry starts at byte 2, each entry is 24 bytes, up to 21 entries
-        // Byte 2: descriptor index (1-based) of the most recent entry
-        let most_recent_idx = log_payload[2] as usize;
-        if most_recent_idx > 0 {
-            // Entry n is at offset 2 + (n-1)*24
-            let entry_off = 2 + (most_recent_idx.saturating_sub(1)) * 24;
-            if entry_off + 24 <= log_payload.len() {
-                let e = &log_payload[entry_off..entry_off + 24];
-                let status_nibble = (e[1] >> 4) & 0x0F;
-                let test_type = e[0] & 0x7F;
-                let pct_rem = e[2];
-
-                let kind = match test_type {
-                    0x01 => SelfTestKind::Short,
-                    0x02 => SelfTestKind::Long,
-                    _ => SelfTestKind::Unknown,
-                };
-                let st = match status_nibble {
-                    0x00 => SelfTestStatus::Passed,
-                    0x07 => SelfTestStatus::Aborted,
-                    0x01..=0x08 => SelfTestStatus::InProgress { pct_remaining: pct_rem },
-                    _ => SelfTestStatus::Failed {
-                        reason: format!("Error code 0x{:X}", status_nibble),
-                    },
-                };
-                self_test_result = Some(SelfTestResult { kind, status: st });
-            }
-        } else {
-            self_test_result = Some(SelfTestResult {
-                kind: SelfTestKind::Unknown,
-                status: SelfTestStatus::NeverRun,
-            });
-        }
-    }
-
     if attributes.is_empty() {
         return SmartReport::Unavailable {
             reason: "Drive returned no SMART attributes.".to_string(),
@@ -604,7 +399,6 @@ fn query_ata(device_path: &str) -> SmartReport {
     );
     SmartReport::Ata(AtaSmartData {
         attributes,
-        self_test: self_test_result,
         power_on_hours,
         power_cycles,
         temperature_c,

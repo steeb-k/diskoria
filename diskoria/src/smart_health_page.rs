@@ -1,4 +1,4 @@
-//! Health Status page — raw SMART / NVMe diagnostics for any drive the user selects.
+//! Health Status page â€” raw SMART / NVMe diagnostics for any drive the user selects.
 //!
 //! This module owns the per-page state fields on `DiskoriaApp` that carry the selected
 //! drive index and the polled `SmartReport`.  Page drawing is done by free functions
@@ -15,16 +15,16 @@ use crate::theme::Theme;
 use crate::widgets::{show_tooltip_text, small_browse_style_button};
 use crate::DiskoriaApp;
 
-// ── Icon constants (Bootstrap Icons PUA) ─────────────────────────────────────
+// â”€â”€ Icon constants (Bootstrap Icons PUA) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const ICON_FILETYPE_HTML: char = '\u{f3e9}';
 const ICON_HEART_PULSE: char = '\u{f473}';
 const ICON_WARNING: char = '\u{f333}';
 const ICON_QUESTION: char = '\u{f505}';
 
-// ── Public state fields (held on DiskoriaApp) ─────────────────────────────────
+// â”€â”€ Public state fields (held on DiskoriaApp) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-// ── Attr tooltip table ────────────────────────────────────────────────────────
+// â”€â”€ Attr tooltip table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 pub fn attr_description(id: u8) -> &'static str {
     match id {
@@ -33,21 +33,21 @@ pub fn attr_description(id: u8) -> &'static str {
         0x03 => "Time (ms) needed for the disk motor to spin up to full speed.",
         0x04 => "Total spindle start/stop cycles since leaving the factory.",
         0x05 => "Sectors remapped to reserve area due to uncorrectable errors.",
-        0x07 => "Rate of seek errors — how often the head fails to reach the right track.",
+        0x07 => "Rate of seek errors â€” how often the head fails to reach the right track.",
         0x09 => "Total power-on time in hours.",
-        0x0A => "Retries to reach target RPM — elevated count suggests bearing problems.",
+        0x0A => "Retries to reach target RPM â€” elevated count suggests bearing problems.",
         0x0B => "Number of times the drive had to recalibrate its heads.",
         0x0C => "Total power on/off cycles.",
         0xBB => "Sectors that could not be corrected by hardware ECC.",
-        0xBC => "Commands that timed out — often a sign of communication issues.",
-        0xBD => "Writes made at excessive head-fly height — can corrupt sectors.",
+        0xBC => "Commands that timed out â€” often a sign of communication issues.",
+        0xBD => "Writes made at excessive head-fly height â€” can corrupt sectors.",
         0xBE => "Drive temperature measured at a secondary sensor.",
         0xC0 => "Emergency head retractions triggered by loss of power.",
         0xC1 => "Total load/unload cycles (head park operations).",
         0xC2 => "Drive temperature in degrees Celsius.",
         0xC3 => "Number of errors corrected by hardware ECC (info only).",
         0xC4 => "Total count of reallocation events (sectors moved to reserve).",
-        0xC5 => "Sectors waiting to be remapped — read/write may still succeed.",
+        0xC5 => "Sectors waiting to be remapped â€” read/write may still succeed.",
         0xC6 => "Sectors that could not be recovered even with error recovery.",
         0xC7 => "CRC errors on the interface cable between drive and controller. A high count usually means a faulty or loose cable.",
         0xE7 => "Drive's self-reported remaining lifespan as a percentage.",
@@ -58,7 +58,7 @@ pub fn attr_description(id: u8) -> &'static str {
     }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 fn fmt_thousands(n: u64) -> String {
     let s = n.to_string();
@@ -112,7 +112,7 @@ fn status_color(status: AttrStatus, _dark: bool) -> Color32 {
     }
 }
 
-// ── Card frame helper ─────────────────────────────────────────────────────────
+// â”€â”€ Card frame helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 fn card_rect(
     ui: &mut egui::Ui,
@@ -132,7 +132,7 @@ fn card_rect(
     rect
 }
 
-// ── Drive picker ──────────────────────────────────────────────────────────────
+// â”€â”€ Drive picker â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 fn draw_drive_picker(
     app: &mut DiskoriaApp,
@@ -194,7 +194,7 @@ fn draw_drive_picker(
             .style(std::sync::Arc::new(combo_style)),
         |ui| {
             egui::ComboBox::from_id_salt("diskoria_health_drive_combo")
-                .selected_text(options.get(sel).map(|s: &String| s.as_str()).unwrap_or("—"))
+                .selected_text(options.get(sel).map(|s: &String| s.as_str()).unwrap_or("â€”"))
                 .width(combo_inner.width())
                 .truncate()
                 .show_ui(ui, |ui| {
@@ -237,7 +237,7 @@ fn draw_drive_picker(
     ui.advance_cursor_after_rect(row_rect);
 }
 
-// ── Unavailable card ──────────────────────────────────────────────────────────
+// â”€â”€ Unavailable card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 fn draw_unavailable(
     ui: &mut egui::Ui,
@@ -286,7 +286,7 @@ fn draw_unavailable(
     ui.advance_cursor_after_rect(card);
 }
 
-// ── Section label row ─────────────────────────────────────────────────────────
+// â”€â”€ Section label row â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 fn draw_section_label(
     ui: &mut egui::Ui,
@@ -334,7 +334,7 @@ fn draw_section_label(
     ui.advance_cursor_after_rect(row_rect);
 }
 
-// ── Vitals key/value row (absolute-Y version — no cursor side-effects) ────────
+// â”€â”€ Vitals key/value row (absolute-Y version â€” no cursor side-effects) â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// Paint a label/value row at an explicit Y coordinate.
 /// Does NOT advance the cursor; caller controls layout entirely.
@@ -382,7 +382,7 @@ fn paint_vitals_kv(
     }
 }
 
-// ── Wear-level bar (absolute-Y version) ──────────────────────────────────────
+// â”€â”€ Wear-level bar (absolute-Y version) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 fn paint_wear_bar(
     ui: &mut egui::Ui,
@@ -396,7 +396,7 @@ fn paint_wear_bar(
 ) {
     let label_col_w = (card_inner_w * 0.30).max(150.0);
     let bar_h = 8.0_f32;
-    let range_reserve = 50.0_f32;   // "100%" is short — only needs ~40px
+    let range_reserve = 50.0_f32;   // "100%" is short â€” only needs ~40px
     let bar_x = card_x + pad + label_col_w + 8.0;
     let full_bar_w = (card_inner_w - label_col_w - 8.0 - range_reserve).max(20.0);
 
@@ -425,7 +425,7 @@ fn paint_wear_bar(
         ui.painter().rect_filled(fill_rect, 4.0, fill_color);
     }
 
-    // Percentage value — right-anchored so it never overflows
+    // Percentage value â€” right-anchored so it never overflows
     let right_inner = card_x + pad + card_inner_w;
     ui.painter().text(
         Pos2::new(right_inner, row_y + row_h * 0.5),
@@ -434,10 +434,10 @@ fn paint_wear_bar(
         FontId::proportional(12.0),
         fill_color,
     );
-    // No cursor advance — caller owns layout.
+    // No cursor advance â€” caller owns layout.
 }
 
-// ── Temperature bar (absolute-Y version) ─────────────────────────────────────
+// â”€â”€ Temperature bar (absolute-Y version) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 fn paint_temp_bar(
     ui: &mut egui::Ui,
@@ -452,7 +452,7 @@ fn paint_temp_bar(
     // Match the same label column width as paint_vitals_kv
     let label_col_w = (card_inner_w * 0.30).max(150.0);
     let bar_h = 8.0_f32;
-    // Reserve 110px on the right for the "37°C  (0 - 70°C)" range label
+    // Reserve 110px on the right for the "37Â°C  (0 - 70Â°C)" range label
     let range_reserve = 110.0_f32;
     let bar_x = card_x + pad + label_col_w + 8.0;
     // Bar spans from bar_x to the start of the range label area
@@ -472,7 +472,7 @@ fn paint_temp_bar(
     // Background track
     ui.painter().rect_filled(bar_rect, 4.0, t.border);
 
-    // Fill (clamp 0-70 °C)
+    // Fill (clamp 0-70 Â°C)
     let pct = (temp_c as f32 / 70.0).clamp(0.0, 1.0);
     let fill_color = if temp_c < 40 {
         Color32::from_rgb(39, 174, 96)
@@ -489,19 +489,19 @@ fn paint_temp_bar(
         ui.painter().rect_filled(fill_rect, 4.0, fill_color);
     }
 
-    // Range label — right-aligned at the card's inner right edge so it never overflows
+    // Range label â€” right-aligned at the card's inner right edge so it never overflows
     let right_inner = card_x + pad + card_inner_w;
     ui.painter().text(
         Pos2::new(right_inner, row_y + row_h * 0.5),
         Align2::RIGHT_CENTER,
-        format!("{}°C  (0 - 70°C)", temp_c),
+        format!("{}Â°C  (0 - 70Â°C)", temp_c),
         FontId::proportional(12.0),
         t.txt_sec,
     );
-    // No cursor advance — caller owns layout.
+    // No cursor advance â€” caller owns layout.
 }
 
-// ── ATA vitals card ───────────────────────────────────────────────────────────
+// â”€â”€ ATA vitals card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 fn draw_ata_vitals(
     ui: &mut egui::Ui,
@@ -529,7 +529,7 @@ fn draw_ata_vitals(
     let card = card_rect(ui, t, content_x, margin, section_w, card_h);
     let card_x = card.min.x;
 
-    // Use absolute Y positions — no cursor tracking inside the card.
+    // Use absolute Y positions â€” no cursor tracking inside the card.
     let mut row_y = card.min.y + pad;
     let row_step = row_h + gap;
 
@@ -559,7 +559,7 @@ fn draw_ata_vitals(
     ui.advance_cursor_after_rect(card);
 }
 
-// ── NVMe vitals card ──────────────────────────────────────────────────────────
+// â”€â”€ NVMe vitals card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 fn draw_nvme_vitals(
     ui: &mut egui::Ui,
@@ -585,7 +585,7 @@ fn draw_nvme_vitals(
     let card = card_rect(ui, t, content_x, margin, section_w, card_h);
     let card_x = card.min.x;
 
-    // Absolute Y positions — no cursor tracking inside the card.
+    // Absolute Y positions â€” no cursor tracking inside the card.
     let row_step = row_h + gap;
     let mut row_y = card.min.y + pad;
 
@@ -646,7 +646,7 @@ fn draw_nvme_vitals(
     );
     row_y += row_step;
 
-    // Media Errors — colored value
+    // Media Errors â€” colored value
     let media_color = if data.media_errors > 0 { Color32::from_rgb(241, 196, 15) } else { t.txt_pri };
     paint_vitals_kv(
         ui, t, card_x, inner_w, pad, row_y, row_h,
@@ -655,7 +655,7 @@ fn draw_nvme_vitals(
     );
     row_y += row_step;
 
-    // Critical Warning — colored value, routed through paint_vitals_kv for consistent alignment
+    // Critical Warning â€” colored value, routed through paint_vitals_kv for consistent alignment
     let warn_color = if data.critical_warning != 0 { Color32::from_rgb(231, 76, 60) } else { t.txt_pri };
     let warn_text = if data.critical_warning == 0 {
         "None".to_string()
@@ -672,7 +672,7 @@ fn draw_nvme_vitals(
     ui.advance_cursor_after_rect(card);
 }
 
-// ── ATA attribute grid ────────────────────────────────────────────────────────
+// â”€â”€ ATA attribute grid â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 fn draw_attribute_card(
     ui: &mut egui::Ui,
@@ -706,7 +706,7 @@ fn draw_attribute_card(
         t.txt_sec,
     );
 
-    // Name (may be truncated) — right side of same row
+    // Name (may be truncated) â€” right side of same row
     let name_galley = ui.ctx().fonts(|f| {
         f.layout(
             attr.name.to_owned(),
@@ -721,7 +721,7 @@ fn draw_attribute_card(
         t.txt_pri,
     ));
 
-    // C7 cable warning icon — use interact() so cursor doesn't advance
+    // C7 cable warning icon â€” use interact() so cursor doesn't advance
     if attr.id == 0xC7 && attr.raw > 0 {
         let icon_id = Id::new("health_c7_warn_icon");
         let icon_rect = Rect::from_min_size(
@@ -795,7 +795,7 @@ fn draw_attribute_card(
         status_color,
     );
 
-    // Tooltip on hover — use interact() not allocate_rect() so the cursor doesn't advance.
+    // Tooltip on hover â€” use interact() not allocate_rect() so the cursor doesn't advance.
     let tip = attr_description(attr.id);
     if !tip.is_empty() {
         let hover_resp = ui.interact(rect, Id::new(format!("health_attr_tip_{}", attr.id)), Sense::hover());
@@ -822,7 +822,7 @@ fn draw_attributes(
     section_w: f32,
     attrs: &[AtaAttribute],
 ) {
-    // ── Section label row ─────────────────────────────────────────────────────
+    // â”€â”€ Section label row â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     let label_top = ui.cursor().min.y;
     let label_h = 24.0_f32;
     let label_rect = Rect::from_min_size(
@@ -839,7 +839,7 @@ fn draw_attributes(
         t.txt_sec,
     );
 
-    // Legend (?) icon — interact() does not advance the cursor
+    // Legend (?) icon â€” interact() does not advance the cursor
     let attr_lbl_w = ui.ctx().fonts(|f| {
         f.layout_no_wrap(
             "Attributes".to_owned(),
@@ -871,7 +871,7 @@ fn draw_attributes(
     // Advance past the label row exactly once (add_space avoids item_spacing appended by advance_cursor_after_rect)
     ui.add_space(label_h + 6.0);
 
-    // ── 2-column card grid ────────────────────────────────────────────────────
+    // â”€â”€ 2-column card grid â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     let card_h   = 70.0_f32;
     let card_gap =  8.0_f32;
     let col_gap  =  8.0_f32;
@@ -899,309 +899,7 @@ fn draw_attributes(
         }
     }
 }
-
-// ── Self-test progress modal ──────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SelfTestModalAction {
-    Abort,
-    Dismiss,
-}
-
-/// Draws a centered modal overlay showing self-test progress.
-/// Returns `Some(action)` when the user clicks Abort or Dismiss.
-fn draw_self_test_modal(
-    ui: &mut egui::Ui,
-    ctx: &egui::Context,
-    t: &Theme,
-    kind: Option<crate::smart_reader::SelfTestKind>,
-    data: &AtaSmartData,
-) -> Option<SelfTestModalAction> {
-    use crate::smart_reader::SelfTestStatus;
-
-    let kind_label = kind.map(|k| k.label()).unwrap_or("Unknown");
-    let title = format!("{kind_label} Self-Test");
-
-    // Determine progress and status from the most recent poll
-    let (status_text, status_color, progress_pct, is_running, is_done) = match data.self_test.as_ref() {
-        None => ("Waiting for first update…".to_string(), t.txt_sec, 0.0_f32, true, false),
-        Some(r) => match &r.status {
-            SelfTestStatus::InProgress { pct_remaining } => {
-                let done = (100u8.saturating_sub(*pct_remaining)) as f32 / 100.0;
-                (
-                    format!("{}% complete ({pct_remaining}% remaining)", 100 - pct_remaining),
-                    t.txt_sec,
-                    done,
-                    true,
-                    false,
-                )
-            }
-            SelfTestStatus::Passed => (
-                "Test passed successfully.".to_string(),
-                Color32::from_rgb(39, 174, 96),
-                1.0,
-                false,
-                true,
-            ),
-            SelfTestStatus::Failed { reason } => (
-                format!("Test FAILED: {reason}"),
-                Color32::from_rgb(231, 76, 60),
-                1.0,
-                false,
-                true,
-            ),
-            SelfTestStatus::Aborted => (
-                "Test was aborted.".to_string(),
-                t.txt_sec,
-                0.0,
-                false,
-                true,
-            ),
-            SelfTestStatus::NeverRun => (
-                "Waiting for drive to start test…".to_string(),
-                t.txt_sec,
-                0.0,
-                true,
-                false,
-            ),
-            SelfTestStatus::Unknown => (
-                "Waiting for drive to start test…".to_string(),
-                t.txt_sec,
-                0.0,
-                true,
-                false,
-            ),
-        },
-    };
-
-    let bar_color = if is_done && !matches!(data.self_test.as_ref().map(|r| &r.status), Some(SelfTestStatus::Failed { .. })) {
-        Color32::from_rgb(39, 174, 96)
-    } else if is_done {
-        Color32::from_rgb(231, 76, 60)
-    } else {
-        Color32::from_rgb(39, 174, 96) // green while running
-    };
-
-    // Modal card dimensions
-    let modal_w = 380.0_f32;
-    let pad = 20.0_f32;
-    let title_h = 28.0_f32;
-    let status_h = 22.0_f32;
-    let bar_h = 10.0_f32;
-    let gap = 10.0_f32;
-    let btn_h = 32.0_f32;
-    let modal_h = pad + title_h + gap + status_h + gap + bar_h + gap + btn_h + pad;
-
-    // Draw scrim (dimmed overlay behind the modal)
-    let screen = ctx.screen_rect();
-    ui.painter().rect_filled(screen, 0.0, Color32::from_rgba_unmultiplied(0, 0, 0, 140));
-
-    // Center the modal on screen
-    let modal_pos = Pos2::new(
-        (screen.center().x - modal_w * 0.5).round(),
-        (screen.center().y - modal_h * 0.5).round(),
-    );
-    let modal_rect = Rect::from_min_size(modal_pos, Vec2::new(modal_w, modal_h));
-
-    // Draw modal card background via Area so it sits above scroll content
-    let area_resp = egui::Area::new(Id::new("health_self_test_modal"))
-        .order(egui::Order::Foreground)
-        .fixed_pos(modal_pos)
-        .show(ctx, |ui| {
-            ui.set_min_size(Vec2::new(modal_w, modal_h));
-            let painter = ui.painter();
-            painter.rect_filled(modal_rect, 12.0, t.bg_sec);
-            painter.rect_stroke(modal_rect, 12.0, Stroke::new(1.5, t.border), StrokeKind::Middle);
-
-            let mut y = modal_rect.min.y + pad;
-
-            // Title
-            painter.text(
-                Pos2::new(modal_rect.min.x + pad, y + title_h * 0.5),
-                Align2::LEFT_CENTER,
-                &title,
-                FontId::new(16.0, egui::FontFamily::Name("InterBold".into())),
-                t.txt_pri,
-            );
-            y += title_h + gap;
-
-            // Status text
-            painter.text(
-                Pos2::new(modal_rect.min.x + pad, y + status_h * 0.5),
-                Align2::LEFT_CENTER,
-                &status_text,
-                FontId::proportional(13.0),
-                status_color,
-            );
-            y += status_h + gap;
-
-            // Progress bar track
-            let bar_rect = Rect::from_min_size(
-                Pos2::new(modal_rect.min.x + pad, y + (bar_h * 0.5 - bar_h * 0.5).max(0.0)),
-                Vec2::new(modal_w - pad * 2.0, bar_h),
-            );
-            painter.rect_filled(bar_rect, 5.0, t.border);
-            if progress_pct > 0.0 {
-                let fill = Rect::from_min_size(bar_rect.min, Vec2::new(bar_rect.width() * progress_pct, bar_h));
-                painter.rect_filled(fill, 5.0, bar_color);
-            }
-            // Animated indeterminate "pulse" while waiting for first InProgress status
-            if is_running && progress_pct == 0.0 {
-                let t_anim = ctx.input(|i| i.time) as f32;
-                let pulse_x = (t_anim * 0.8).sin() * 0.5 + 0.5;
-                let pw = bar_rect.width() * 0.3;
-                let px = bar_rect.min.x + (bar_rect.width() - pw) * pulse_x;
-                let pulse_rect = Rect::from_min_size(Pos2::new(px, bar_rect.min.y), Vec2::new(pw, bar_h));
-                painter.rect_filled(pulse_rect, 5.0, t.accent);
-                ctx.request_repaint();
-            }
-            y += bar_h + gap;
-
-            // Buttons
-            let btn_w = (modal_w - pad * 2.0 - gap) / 2.0;
-
-            let mut action: Option<SelfTestModalAction> = None;
-
-            // Abort — only while running
-            if is_running {
-                let abort_rect = Rect::from_min_size(Pos2::new(modal_rect.min.x + pad, y), Vec2::new(btn_w, btn_h));
-                let abort_r = ui.interact(abort_rect, Id::new("health_modal_abort"), Sense::click());
-                let abort_bg = if abort_r.hovered() { Color32::from_rgba_unmultiplied(231, 76, 60, 40) } else { t.bg_sec };
-                painter.rect_filled(abort_rect, 4.0, abort_bg);
-                painter.rect_stroke(abort_rect, 4.0, Stroke::new(1.5, Color32::from_rgb(231, 76, 60)), StrokeKind::Middle);
-                painter.text(abort_rect.center(), Align2::CENTER_CENTER, "Abort Test", FontId::proportional(13.0), Color32::from_rgb(231, 76, 60));
-                if abort_r.clicked() {
-                    action = Some(SelfTestModalAction::Abort);
-                }
-            }
-
-            // Dismiss — only when done
-            if is_done {
-                let dismiss_rect = Rect::from_min_size(Pos2::new(modal_rect.min.x + pad, y), Vec2::new(modal_w - pad * 2.0, btn_h));
-                let dismiss_r = ui.interact(dismiss_rect, Id::new("health_modal_dismiss"), Sense::click());
-                let dismiss_bg = if dismiss_r.hovered() { t.hover } else { t.accent };
-                painter.rect_filled(dismiss_rect, 4.0, dismiss_bg);
-                painter.text(dismiss_rect.center(), Align2::CENTER_CENTER, "Dismiss", FontId::proportional(13.0), Color32::WHITE);
-                if dismiss_r.clicked() {
-                    action = Some(SelfTestModalAction::Dismiss);
-                }
-            }
-
-            action
-        });
-
-    area_resp.inner
-}
-
-// ── Self-test card ────────────────────────────────────────────────────────────
-
-/// Returns Some((kind,)) if a test button was clicked.
-fn draw_self_test(
-    ui: &mut egui::Ui,
-    t: &Theme,
-    content_x: f32,
-    margin: f32,
-    section_w: f32,
-    data: &AtaSmartData,
-    test_active: bool,
-    test_error: Option<&str>,
-) -> Option<(crate::smart_reader::SelfTestKind, )> {
-    use crate::smart_reader::{SelfTestKind, SelfTestStatus};
-
-    // Extra row for error text when a test trigger fails
-    let error_row_h = if test_error.is_some() { 22.0_f32 } else { 0.0_f32 };
-    let pad = 16.0_f32;
-    let row_h = 22.0_f32;
-    let btn_h = 32.0_f32;
-    let card_h = pad + row_h + 8.0 + btn_h + error_row_h + pad;
-
-    draw_section_label(ui, t, content_x, margin, section_w, "Self-Test", false);
-    ui.add_space(6.0);
-
-    let card = card_rect(ui, t, content_x, margin, section_w, card_h);
-    let inner_w = section_w - pad * 2.0;
-
-    // Last result row
-    let result_text = match &data.self_test {
-        None => "No self-test log available.".to_string(),
-        Some(r) => {
-            let kind_str = r.kind.label();
-            match &r.status {
-                SelfTestStatus::Passed => format!("{kind_str} test passed."),
-                SelfTestStatus::Failed { reason } => format!("{kind_str} test FAILED: {reason}"),
-                SelfTestStatus::InProgress { pct_remaining } =>
-                    format!("{kind_str} test in progress ({pct_remaining}% remaining)"),
-                SelfTestStatus::Aborted => format!("{kind_str} test was aborted."),
-                SelfTestStatus::NeverRun => "No self-test has been run.".to_string(),
-                SelfTestStatus::Unknown => "Unknown self-test status.".to_string(),
-            }
-        }
-    };
-
-    let result_color = match &data.self_test {
-        Some(r) => match &r.status {
-            SelfTestStatus::Passed => Color32::from_rgb(39, 174, 96),
-            SelfTestStatus::Failed { .. } => Color32::from_rgb(231, 76, 60),
-            _ => t.txt_sec,
-        },
-        None => t.txt_sec,
-    };
-
-    ui.painter().text(
-        Pos2::new(card.min.x + pad, card.min.y + pad + row_h * 0.5),
-        Align2::LEFT_CENTER,
-        &result_text,
-        FontId::proportional(13.0),
-        result_color,
-    );
-
-    // Short + Long test buttons (grayed out while a test is running)
-    let btn_y = card.min.y + pad + row_h + 8.0;
-    let btn_w = (inner_w - 8.0) * 0.5;
-
-    let short_rect = Rect::from_min_size(Pos2::new(card.min.x + pad, btn_y), Vec2::new(btn_w, btn_h));
-    let long_rect = Rect::from_min_size(Pos2::new(card.min.x + pad + btn_w + 8.0, btn_y), Vec2::new(btn_w, btn_h));
-
-    let mut clicked_kind: Option<SelfTestKind> = None;
-
-    for (rect, label, kind) in [
-        (short_rect, "Run Short Test", SelfTestKind::Short),
-        (long_rect, "Run Extended Test", SelfTestKind::Long),
-    ] {
-        let sense = if test_active { Sense::hover() } else { Sense::click() };
-        let r = ui.interact(rect, Id::new(format!("health_test_{}", label)), sense);
-        let label_color = if test_active { t.txt_sec } else { t.txt_pri };
-        let bg = if !test_active && r.hovered() { t.hover } else { t.bg_sec };
-        ui.painter().rect_filled(rect, 4.0, bg);
-        ui.painter().rect_stroke(rect, 4.0, Stroke::new(1.5, t.border), StrokeKind::Middle);
-        ui.painter().text(rect.center(), Align2::CENTER_CENTER, label, FontId::proportional(13.0), label_color);
-        if !test_active && r.clicked() {
-            clicked_kind = Some(kind);
-        }
-    }
-
-    // Inline error text below buttons when trigger failed
-    if let Some(err) = test_error {
-        let err_y = btn_y + btn_h + 6.0;
-        ui.painter().text(
-            Pos2::new(card.min.x + pad, err_y + error_row_h * 0.5),
-            Align2::LEFT_CENTER,
-            err,
-            FontId::proportional(12.0),
-            Color32::from_rgb(231, 76, 60),
-        );
-    }
-
-    let cursor_y = ui.cursor().min.y;
-    let card_bot = card.max.y;
-    if cursor_y < card_bot {
-        ui.add_space(card_bot - cursor_y);
-    }
-
-    clicked_kind.map(|k| (k,))
-}
-
-// ── HTML report ───────────────────────────────────────────────────────────────
+// â”€â”€ HTML report â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 fn build_report_html(drive: &DetectedDrive, report: &SmartReport) -> String {
     let now = chrono::Local::now();
@@ -1210,7 +908,7 @@ fn build_report_html(drive: &DetectedDrive, report: &SmartReport) -> String {
 
     let body = match report {
         SmartReport::Ata(data) => {
-            let temp = data.temperature_c.map(|c| format!("{c}°C")).unwrap_or_else(|| "N/A".to_string());
+            let temp = data.temperature_c.map(|c| format!("{c}Â°C")).unwrap_or_else(|| "N/A".to_string());
             let poh  = data.power_on_hours.map(|h| fmt_thousands(h)).unwrap_or_else(|| "N/A".to_string());
             let pc   = data.power_cycles.map(|c| fmt_thousands(c)).unwrap_or_else(|| "N/A".to_string());
 
@@ -1248,7 +946,7 @@ fn build_report_html(drive: &DetectedDrive, report: &SmartReport) -> String {
             let warn_str = if d.critical_warning == 0 { "None".to_string() } else { format!("0x{:02X}", d.critical_warning) };
             format!(
                 r#"<div class="vitals">
-<p><strong>Temperature</strong><span>{}°C</span></p>
+<p><strong>Temperature</strong><span>{}Â°C</span></p>
 <p><strong>Percentage Used</strong><span>{}%</span></p>
 <p><strong>Available Spare</strong><span>{}% (threshold {}%)</span></p>
 <p><strong>Power-On Hours</strong><span>{}</span></p>
@@ -1278,7 +976,7 @@ fn build_report_html(drive: &DetectedDrive, report: &SmartReport) -> String {
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Health Data Report — {model}</title>
+<title>Health Data Report â€” {model}</title>
 <style>
 *, *::before, *::after {{ box-sizing: border-box; }}
 body {{
@@ -1315,7 +1013,7 @@ p.fail {{ color: #ef5350; }}
 </style>
 </head>
 <body>
-<h1>Health Data Report — {model}</h1>
+<h1>Health Data Report â€” {model}</h1>
 <p class="meta">Generated {ts}</p>
 <table class="info">
 <tr><th>Model</th><td>{model}</td></tr>
@@ -1350,7 +1048,7 @@ pub fn save_smart_report(drive: &DetectedDrive, report: &SmartReport) {
     });
 }
 
-// ── Main page drawing entry point ─────────────────────────────────────────────
+// â”€â”€ Main page drawing entry point â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 impl DiskoriaApp {
     pub fn draw_health_status_page(
@@ -1365,7 +1063,7 @@ impl DiskoriaApp {
     ) {
         let section_w = content_w - margin * 2.0;
 
-        // ── Page title row (title left, Export Log right) ─────────────────────
+        // â”€â”€ Page title row (title left, Export Log right) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         {
             use crate::about::ABOUT_HEADER_ROW_H;
             let row_top = ui.cursor().min.y;
@@ -1383,7 +1081,7 @@ impl DiskoriaApp {
                 t.txt_pri,
             );
 
-            // Export Log button — only enabled when a non-Unavailable report is loaded
+            // Export Log button â€” only enabled when a non-Unavailable report is loaded
             let has_report = self.health_report.as_ref()
                 .map(|r| !matches!(r, SmartReport::Unavailable { .. }))
                 .unwrap_or(false);
@@ -1421,7 +1119,7 @@ impl DiskoriaApp {
             ui.advance_cursor_after_rect(row_rect);
         }
 
-        // ── Subtitle + refresh button ─────────────────────────────────────────
+        // â”€â”€ Subtitle + refresh button â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         ui.horizontal(|ui| {
             let pad = (content_x + margin) - ui.min_rect().left();
             if pad > 0.0 { ui.add_space(pad); }
@@ -1436,7 +1134,7 @@ impl DiskoriaApp {
             ui.push_id("diskoria_health_refresh", |ui| {
                 let refresh = ui.add_enabled(
                     !self.drives_loading,
-                    egui::Button::new(RichText::new("⟳ Refresh").color(t.txt_pri)),
+                    egui::Button::new(RichText::new("âŸ³ Refresh").color(t.txt_pri)),
                 );
                 if refresh.clicked() {
                     self.health_report = None;
@@ -1449,7 +1147,7 @@ impl DiskoriaApp {
             if self.drives_loading {
                 ui.add_space(10.0);
                 ui.spinner();
-                ui.label(RichText::new("Loading drives…").color(t.txt_sec));
+                ui.label(RichText::new("Loading drivesâ€¦").color(t.txt_sec));
             }
         });
         ui.add_space(20.0);
@@ -1477,7 +1175,7 @@ impl DiskoriaApp {
             return;
         }
 
-        // ── Drive picker ──────────────────────────────────────────────────────
+        // â”€â”€ Drive picker â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         draw_drive_picker(self, ui, t, content_x, margin, section_w);
         ui.add_space(16.0);
 
@@ -1487,13 +1185,13 @@ impl DiskoriaApp {
         // Poll incoming result
         self.poll_health_report(ctx);
 
-        // ── Poll spinner ──────────────────────────────────────────────────────
+        // â”€â”€ Poll spinner â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if self.health_poll_running && self.health_report.is_none() {
             ui.horizontal(|ui| {
                 let pad = (content_x + margin) - ui.min_rect().left();
                 if pad > 0.0 { ui.add_space(pad); }
                 ui.spinner();
-                ui.label(RichText::new("Reading drive health…").color(t.txt_sec));
+                ui.label(RichText::new("Reading drive healthâ€¦").color(t.txt_sec));
             });
             ui.add_space(8.0);
             return;
@@ -1504,14 +1202,6 @@ impl DiskoriaApp {
             None => return,
         };
 
-        let sel = self.health_selected_drive.min(self.drives.len().saturating_sub(1));
-        let drive = self.drives[sel].clone();
-
-        // ── Report display ────────────────────────────────────────────────────
-        let test_active = self.health_test_active;
-        let test_error = self.health_test_error.clone();
-        let device_id = drive.device_id.clone();
-
         match &report {
             SmartReport::Ata(data) => {
                 let data = data.clone();
@@ -1521,41 +1211,6 @@ impl DiskoriaApp {
                 if !data.attributes.is_empty() {
                     draw_attributes(ui, t, dark, content_x, margin, section_w, &data.attributes);
                     ui.add_space(16.0);
-                }
-
-                if let Some((kind,)) = draw_self_test(
-                    ui, t, content_x, margin, section_w, &data,
-                    test_active, test_error.as_deref(),
-                ) {
-                    let ok = crate::smart_reader::trigger_self_test(&device_id, kind == crate::smart_reader::SelfTestKind::Long);
-                    if ok {
-                        self.health_test_active = true;
-                        self.health_test_kind = Some(kind);
-                        self.health_test_error = None;
-                        // Force an immediate re-poll so the modal sees InProgress quickly
-                        self.health_last_poll = None;
-                    } else {
-                        self.health_test_error = Some("Failed to start self-test. Try running as Administrator.".to_string());
-                    }
-                }
-                ui.add_space(16.0);
-
-                // Self-test progress modal overlay
-                if self.health_test_active {
-                    let test_kind = self.health_test_kind;
-                    let ata_data = data.clone();
-                    let device_id2 = device_id.clone();
-                    if let Some(dismiss) = draw_self_test_modal(ui, ctx, t, test_kind, &ata_data) {
-                        if dismiss == SelfTestModalAction::Abort {
-                            crate::smart_reader::abort_self_test(&device_id2);
-                            self.health_last_poll = None;
-                        }
-                        if dismiss == SelfTestModalAction::Dismiss {
-                            self.health_test_active = false;
-                            self.health_test_kind = None;
-                            self.health_test_error = None;
-                        }
-                    }
                 }
             }
             SmartReport::Nvme(data) => {
@@ -1572,15 +1227,10 @@ impl DiskoriaApp {
 
     }
 
-    // ── Poll lifecycle ────────────────────────────────────────────────────────
+    // â”€â”€ Poll lifecycle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     fn spawn_health_poll_if_needed(&mut self, ctx: &egui::Context) {
-        // Poll faster while a self-test is running so progress updates promptly.
-        let poll_interval = if self.health_test_active {
-            std::time::Duration::from_secs(3)
-        } else {
-            std::time::Duration::from_secs(5)
-        };
+        let poll_interval = std::time::Duration::from_secs(5);
 
         if self.health_poll_running {
             return;
@@ -1630,38 +1280,20 @@ impl DiskoriaApp {
                 match &report {
                     SmartReport::Ata(d) => log::info!(
                         target: "diskoria",
-                        "health: ATA report received — temp={temp}°C poh={poh}h attrs={n}",
+                        "health: ATA report received â€” temp={temp}Â°C poh={poh}h attrs={n}",
                         temp = d.temperature_c.map(|c| c.to_string()).unwrap_or_else(|| "N/A".into()),
                         poh  = d.power_on_hours.unwrap_or(0),
                         n    = d.attributes.len(),
                     ),
                     SmartReport::Nvme(d) => log::info!(
                         target: "diskoria",
-                        "health: NVMe report received — temp={}°C wear={}% spare={}%",
+                        "health: NVMe report received â€” temp={}Â°C wear={}% spare={}%",
                         d.temperature_c, d.percentage_used, d.available_spare_pct,
                     ),
                     SmartReport::Unavailable { reason } => log::warn!(
                         target: "diskoria",
-                        "health: SMART unavailable — {reason}",
+                        "health: SMART unavailable â€” {reason}",
                     ),
-                }
-                // If a self-test was active, check whether it has finished so
-                // the modal can switch to its "result" view automatically.
-                if self.health_test_active {
-                    use crate::smart_reader::{SmartReport, SelfTestStatus};
-                    if let SmartReport::Ata(ref d) = report {
-                        let finished = matches!(
-                            d.self_test.as_ref().map(|r| &r.status),
-                            Some(SelfTestStatus::Passed)
-                            | Some(SelfTestStatus::Failed { .. })
-                            | Some(SelfTestStatus::Aborted)
-                        );
-                        if finished {
-                            log::info!(target: "diskoria", "health: self-test finished");
-                        }
-                        // Keep health_test_active = true so the modal stays open
-                        // showing the result; the user dismisses it manually.
-                    }
                 }
                 self.health_report = Some(report);
                 self.health_poll_running = false;
