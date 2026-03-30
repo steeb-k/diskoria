@@ -333,47 +333,43 @@ fn draw_section_label(
     ui.advance_cursor_after_rect(row_rect);
 }
 
-// ── Vitals key/value row ──────────────────────────────────────────────────────
+// ── Vitals key/value row (absolute-Y version — no cursor side-effects) ────────
 
-fn draw_vitals_kv(
+/// Paint a label/value row at an explicit Y coordinate.
+/// Does NOT advance the cursor; caller controls layout entirely.
+fn paint_vitals_kv(
     ui: &mut egui::Ui,
     t: &Theme,
     card_x: f32,
     card_inner_w: f32,
     pad: f32,
+    row_y: f32,
+    row_h: f32,
     label: &str,
     value: &str,
+    value_color: Color32,
     tooltip: Option<&str>,
 ) {
-    let row_h = 22.0_f32;
     let label_col_w = card_inner_w * 0.45;
-    let _value_col_w = card_inner_w - label_col_w - 8.0;
-    let row_top = ui.cursor().min.y;
-    let row_rect = Rect::from_min_size(
-        Pos2::new(card_x + pad, row_top),
-        Vec2::new(card_inner_w, row_h),
-    );
+    let cy = row_y + row_h * 0.5;
 
-    // Label (right-aligned in label column)
     ui.painter().text(
-        Pos2::new(card_x + pad + label_col_w, row_rect.center().y),
+        Pos2::new(card_x + pad + label_col_w, cy),
         Align2::RIGHT_CENTER,
         label,
         FontId::proportional(13.0),
         t.txt_sec,
     );
-
-    // Value
     ui.painter().text(
-        Pos2::new(card_x + pad + label_col_w + 8.0, row_rect.center().y),
+        Pos2::new(card_x + pad + label_col_w + 8.0, cy),
         Align2::LEFT_CENTER,
         value,
         FontId::proportional(13.0),
-        t.txt_pri,
+        value_color,
     );
 
-    // Hover tooltip — use interact() so it never double-advances the cursor
     if let Some(tip) = tooltip {
+        let row_rect = Rect::from_min_size(Pos2::new(card_x + pad, row_y), Vec2::new(card_inner_w, row_h));
         let resp = ui.interact(row_rect, Id::new(format!("health_tip_i_{label}")), Sense::hover());
         if resp.hovered() {
             if let Some(pos) = ui.ctx().pointer_latest_pos() {
@@ -381,28 +377,26 @@ fn draw_vitals_kv(
             }
         }
     }
-    ui.advance_cursor_after_rect(row_rect);
 }
 
-// ── Temperature bar ───────────────────────────────────────────────────────────
+// ── Temperature bar (absolute-Y version) ─────────────────────────────────────
 
-fn draw_temp_bar(
+fn paint_temp_bar(
     ui: &mut egui::Ui,
     t: &Theme,
     card_x: f32,
     card_inner_w: f32,
     pad: f32,
+    row_y: f32,
+    row_h: f32,
     temp_c: i32,
 ) {
     let label_col_w = card_inner_w * 0.45;
     let bar_col_w = card_inner_w - label_col_w - 8.0;
-    let row_top = ui.cursor().min.y;
-    let row_h = 22.0_f32;
     let bar_h = 8.0_f32;
 
-    // Label
     ui.painter().text(
-        Pos2::new(card_x + pad + label_col_w, row_top + row_h * 0.5),
+        Pos2::new(card_x + pad + label_col_w, row_y + row_h * 0.5),
         Align2::RIGHT_CENTER,
         "Temperature",
         FontId::proportional(13.0),
@@ -410,7 +404,7 @@ fn draw_temp_bar(
     );
 
     let bar_x = card_x + pad + label_col_w + 8.0;
-    let bar_y = row_top + (row_h - bar_h) * 0.5;
+    let bar_y = row_y + (row_h - bar_h) * 0.5;
     let full_bar_w = bar_col_w - 60.0;
     let bar_rect = Rect::from_min_size(Pos2::new(bar_x, bar_y), Vec2::new(full_bar_w, bar_h));
 
@@ -436,18 +430,13 @@ fn draw_temp_bar(
 
     // Range label
     ui.painter().text(
-        Pos2::new(bar_x + full_bar_w + 6.0, row_top + row_h * 0.5),
+        Pos2::new(bar_x + full_bar_w + 6.0, row_y + row_h * 0.5),
         Align2::LEFT_CENTER,
         format!("{}°C  (0 - 70°C)", temp_c),
         FontId::proportional(12.0),
         t.txt_sec,
     );
-
-    let row_rect = Rect::from_min_size(
-        Pos2::new(card_x + pad, row_top),
-        Vec2::new(card_inner_w, row_h),
-    );
-    ui.advance_cursor_after_rect(row_rect);
+    // No cursor advance — caller owns layout.
 }
 
 // ── ATA vitals card ───────────────────────────────────────────────────────────
@@ -469,24 +458,25 @@ fn draw_ata_vitals(
         + if data.power_on_hours.is_some() { 1 } else { 0 }
         + if data.power_cycles.is_some() { 1 } else { 0 };
 
-    let card_h = pad + row_count as f32 * (row_h + gap) - gap + pad;
+    // Exact height: top pad + rows + (rows-1) gaps + bottom pad
+    let card_h = pad + row_count as f32 * row_h + (row_count - 1) as f32 * gap + pad;
 
     draw_section_label(ui, t, content_x, margin, section_w, "Vitals", true);
     ui.add_space(6.0);
 
     let card = card_rect(ui, t, content_x, margin, section_w, card_h);
-    // card_rect does not advance the cursor — it stays at card.min.y.
-    // Use add_space(pad) to move into the card's top padding.
     let card_x = card.min.x;
-    ui.add_space(pad);
+
+    // Use absolute Y positions — no cursor tracking inside the card.
+    let mut row_y = card.min.y + pad;
+    let row_step = row_h + gap;
 
     if let Some(tc) = data.temperature_c {
-        draw_temp_bar(ui, t, card_x, inner_w, pad, tc);
-        ui.add_space(gap);
+        paint_temp_bar(ui, t, card_x, inner_w, pad, row_y, row_h, tc);
     } else {
-        draw_vitals_kv(ui, t, card_x, inner_w, pad, "Temperature", "N/A", None);
-        ui.add_space(gap);
+        paint_vitals_kv(ui, t, card_x, inner_w, pad, row_y, row_h, "Temperature", "N/A", t.txt_pri, None);
     }
+    row_y += row_step;
 
     if let Some(poh) = data.power_on_hours {
         let days = poh / 24;
@@ -495,20 +485,16 @@ fn draw_ata_vitals(
         } else {
             format!("{} hours", poh)
         };
-        draw_vitals_kv(ui, t, card_x, inner_w, pad, "Power-On Hours", &label, None);
-        ui.add_space(gap);
+        paint_vitals_kv(ui, t, card_x, inner_w, pad, row_y, row_h, "Power-On Hours", &label, t.txt_pri, None);
+        row_y += row_step;
     }
 
     if let Some(pc) = data.power_cycles {
-        draw_vitals_kv(ui, t, card_x, inner_w, pad, "Power Cycles", &fmt_thousands(pc), None);
+        paint_vitals_kv(ui, t, card_x, inner_w, pad, row_y, row_h, "Power Cycles", &fmt_thousands(pc), t.txt_pri, None);
     }
 
-    // Ensure cursor is past the card bottom
-    let card_bot = card.max.y;
-    let cursor_y = ui.cursor().min.y;
-    if cursor_y < card_bot {
-        ui.add_space(card_bot - cursor_y);
-    }
+    // Single cursor advance past the whole card.
+    ui.advance_cursor_after_rect(card);
 }
 
 // ── NVMe vitals card ──────────────────────────────────────────────────────────
@@ -528,33 +514,40 @@ fn draw_nvme_vitals(
 
     // Rows: temp, % used, spare, POH, power cycles, data written, unsafe shutdowns, media errors, critical warning
     let rows = 9usize;
-    let card_h = pad + rows as f32 * (row_h + gap) - gap + pad;
+    // Exact height: top pad + rows*row_h + (rows-1)*gap + bottom pad
+    let card_h = pad + rows as f32 * row_h + (rows - 1) as f32 * gap + pad;
 
     draw_section_label(ui, t, content_x, margin, section_w, "Vitals", true);
     ui.add_space(6.0);
 
     let card = card_rect(ui, t, content_x, margin, section_w, card_h);
     let card_x = card.min.x;
-    ui.add_space(pad);
+    let label_col_w = inner_w * 0.45;
 
-    draw_temp_bar(ui, t, card_x, inner_w, pad, data.temperature_c as i32);
-    ui.add_space(gap);
+    // Absolute Y positions — no cursor tracking inside the card.
+    let row_step = row_h + gap;
+    let mut row_y = card.min.y + pad;
 
-    draw_vitals_kv(
-        ui, t, card_x, inner_w, pad,
+    paint_temp_bar(ui, t, card_x, inner_w, pad, row_y, row_h, data.temperature_c as i32);
+    row_y += row_step;
+
+    paint_vitals_kv(
+        ui, t, card_x, inner_w, pad, row_y, row_h,
         "Percentage Used",
         &format!("{}%", data.percentage_used),
+        t.txt_pri,
         Some("Controller-estimated drive endurance consumed. 100% does not necessarily mean the drive has failed."),
     );
-    ui.add_space(gap);
+    row_y += row_step;
 
-    draw_vitals_kv(
-        ui, t, card_x, inner_w, pad,
+    paint_vitals_kv(
+        ui, t, card_x, inner_w, pad, row_y, row_h,
         "Available Spare",
         &format!("{}% (threshold {}%)", data.available_spare_pct, data.available_spare_threshold),
+        t.txt_pri,
         Some("Remaining spare NAND blocks the controller can use for remapping bad cells."),
     );
-    ui.add_space(gap);
+    row_y += row_step;
 
     let poh = data.power_on_hours;
     let days = poh / 24;
@@ -563,21 +556,19 @@ fn draw_nvme_vitals(
     } else {
         format!("{} hours", poh)
     };
-    draw_vitals_kv(
-        ui, t, card_x, inner_w, pad,
-        "Power-On Hours",
-        &poh_label,
+    paint_vitals_kv(
+        ui, t, card_x, inner_w, pad, row_y, row_h,
+        "Power-On Hours", &poh_label, t.txt_pri,
         Some("Total time the drive has been powered on since manufacture."),
     );
-    ui.add_space(gap);
+    row_y += row_step;
 
-    draw_vitals_kv(
-        ui, t, card_x, inner_w, pad,
-        "Power Cycles",
-        &fmt_thousands(data.power_cycles),
+    paint_vitals_kv(
+        ui, t, card_x, inner_w, pad, row_y, row_h,
+        "Power Cycles", &fmt_thousands(data.power_cycles), t.txt_pri,
         Some("Number of times the drive has been powered on and off."),
     );
-    ui.add_space(gap);
+    row_y += row_step;
 
     // Data written: NVMe reports in 512 KiB units
     let dw_gib = data.data_units_written as f64 * 512.0 / (1024.0 * 1024.0);
@@ -586,66 +577,48 @@ fn draw_nvme_vitals(
     } else {
         format!("{:.1} GiB", dw_gib)
     };
-    draw_vitals_kv(
-        ui, t, card_x, inner_w, pad,
-        "Data Written",
-        &dw_label,
+    paint_vitals_kv(
+        ui, t, card_x, inner_w, pad, row_y, row_h,
+        "Data Written", &dw_label, t.txt_pri,
         Some("Cumulative host data written in 512 KiB units (NVMe spec)."),
     );
-    ui.add_space(gap);
+    row_y += row_step;
 
-    draw_vitals_kv(
-        ui, t, card_x, inner_w, pad,
-        "Unsafe Shutdowns",
-        &fmt_thousands(data.unsafe_shutdowns),
+    paint_vitals_kv(
+        ui, t, card_x, inner_w, pad, row_y, row_h,
+        "Unsafe Shutdowns", &fmt_thousands(data.unsafe_shutdowns), t.txt_pri,
         Some("Power loss events that did not allow the drive to flush its cache. High counts can accelerate NAND wear."),
     );
-    ui.add_space(gap);
+    row_y += row_step;
 
+    // Media Errors — colored value
     let media_color = if data.media_errors > 0 { Color32::from_rgb(241, 196, 15) } else { t.txt_pri };
-    // Use manual painter for coloured value
-    let label_col_w = inner_w * 0.45;
-    let row_top = ui.cursor().min.y;
-    let row_rect = Rect::from_min_size(Pos2::new(card_x + pad, row_top), Vec2::new(inner_w, row_h));
-    ui.painter().text(
-        Pos2::new(card_x + pad + label_col_w, row_top + row_h * 0.5),
-        Align2::RIGHT_CENTER, "Media Errors",
-        FontId::proportional(13.0), t.txt_sec,
+    paint_vitals_kv(
+        ui, t, card_x, inner_w, pad, row_y, row_h,
+        "Media Errors", &fmt_thousands(data.media_errors), media_color,
+        Some("Errors that occurred directly on the NAND media. Anything above zero warrants attention."),
     );
-    ui.painter().text(
-        Pos2::new(card_x + pad + label_col_w + 8.0, row_top + row_h * 0.5),
-        Align2::LEFT_CENTER,
-        &fmt_thousands(data.media_errors),
-        FontId::proportional(13.0), media_color,
-    );
-    let resp = ui.interact(row_rect, Id::new("health_tip_media_err_i"), Sense::hover());
-    if resp.hovered() {
-        if let Some(pos) = ui.ctx().pointer_latest_pos() {
-            show_tooltip_text(ui.ctx(), Id::new("health_tip_media_err_tt"), pos, t,
-                "Errors that occurred directly on the NAND media. Anything above zero warrants attention.");
-        }
-    }
-    ui.advance_cursor_after_rect(row_rect);
-    ui.add_space(gap);
+    row_y += row_step;
 
+    // Critical Warning — colored value
     let warn_color = if data.critical_warning != 0 { Color32::from_rgb(231, 76, 60) } else { t.txt_pri };
     let warn_text = if data.critical_warning == 0 {
         "None".to_string()
     } else {
-        format!("0x{:02X}", data.critical_warning)
+        format!("{:02X}", data.critical_warning)
     };
-    let row_top = ui.cursor().min.y;
-    let row_rect = Rect::from_min_size(Pos2::new(card_x + pad, row_top), Vec2::new(inner_w, row_h));
+    let cy = row_y + row_h * 0.5;
     ui.painter().text(
-        Pos2::new(card_x + pad + label_col_w, row_top + row_h * 0.5),
+        Pos2::new(card_x + pad + label_col_w, cy),
         Align2::RIGHT_CENTER, "Critical Warning",
         FontId::proportional(13.0), t.txt_sec,
     );
     ui.painter().text(
-        Pos2::new(card_x + pad + label_col_w + 8.0, row_top + row_h * 0.5),
+        Pos2::new(card_x + pad + label_col_w + 8.0, cy),
         Align2::LEFT_CENTER, &warn_text,
         FontId::proportional(13.0), warn_color,
     );
+    let row_rect = Rect::from_min_size(Pos2::new(card_x + pad, row_y), Vec2::new(inner_w, row_h));
     let resp = ui.interact(row_rect, Id::new("health_tip_crit_warn_i"), Sense::hover());
     if resp.hovered() {
         if let Some(pos) = ui.ctx().pointer_latest_pos() {
@@ -653,13 +626,9 @@ fn draw_nvme_vitals(
                 "Bit field set by the controller for serious health events (spare below threshold, temperature excursion, read-only mode, etc.).");
         }
     }
-    ui.advance_cursor_after_rect(row_rect);
 
-    let cursor_y = ui.cursor().min.y;
-    let card_bot = card.max.y;
-    if cursor_y < card_bot {
-        ui.add_space(card_bot - cursor_y);
-    }
+    // Single cursor advance past the whole card.
+    ui.advance_cursor_after_rect(card);
 }
 
 // ── ATA attribute grid ────────────────────────────────────────────────────────
@@ -687,7 +656,7 @@ fn draw_attribute_card(
     ui.painter().rect_filled(bar_rect, egui::CornerRadius { nw: 8, sw: 8, ne: 0, se: 0 }, status_color);
 
     // Attribute ID + name
-    let id_str = format!("0x{:02X}", attr.id);
+    let id_str = format!("{:02X}", attr.id);
     ui.painter().text(
         Pos2::new(inner_x, rect.min.y + 10.0),
         Align2::LEFT_TOP,
@@ -858,9 +827,8 @@ fn draw_attributes(
         }
     }
 
-    // Advance past the label row exactly once
-    ui.advance_cursor_after_rect(label_rect);
-    ui.add_space(6.0);
+    // Advance past the label row exactly once (add_space avoids item_spacing appended by advance_cursor_after_rect)
+    ui.add_space(label_h + 6.0);
 
     // ── 2-column card grid ────────────────────────────────────────────────────
     let card_h   = 70.0_f32;
@@ -879,12 +847,9 @@ fn draw_attributes(
             draw_attribute_card(ui, t, dark, card, attr);
         }
 
-        // Advance the cursor past this full row
-        let row_rect = Rect::from_min_size(
-            Pos2::new(content_x + margin, row_y),
-            Vec2::new(section_w, card_h),
-        );
-        ui.advance_cursor_after_rect(row_rect);
+        // Advance the cursor past this full row using add_space
+        // (avoids item_spacing being appended by advance_cursor_after_rect)
+        ui.add_space(card_h);
 
         // Gap between rows (skip after the last row)
         let total_rows = (attrs.len() + 1) / 2;
