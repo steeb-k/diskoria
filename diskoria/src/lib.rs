@@ -18,6 +18,7 @@ pub mod speed_test;
 pub mod destructive_test;
 mod shortcuts;
 mod smart_health;
+pub mod smart_reader;
 mod theme;
 mod update;
 mod widgets;
