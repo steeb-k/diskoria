@@ -528,7 +528,6 @@ fn draw_nvme_vitals(
 
     let card = card_rect(ui, t, content_x, margin, section_w, card_h);
     let card_x = card.min.x;
-    let label_col_w = inner_w * 0.45;
 
     // Absolute Y positions — no cursor tracking inside the card.
     let row_step = row_h + gap;
@@ -539,7 +538,7 @@ fn draw_nvme_vitals(
 
     paint_vitals_kv(
         ui, t, card_x, inner_w, pad, row_y, row_h,
-        "Percentage Used",
+        "Wear Level",
         &format!("{}%", data.percentage_used),
         t.txt_pri,
         Some("Controller-estimated drive endurance consumed. 100% does not necessarily mean the drive has failed."),
@@ -606,32 +605,18 @@ fn draw_nvme_vitals(
     );
     row_y += row_step;
 
-    // Critical Warning — colored value
+    // Critical Warning — colored value, routed through paint_vitals_kv for consistent alignment
     let warn_color = if data.critical_warning != 0 { Color32::from_rgb(231, 76, 60) } else { t.txt_pri };
     let warn_text = if data.critical_warning == 0 {
         "None".to_string()
     } else {
         format!("{:02X}", data.critical_warning)
     };
-    let cy = row_y + row_h * 0.5;
-    ui.painter().text(
-        Pos2::new(card_x + pad + label_col_w, cy),
-        Align2::RIGHT_CENTER, "Critical Warning",
-        FontId::proportional(13.0), t.txt_sec,
+    paint_vitals_kv(
+        ui, t, card_x, inner_w, pad, row_y, row_h,
+        "Critical Warning", &warn_text, warn_color,
+        Some("Bit field set by the controller for serious health events (spare below threshold, temperature excursion, read-only mode, etc.)."),
     );
-    ui.painter().text(
-        Pos2::new(card_x + pad + label_col_w + 8.0, cy),
-        Align2::LEFT_CENTER, &warn_text,
-        FontId::proportional(13.0), warn_color,
-    );
-    let row_rect = Rect::from_min_size(Pos2::new(card_x + pad, row_y), Vec2::new(inner_w, row_h));
-    let resp = ui.interact(row_rect, Id::new("health_tip_crit_warn_i"), Sense::hover());
-    if resp.hovered() {
-        if let Some(pos) = ui.ctx().pointer_latest_pos() {
-            show_tooltip_text(ui.ctx(), Id::new("health_tip_crit_warn_tt"), pos, t,
-                "Bit field set by the controller for serious health events (spare below threshold, temperature excursion, read-only mode, etc.).");
-        }
-    }
 
     // Single cursor advance past the whole card.
     ui.advance_cursor_after_rect(card);
