@@ -350,7 +350,9 @@ fn paint_vitals_kv(
     value_color: Color32,
     tooltip: Option<&str>,
 ) {
-    let label_col_w = card_inner_w * 0.45;
+    // Fixed label column: wide enough for the longest label ("Unsafe Shutdowns")
+    // but no wider so the value column has plenty of room.
+    let label_col_w = (card_inner_w * 0.30).max(150.0);
     let cy = row_y + row_h * 0.5;
 
     ui.painter().text(
@@ -391,9 +393,14 @@ fn paint_temp_bar(
     row_h: f32,
     temp_c: i32,
 ) {
-    let label_col_w = card_inner_w * 0.45;
-    let bar_col_w = card_inner_w - label_col_w - 8.0;
+    // Match the same label column width as paint_vitals_kv
+    let label_col_w = (card_inner_w * 0.30).max(150.0);
     let bar_h = 8.0_f32;
+    // Reserve 110px on the right for the "37°C  (0 - 70°C)" range label
+    let range_reserve = 110.0_f32;
+    let bar_x = card_x + pad + label_col_w + 8.0;
+    // Bar spans from bar_x to the start of the range label area
+    let full_bar_w = (card_inner_w - label_col_w - 8.0 - range_reserve).max(20.0);
 
     ui.painter().text(
         Pos2::new(card_x + pad + label_col_w, row_y + row_h * 0.5),
@@ -403,9 +410,7 @@ fn paint_temp_bar(
         t.txt_sec,
     );
 
-    let bar_x = card_x + pad + label_col_w + 8.0;
     let bar_y = row_y + (row_h - bar_h) * 0.5;
-    let full_bar_w = bar_col_w - 60.0;
     let bar_rect = Rect::from_min_size(Pos2::new(bar_x, bar_y), Vec2::new(full_bar_w, bar_h));
 
     // Background track
@@ -428,10 +433,11 @@ fn paint_temp_bar(
         ui.painter().rect_filled(fill_rect, 4.0, fill_color);
     }
 
-    // Range label
+    // Range label — right-aligned at the card's inner right edge so it never overflows
+    let right_inner = card_x + pad + card_inner_w;
     ui.painter().text(
-        Pos2::new(bar_x + full_bar_w + 6.0, row_y + row_h * 0.5),
-        Align2::LEFT_CENTER,
+        Pos2::new(right_inner, row_y + row_h * 0.5),
+        Align2::RIGHT_CENTER,
         format!("{}°C  (0 - 70°C)", temp_c),
         FontId::proportional(12.0),
         t.txt_sec,
