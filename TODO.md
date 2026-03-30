@@ -4,18 +4,25 @@ Informal backlog. Priorities and designs can change.
 
 ---
 
-## Destructive test (sector read + write)
+## Enhanced SMART status / monitoring
 
-**Idea:** Add a test mode that exercises sectors with **both reads and writes** (unlike the current surface test, which is read-only). This would catch a wider class of media/controller issues at the cost of **destroying all data** on the target device.
+Wishlist for clearer HDD/SSD health visibility beyond a simple pass/fail:
 
-**UX / safety (high level — not a spec):**
+- **Readable attribute table** — Show standard SMART IDs with names, raw vs normalized values, and which attributes are “critical” for that device class (reallocated sectors, pending sectors, uncorrectable errors, etc.).
+- **NVMe + ATA in one story** — Present health from both paths (SMART for SATA/ATA, log pages / ID namespace for NVMe) with labels that match what users see in vendor tools.
+- **Temperature and wear cues** — Surface drive temperature, power-on hours, and SSD wear / lifetime indicators where the drive exposes them.
+- **Self-test status** — Show last short/long SMART self-test result and optionally queue or remind about running periodic checks.
+- **Trend or history (lightweight)** — Optional logging of key counters over time so gradual issues (slow climb in reallocated sectors) are easier to notice than a single snapshot.
 
-- Treat this as a **separate flow** from the normal Sector Test, not a hidden toggle.
-- Before the user can start, show a **blocker / gate page** (or equivalent modal-first step) that states clearly that **any drive selected for destructive testing will be wiped** (full-disk overwrite semantics — exact scope TBD when implemented).
-- Require **explicit confirmation** (e.g. typed acknowledgement, checkbox + Continue, or both) so this cannot be started accidentally.
-- Consider: admin elevation, physical disk vs partition targeting, and alignment with how the read-only surface test selects devices — details deferred.
+---
 
-**Implementation:** Not planned here; capture requirements and UI copy when picking up the work.
+## Better reports
+
+Exportable, timestamped summaries of test runs so results can be shared or filed (IT documentation, RMA, resale checks):
+
+- **Structured export** — HTML, PDF, and/or CSV with disk identity, test type, parameters, duration, and outcome counts (good / bad / slow sectors, speed-test numbers as applicable).
+- **Heatmap in the report** — Embed or attach the sector-map visualization for the run, not only numeric totals.
+- **Machine context (optional)** — OS build, host name, or other metadata users expect on a “machine report” (keep privacy in mind; make fields opt-in if added).
 
 ---
 
@@ -38,6 +45,19 @@ Informal backlog. Priorities and designs can change.
 - **Comparability / targets:** Benchmark Diskoria vs one or two external tools on the **same** disk; record throughput (MB/s) or wall time for a fixed range so future changes don’t regress without notice.
 
 **Goal:** Match or approach “good enough” industry-adjacent throughput on NVMe/SATA/USB where the hardware allows, without sacrificing correctness of bad/slow sector reporting.
+
+---
+
+## Possible Pro Features
+
+_Ideas that could justify a paid tier without hiding safety-critical diagnostics from the free app._
+
+- **CLI / automation** — Headless or scripted runs (sector scan, speed test, etc.), non-zero exit codes on failure thresholds, write report to a path. Targets labs and sysadmins who need unattended workflows.
+- **History and compare** — Persist SMART (and optionally scan outcome) snapshots over time; show trends and “since last run” deltas. Free stays at a current snapshot; Pro adds the longitudinal view.
+- **Professional / branded reporting** — Customizable or branded PDF/HTML (logo, cover fields) aimed at MSPs and resale documentation; can build on **Better reports** above.
+- **Alerting** — Notify when SMART crosses user-defined thresholds (e.g. tray, email, webhook). Free shows status; Pro could own “tell me when it breaks.”
+- **Batch / fleet workflow** — Queue multiple physical disks or save/load test profiles (thresholds, which tests) for repeat use.
+- **Support / updates** — Priority support and/or a guaranteed update channel, if you want a business tier without splitting features.
 
 ---
 

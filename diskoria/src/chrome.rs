@@ -290,10 +290,17 @@ pub fn install_win32_resize(hwnd: isize) {
     }
 }
 
-pub fn draw_titlebar(ctx: &egui::Context, t: &Theme) {
+pub fn draw_titlebar(ctx: &egui::Context, t: &Theme, hwnd: isize) {
+    #[cfg(windows)]
+    let maximized = {
+        use windows_sys::Win32::UI::WindowsAndMessaging::IsZoomed;
+        unsafe { IsZoomed(hwnd as windows_sys::Win32::Foundation::HWND) != 0 }
+    };
+    #[cfg(not(windows))]
     let maximized = ctx
         .input(|i| i.viewport().maximized)
         .unwrap_or(false);
+    let _ = hwnd;
 
     let screen = ctx.screen_rect();
     let controls_w = 3.0 * BTN_W;

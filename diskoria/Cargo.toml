@@ -1,8 +1,8 @@
 [package]
 name = "diskoria"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
-description = "Diskoria Ã¢â‚¬â€œ Windows storage scanning and benchmarking (egui)"
+description = "Diskoria ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“ Windows storage scanning and benchmarking (egui)"
 
 [dependencies]
 chrono = "0.4"
@@ -16,6 +16,7 @@ png = "0.17"
 plotters = { version = "0.3", default-features = false, features = ["bitmap_backend", "line_series", "full_palette", "ttf"] }
 plotters-bitmap = "0.3"
 rfd = "0.15"
+pollster = "0.3"
 semver = "1"
 serde = { version = "1", features = ["derive"] }
 softbuffer = { version = "0.4", default-features = false }

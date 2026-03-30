@@ -127,6 +127,9 @@ pub struct DiskoriaApp {
     /// Current resolved dark state — updated at start of each `draw()` call.
     /// Exposed so the softbuffer renderer can fill the background the right colour.
     pub dark: bool,
+    /// Win32 HWND — used to query `IsZoomed` for reliable maximized state.
+    #[cfg(windows)]
+    hwnd: isize,
     theme_pref: ThemePref,
     accent_source: AccentSourcePref,
     accent_palette_idx: usize,
@@ -169,9 +172,6 @@ pub struct DiskoriaApp {
     surface_test_started: Option<Instant>,
     surface_elapsed_label: String,
     surface_remaining_label: String,
-    surface_show_result_overlay: bool,
-    surface_test_passed: bool,
-    surface_test_warnings: bool,
     surface_last_error: Option<String>,
     surface_drive_removed_msg: Option<String>,
     /// Performance chart: averaged (position_gb, speed_mbps) points for display.
@@ -248,9 +248,6 @@ pub struct DiskoriaApp {
     destructive_test_started: Option<Instant>,
     destructive_elapsed_label: String,
     destructive_remaining_label: String,
-    destructive_show_result_overlay: bool,
-    destructive_test_passed: bool,
-    destructive_test_warnings: bool,
     destructive_last_error: Option<String>,
     destructive_drive_removed_msg: Option<String>,
     /// Performance chart: averaged (position_gb, speed_mbps) points for display.
@@ -363,6 +360,8 @@ impl DiskoriaApp {
 
         Self {
             dark,
+            #[cfg(windows)]
+            hwnd,
             theme_pref,
             accent_source,
             accent_palette_idx,
@@ -401,9 +400,6 @@ impl DiskoriaApp {
             surface_test_started: None,
             surface_elapsed_label: "00:00:00".to_string(),
             surface_remaining_label: "--:--:--".to_string(),
-            surface_show_result_overlay: false,
-            surface_test_passed: false,
-            surface_test_warnings: false,
             surface_last_error: None,
             surface_drive_removed_msg: None,
             surface_chart_points: Vec::new(),
@@ -460,9 +456,6 @@ impl DiskoriaApp {
             destructive_test_started: None,
             destructive_elapsed_label: "00:00:00".to_string(),
             destructive_remaining_label: "--:--:--".to_string(),
-            destructive_show_result_overlay: false,
-            destructive_test_passed: false,
-            destructive_test_warnings: false,
             destructive_last_error: None,
             destructive_drive_removed_msg: None,
             destructive_chart_points: Vec::new(),
@@ -1806,7 +1799,6 @@ impl DiskoriaApp {
         self.surface_slow_sectors = 0;
         self.surface_elapsed_label = "00:00:00".to_string();
         self.surface_remaining_label = "--:--:--".to_string();
-        self.surface_show_result_overlay = false;
         self.surface_last_error = None;
         self.surface_chart_points.clear();
         self.surface_chart_raw_points.clear();
@@ -1887,7 +1879,6 @@ impl DiskoriaApp {
         self.destructive_slow_sectors = 0;
         self.destructive_elapsed_label = "00:00:00".to_string();
         self.destructive_remaining_label = "--:--:--".to_string();
-        self.destructive_show_result_overlay = false;
         self.destructive_last_error = None;
         self.destructive_chart_points.clear();
         self.destructive_chart_raw_points.clear();
@@ -2062,10 +2053,6 @@ impl DiskoriaApp {
         );
         if self.destructive_progress_pct >= 99.9 {
             self.destructive_progress_pct = 100.0;
-            self.destructive_test_passed = self.destructive_bad_sectors == 0;
-            self.destructive_test_warnings =
-                self.destructive_slow_sectors > 0 && self.destructive_bad_sectors == 0;
-            self.destructive_show_result_overlay = true;
         }
     }
 
@@ -2354,10 +2341,6 @@ impl DiskoriaApp {
         );
         if self.surface_progress_pct >= 99.9 {
             self.surface_progress_pct = 100.0;
-            self.surface_test_passed = self.surface_bad_sectors == 0;
-            self.surface_test_warnings =
-                self.surface_slow_sectors > 0 && self.surface_bad_sectors == 0;
-            self.surface_show_result_overlay = true;
         }
     }
 
@@ -2752,7 +2735,6 @@ impl DiskoriaApp {
                     );
                 }
 
-                self.draw_sector_result_overlay(ctx, &t);
             });
     }
 
@@ -3342,36 +3324,6 @@ impl DiskoriaApp {
                 });
         });
         ui.add_space(12.0);
-    }
-
-    fn draw_destructive_result_overlay(&self, ctx: &egui::Context) {
-        if !self.destructive_show_result_overlay {
-            return;
-        }
-        let screen = ctx.screen_rect();
-        let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("diskoria_destructive_overlay")));
-        painter.rect_filled(screen, 0.0, Color32::from_rgba_unmultiplied(0, 0, 0, 220));
-        let (text, col) = if self.destructive_test_passed && !self.destructive_test_warnings {
-            ("PASS", Color32::from_rgb(76, 175, 80))
-        } else if self.destructive_test_warnings {
-            ("WARN", Color32::from_rgb(255, 193, 7))
-        } else {
-            ("FAIL", Color32::from_rgb(244, 67, 54))
-        };
-        painter.text(
-            screen.center() - Vec2::new(0.0, 24.0),
-            Align2::CENTER_CENTER,
-            text,
-            FontId::new(96.0, FontFamily::Proportional),
-            col,
-        );
-        painter.text(
-            screen.center() + Vec2::new(0.0, 72.0),
-            Align2::CENTER_CENTER,
-            "Click anywhere to dismiss",
-            FontId::proportional(14.0),
-            Color32::from_rgb(136, 136, 136),
-        );
     }
 
     /// Sector Test page — read-only sector scan UI.
@@ -3994,19 +3946,23 @@ impl DiskoriaApp {
 
             if btn_resp.clicked() {
                 let filename = format!("{}.png", drive_filename_stem);
-                if let Some(path) = rfd::FileDialog::new()
-                    .set_title("Save Performance Chart")
-                    .set_file_name(&filename)
-                    .add_filter("PNG Image", &["png"])
-                    .save_file()
-                {
-                    let test_type = if is_surface { "Read-only sector test" } else { "Read and write sector test" };
-                    let now = chrono::Local::now();
-                    let test_label = format!("{} - {}", now.format("%m/%d/%Y"), test_type);
-                    if let Err(e) = export_performance_chart_png(&path, &drive_label, &test_label, &raw_points_clone, &chart_points_clone, max_speed, total_gb) {
-                        log::warn!("Performance chart export failed: {}", e);
+                let test_type = if is_surface { "Read-only sector test" } else { "Read and write sector test" };
+                let now = chrono::Local::now();
+                let test_label = format!("{} - {}", now.format("%m/%d/%Y"), test_type);
+                std::thread::spawn(move || {
+                    let handle = pollster::block_on(
+                        rfd::AsyncFileDialog::new()
+                            .set_title("Save Performance Chart")
+                            .set_file_name(&filename)
+                            .add_filter("PNG Image", &["png"])
+                            .save_file(),
+                    );
+                    if let Some(h) = handle {
+                        if let Err(e) = export_performance_chart_png(h.path(), &drive_label, &test_label, &raw_points_clone, &chart_points_clone, max_speed, total_gb) {
+                            log::warn!("Performance chart export failed: {}", e);
+                        }
                     }
-                }
+                });
             }
         }
     }
@@ -4096,36 +4052,6 @@ impl DiskoriaApp {
                 });
         });
         ui.add_space(12.0);
-    }
-
-    fn draw_sector_result_overlay(&self, ctx: &egui::Context, _t: &Theme) {
-        if !self.surface_show_result_overlay {
-            return;
-        }
-        let screen = ctx.screen_rect();
-        let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("diskoria_sector_overlay")));
-        painter.rect_filled(screen, 0.0, Color32::from_rgba_unmultiplied(0, 0, 0, 220));
-        let (text, col) = if self.surface_test_passed && !self.surface_test_warnings {
-            ("PASS", Color32::from_rgb(76, 175, 80))
-        } else if self.surface_test_warnings {
-            ("WARN", Color32::from_rgb(255, 193, 7))
-        } else {
-            ("FAIL", Color32::from_rgb(244, 67, 54))
-        };
-        painter.text(
-            screen.center() - Vec2::new(0.0, 24.0),
-            Align2::CENTER_CENTER,
-            text,
-            FontId::new(96.0, FontFamily::Proportional),
-            col,
-        );
-        painter.text(
-            screen.center() + Vec2::new(0.0, 72.0),
-            Align2::CENTER_CENTER,
-            "Click anywhere to dismiss",
-            FontId::proportional(14.0),
-            Color32::from_rgb(136, 136, 136),
-        );
     }
 
     /// Theme + Accent cards (rust-egui-winui-example `draw_settings_theme`).
@@ -5390,12 +5316,6 @@ impl DiskoriaApp {
         if self.any_test_running() {
             ctx.request_repaint();
         }
-        if self.surface_show_result_overlay && ctx.input(|i| i.pointer.primary_clicked()) {
-            self.surface_show_result_overlay = false;
-        }
-        if self.destructive_show_result_overlay && ctx.input(|i| i.pointer.primary_clicked()) {
-            self.destructive_show_result_overlay = false;
-        }
         self.alt_pressed = alt_pressed(ctx);
         #[cfg(windows)]
         let update_blocks_shortcuts = self.show_update_download_confirm
@@ -5476,7 +5396,10 @@ impl DiskoriaApp {
 
         let t = Theme::new(dark, self.accent_color);
         // Same paint order as copynaut: titlebar → sidebar → content (content last in default layer).
-        draw_titlebar(ctx, &t);
+        #[cfg(windows)]
+        draw_titlebar(ctx, &t, self.hwnd);
+        #[cfg(not(windows))]
+        draw_titlebar(ctx, &t, 0);
         self.draw_sidebar(ctx, dark);
         self.draw_central(ctx, dark);
         self.apply_sector_page_focus_bindings(ctx);
@@ -5491,7 +5414,6 @@ impl DiskoriaApp {
         if self.show_destructive_stop_confirm {
             self.draw_destructive_stop_confirm(ctx, dark);
         }
-        self.draw_destructive_result_overlay(ctx);
         #[cfg(windows)]
         {
             if self.show_update_download_confirm {

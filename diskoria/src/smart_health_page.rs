@@ -1,4 +1,4 @@
-//! Health Status page â€” raw SMART / NVMe diagnostics for any drive the user selects.
+//! Health Status page — raw SMART / NVMe diagnostics for any drive the user selects.
 //!
 //! This module owns the per-page state fields on `DiskoriaApp` that carry the selected
 //! drive index and the polled `SmartReport`.  Page drawing is done by free functions
@@ -33,21 +33,21 @@ pub fn attr_description(id: u8) -> &'static str {
         0x03 => "Time (ms) needed for the disk motor to spin up to full speed.",
         0x04 => "Total spindle start/stop cycles since leaving the factory.",
         0x05 => "Sectors remapped to reserve area due to uncorrectable errors.",
-        0x07 => "Rate of seek errors â€” how often the head fails to reach the right track.",
+        0x07 => "Rate of seek errors — how often the head fails to reach the right track.",
         0x09 => "Total power-on time in hours.",
-        0x0A => "Retries to reach target RPM â€” elevated count suggests bearing problems.",
+        0x0A => "Retries to reach target RPM — elevated count suggests bearing problems.",
         0x0B => "Number of times the drive had to recalibrate its heads.",
         0x0C => "Total power on/off cycles.",
         0xBB => "Sectors that could not be corrected by hardware ECC.",
-        0xBC => "Commands that timed out â€” often a sign of communication issues.",
-        0xBD => "Writes made at excessive head-fly height â€” can corrupt sectors.",
+        0xBC => "Commands that timed out — often a sign of communication issues.",
+        0xBD => "Writes made at excessive head-fly height — can corrupt sectors.",
         0xBE => "Drive temperature measured at a secondary sensor.",
         0xC0 => "Emergency head retractions triggered by loss of power.",
         0xC1 => "Total load/unload cycles (head park operations).",
         0xC2 => "Drive temperature in degrees Celsius.",
         0xC3 => "Number of errors corrected by hardware ECC (info only).",
         0xC4 => "Total count of reallocation events (sectors moved to reserve).",
-        0xC5 => "Sectors waiting to be remapped â€” read/write may still succeed.",
+        0xC5 => "Sectors waiting to be remapped — read/write may still succeed.",
         0xC6 => "Sectors that could not be recovered even with error recovery.",
         0xC7 => "CRC errors on the interface cable between drive and controller. A high count usually means a faulty or loose cable.",
         0xE7 => "Drive's self-reported remaining lifespan as a percentage.",
@@ -194,7 +194,7 @@ fn draw_drive_picker(
             .style(std::sync::Arc::new(combo_style)),
         |ui| {
             egui::ComboBox::from_id_salt("diskoria_health_drive_combo")
-                .selected_text(options.get(sel).map(|s: &String| s.as_str()).unwrap_or("â€”"))
+                .selected_text(options.get(sel).map(|s: &String| s.as_str()).unwrap_or("—"))
                 .width(combo_inner.width())
                 .truncate()
                 .show_ui(ui, |ui| {
@@ -334,7 +334,7 @@ fn draw_section_label(
     ui.advance_cursor_after_rect(row_rect);
 }
 
-// â”€â”€ Vitals key/value row (absolute-Y version â€” no cursor side-effects) â”€â”€â”€â”€â”€â”€â”€â”€
+// â”€â”€ Vitals key/value row (absolute-Y version — no cursor side-effects) â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// Paint a label/value row at an explicit Y coordinate.
 /// Does NOT advance the cursor; caller controls layout entirely.
@@ -396,7 +396,7 @@ fn paint_wear_bar(
 ) {
     let label_col_w = (card_inner_w * 0.30).max(150.0);
     let bar_h = 8.0_f32;
-    let range_reserve = 50.0_f32;   // "100%" is short â€” only needs ~40px
+    let range_reserve = 50.0_f32;   // "100%" is short — only needs ~40px
     let bar_x = card_x + pad + label_col_w + 8.0;
     let full_bar_w = (card_inner_w - label_col_w - 8.0 - range_reserve).max(20.0);
 
@@ -425,7 +425,7 @@ fn paint_wear_bar(
         ui.painter().rect_filled(fill_rect, 4.0, fill_color);
     }
 
-    // Percentage value â€” right-anchored so it never overflows
+    // Percentage value — right-anchored so it never overflows
     let right_inner = card_x + pad + card_inner_w;
     ui.painter().text(
         Pos2::new(right_inner, row_y + row_h * 0.5),
@@ -434,7 +434,7 @@ fn paint_wear_bar(
         FontId::proportional(12.0),
         fill_color,
     );
-    // No cursor advance â€” caller owns layout.
+    // No cursor advance — caller owns layout.
 }
 
 // â”€â”€ Temperature bar (absolute-Y version) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -489,7 +489,7 @@ fn paint_temp_bar(
         ui.painter().rect_filled(fill_rect, 4.0, fill_color);
     }
 
-    // Range label â€” right-aligned at the card's inner right edge so it never overflows
+    // Range label — right-aligned at the card's inner right edge so it never overflows
     let right_inner = card_x + pad + card_inner_w;
     ui.painter().text(
         Pos2::new(right_inner, row_y + row_h * 0.5),
@@ -498,7 +498,7 @@ fn paint_temp_bar(
         FontId::proportional(12.0),
         t.txt_sec,
     );
-    // No cursor advance â€” caller owns layout.
+    // No cursor advance — caller owns layout.
 }
 
 // â”€â”€ ATA vitals card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -529,7 +529,7 @@ fn draw_ata_vitals(
     let card = card_rect(ui, t, content_x, margin, section_w, card_h);
     let card_x = card.min.x;
 
-    // Use absolute Y positions â€” no cursor tracking inside the card.
+    // Use absolute Y positions — no cursor tracking inside the card.
     let mut row_y = card.min.y + pad;
     let row_step = row_h + gap;
 
@@ -585,7 +585,7 @@ fn draw_nvme_vitals(
     let card = card_rect(ui, t, content_x, margin, section_w, card_h);
     let card_x = card.min.x;
 
-    // Absolute Y positions â€” no cursor tracking inside the card.
+    // Absolute Y positions — no cursor tracking inside the card.
     let row_step = row_h + gap;
     let mut row_y = card.min.y + pad;
 
@@ -646,7 +646,7 @@ fn draw_nvme_vitals(
     );
     row_y += row_step;
 
-    // Media Errors â€” colored value
+    // Media Errors — colored value
     let media_color = if data.media_errors > 0 { Color32::from_rgb(241, 196, 15) } else { t.txt_pri };
     paint_vitals_kv(
         ui, t, card_x, inner_w, pad, row_y, row_h,
@@ -655,7 +655,7 @@ fn draw_nvme_vitals(
     );
     row_y += row_step;
 
-    // Critical Warning â€” colored value, routed through paint_vitals_kv for consistent alignment
+    // Critical Warning — colored value, routed through paint_vitals_kv for consistent alignment
     let warn_color = if data.critical_warning != 0 { Color32::from_rgb(231, 76, 60) } else { t.txt_pri };
     let warn_text = if data.critical_warning == 0 {
         "None".to_string()
@@ -696,32 +696,32 @@ fn draw_attribute_card(
     );
     ui.painter().rect_filled(bar_rect, egui::CornerRadius { nw: 8, sw: 8, ne: 0, se: 0 }, status_color);
 
-    // Attribute ID + name
+    // Attribute ID — top-right corner
     let id_str = format!("{:02X}", attr.id);
     ui.painter().text(
-        Pos2::new(inner_x, rect.min.y + 10.0),
-        Align2::LEFT_TOP,
+        Pos2::new(rect.max.x - pad, rect.min.y + 10.0),
+        Align2::RIGHT_TOP,
         &id_str,
         FontId::proportional(11.0),
         t.txt_sec,
     );
 
-    // Name (may be truncated) â€” right side of same row
+    // Name — full width of the card (ID is now out of the way in the corner)
     let name_galley = ui.ctx().fonts(|f| {
         f.layout(
             attr.name.to_owned(),
             FontId::proportional(13.0),
             t.txt_pri,
-            inner_w - 30.0,
+            inner_w,
         )
     });
     ui.painter().add(egui::Shape::galley(
-        Pos2::new(inner_x + 30.0, rect.min.y + 8.0),
+        Pos2::new(inner_x, rect.min.y + 8.0),
         name_galley,
         t.txt_pri,
     ));
 
-    // C7 cable warning icon â€” use interact() so cursor doesn't advance
+    // C7 cable warning icon — use interact() so cursor doesn't advance
     if attr.id == 0xC7 && attr.raw > 0 {
         let icon_id = Id::new("health_c7_warn_icon");
         let icon_rect = Rect::from_min_size(
@@ -795,7 +795,7 @@ fn draw_attribute_card(
         status_color,
     );
 
-    // Tooltip on hover â€” use interact() not allocate_rect() so the cursor doesn't advance.
+    // Tooltip on hover — use interact() not allocate_rect() so the cursor doesn't advance.
     let tip = attr_description(attr.id);
     if !tip.is_empty() {
         let hover_resp = ui.interact(rect, Id::new(format!("health_attr_tip_{}", attr.id)), Sense::hover());
@@ -839,7 +839,7 @@ fn draw_attributes(
         t.txt_sec,
     );
 
-    // Legend (?) icon â€” interact() does not advance the cursor
+    // Legend (?) icon — interact() does not advance the cursor
     let attr_lbl_w = ui.ctx().fonts(|f| {
         f.layout_no_wrap(
             "Attributes".to_owned(),
@@ -976,7 +976,7 @@ fn build_report_html(drive: &DetectedDrive, report: &SmartReport) -> String {
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Health Data Report â€” {model}</title>
+<title>Health Data Report — {model}</title>
 <style>
 *, *::before, *::after {{ box-sizing: border-box; }}
 body {{
@@ -1013,7 +1013,7 @@ p.fail {{ color: #ef5350; }}
 </style>
 </head>
 <body>
-<h1>Health Data Report â€” {model}</h1>
+<h1>Health Data Report — {model}</h1>
 <p class="meta">Generated {ts}</p>
 <table class="info">
 <tr><th>Model</th><td>{model}</td></tr>
@@ -1038,12 +1038,14 @@ pub fn save_smart_report(drive: &DetectedDrive, report: &SmartReport) {
     let filename = format!("SMART-{}.html", drive.safe_filename_stem());
 
     std::thread::spawn(move || {
-        let path = rfd::FileDialog::new()
-            .set_file_name(&filename)
-            .add_filter("HTML file", &["html"])
-            .save_file();
-        if let Some(p) = path {
-            let _ = std::fs::write(p, html.as_bytes());
+        let path = pollster::block_on(
+            rfd::AsyncFileDialog::new()
+                .set_file_name(&filename)
+                .add_filter("HTML file", &["html"])
+                .save_file(),
+        );
+        if let Some(handle) = path {
+            let _ = std::fs::write(handle.path(), html.as_bytes());
         }
     });
 }
@@ -1081,7 +1083,7 @@ impl DiskoriaApp {
                 t.txt_pri,
             );
 
-            // Export Log button â€” only enabled when a non-Unavailable report is loaded
+            // Export Log button — only enabled when a non-Unavailable report is loaded
             let has_report = self.health_report.as_ref()
                 .map(|r| !matches!(r, SmartReport::Unavailable { .. }))
                 .unwrap_or(false);
@@ -1134,7 +1136,7 @@ impl DiskoriaApp {
             ui.push_id("diskoria_health_refresh", |ui| {
                 let refresh = ui.add_enabled(
                     !self.drives_loading,
-                    egui::Button::new(RichText::new("âŸ³ Refresh").color(t.txt_pri)),
+                    egui::Button::new(RichText::new("\u{27F3} Refresh").color(t.txt_pri)),
                 );
                 if refresh.clicked() {
                     self.health_report = None;
@@ -1280,19 +1282,19 @@ impl DiskoriaApp {
                 match &report {
                     SmartReport::Ata(d) => log::info!(
                         target: "diskoria",
-                        "health: ATA report received â€” temp={temp}°C poh={poh}h attrs={n}",
+                        "health: ATA report received — temp={temp}°C poh={poh}h attrs={n}",
                         temp = d.temperature_c.map(|c| c.to_string()).unwrap_or_else(|| "N/A".into()),
                         poh  = d.power_on_hours.unwrap_or(0),
                         n    = d.attributes.len(),
                     ),
                     SmartReport::Nvme(d) => log::info!(
                         target: "diskoria",
-                        "health: NVMe report received â€” temp={}°C wear={}% spare={}%",
+                        "health: NVMe report received — temp={}°C wear={}% spare={}%",
                         d.temperature_c, d.percentage_used, d.available_spare_pct,
                     ),
                     SmartReport::Unavailable { reason } => log::warn!(
                         target: "diskoria",
-                        "health: SMART unavailable â€” {reason}",
+                        "health: SMART unavailable — {reason}",
                     ),
                 }
                 self.health_report = Some(report);
