@@ -372,17 +372,16 @@ fn draw_vitals_kv(
         t.txt_pri,
     );
 
-    // Hover-sensitive tooltip area
+    // Hover tooltip — use interact() so it never double-advances the cursor
     if let Some(tip) = tooltip {
-        let resp = ui.allocate_rect(row_rect, Sense::hover());
+        let resp = ui.interact(row_rect, Id::new(format!("health_tip_i_{label}")), Sense::hover());
         if resp.hovered() {
             if let Some(pos) = ui.ctx().pointer_latest_pos() {
-                show_tooltip_text(ui.ctx(), Id::new(format!("health_tip_{label}")), pos, t, tip);
+                show_tooltip_text(ui.ctx(), Id::new(format!("health_tip_tt_{label}")), pos, t, tip);
             }
         }
-    } else {
-        ui.advance_cursor_after_rect(row_rect);
     }
+    ui.advance_cursor_after_rect(row_rect);
 }
 
 // ── Temperature bar ───────────────────────────────────────────────────────────
@@ -476,15 +475,10 @@ fn draw_ata_vitals(
     ui.add_space(6.0);
 
     let card = card_rect(ui, t, content_x, margin, section_w, card_h);
-
+    // card_rect does not advance the cursor — it stays at card.min.y.
+    // Use add_space(pad) to move into the card's top padding.
     let card_x = card.min.x;
-
-    // Advance cursor into card
-    let inner_start = Rect::from_min_size(
-        Pos2::new(card.min.x + pad, card.min.y + pad),
-        Vec2::new(inner_w, row_h),
-    );
-    ui.advance_cursor_after_rect(inner_start);
+    ui.add_space(pad);
 
     if let Some(tc) = data.temperature_c {
         draw_temp_bar(ui, t, card_x, inner_w, pad, tc);
@@ -509,9 +503,9 @@ fn draw_ata_vitals(
         draw_vitals_kv(ui, t, card_x, inner_w, pad, "Power Cycles", &fmt_thousands(pc), None);
     }
 
-    // Advance past card bottom
+    // Ensure cursor is past the card bottom
+    let card_bot = card.max.y;
     let cursor_y = ui.cursor().min.y;
-    let card_bot = card.max.y + pad;
     if cursor_y < card_bot {
         ui.add_space(card_bot - cursor_y);
     }
@@ -541,12 +535,7 @@ fn draw_nvme_vitals(
 
     let card = card_rect(ui, t, content_x, margin, section_w, card_h);
     let card_x = card.min.x;
-
-    let inner_start = Rect::from_min_size(
-        Pos2::new(card.min.x + pad, card.min.y + pad),
-        Vec2::new(inner_w, row_h),
-    );
-    ui.advance_cursor_after_rect(inner_start);
+    ui.add_space(pad);
 
     draw_temp_bar(ui, t, card_x, inner_w, pad, data.temperature_c as i32);
     ui.add_space(gap);
@@ -629,13 +618,14 @@ fn draw_nvme_vitals(
         &fmt_thousands(data.media_errors),
         FontId::proportional(13.0), media_color,
     );
-    let resp = ui.allocate_rect(row_rect, Sense::hover());
+    let resp = ui.interact(row_rect, Id::new("health_tip_media_err_i"), Sense::hover());
     if resp.hovered() {
         if let Some(pos) = ui.ctx().pointer_latest_pos() {
-            show_tooltip_text(ui.ctx(), Id::new("health_tip_media_err"), pos, t,
+            show_tooltip_text(ui.ctx(), Id::new("health_tip_media_err_tt"), pos, t,
                 "Errors that occurred directly on the NAND media. Anything above zero warrants attention.");
         }
     }
+    ui.advance_cursor_after_rect(row_rect);
     ui.add_space(gap);
 
     let warn_color = if data.critical_warning != 0 { Color32::from_rgb(231, 76, 60) } else { t.txt_pri };
@@ -656,16 +646,17 @@ fn draw_nvme_vitals(
         Align2::LEFT_CENTER, &warn_text,
         FontId::proportional(13.0), warn_color,
     );
-    let resp = ui.allocate_rect(row_rect, Sense::hover());
+    let resp = ui.interact(row_rect, Id::new("health_tip_crit_warn_i"), Sense::hover());
     if resp.hovered() {
         if let Some(pos) = ui.ctx().pointer_latest_pos() {
-            show_tooltip_text(ui.ctx(), Id::new("health_tip_crit_warn"), pos, t,
+            show_tooltip_text(ui.ctx(), Id::new("health_tip_crit_warn_tt"), pos, t,
                 "Bit field set by the controller for serious health events (spare below threshold, temperature excursion, read-only mode, etc.).");
         }
     }
+    ui.advance_cursor_after_rect(row_rect);
 
     let cursor_y = ui.cursor().min.y;
-    let card_bot = card.max.y + pad;
+    let card_bot = card.max.y;
     if cursor_y < card_bot {
         ui.add_space(card_bot - cursor_y);
     }
@@ -720,14 +711,14 @@ fn draw_attribute_card(
         t.txt_pri,
     ));
 
-    // C7 cable warning icon
+    // C7 cable warning icon — use interact() so cursor doesn't advance
     if attr.id == 0xC7 && attr.raw > 0 {
-        let icon_id = Id::new(format!("health_c7_warn_{}", attr.id));
+        let icon_id = Id::new("health_c7_warn_icon");
         let icon_rect = Rect::from_min_size(
             Pos2::new(rect.max.x - 20.0, rect.min.y + 6.0),
             Vec2::splat(16.0),
         );
-        let warn_r = ui.allocate_rect(icon_rect, Sense::hover());
+        let warn_r = ui.interact(icon_rect, icon_id, Sense::hover());
         ui.painter().text(
             icon_rect.center(),
             Align2::CENTER_CENTER,
@@ -738,7 +729,7 @@ fn draw_attribute_card(
         if warn_r.hovered() {
             if let Some(pos) = ui.ctx().pointer_latest_pos() {
                 show_tooltip_text(
-                    ui.ctx(), icon_id, pos, t,
+                    ui.ctx(), Id::new("health_c7_warn_tt"), pos, t,
                     "High C7 (UltraDMA CRC Errors) usually means a faulty or loose SATA cable. Try reseating the cable.",
                 );
             }
@@ -794,15 +785,15 @@ fn draw_attribute_card(
         status_color,
     );
 
-    // Tooltip on hover (from attr_description)
+    // Tooltip on hover — use interact() not allocate_rect() so the cursor doesn't advance.
     let tip = attr_description(attr.id);
     if !tip.is_empty() {
-        let hover_resp = ui.allocate_rect(rect, Sense::hover());
+        let hover_resp = ui.interact(rect, Id::new(format!("health_attr_tip_{}", attr.id)), Sense::hover());
         if hover_resp.hovered() {
             if let Some(pos) = ui.ctx().pointer_latest_pos() {
                 show_tooltip_text(
                     ui.ctx(),
-                    Id::new(format!("health_attr_tip_{}", attr.id)),
+                    Id::new(format!("health_attr_tip_tt_{}", attr.id)),
                     pos,
                     t,
                     tip,
@@ -821,31 +812,36 @@ fn draw_attributes(
     section_w: f32,
     attrs: &[AtaAttribute],
 ) {
-    // Section label + legend tooltip icon
+    // ── Section label row ─────────────────────────────────────────────────────
     let label_top = ui.cursor().min.y;
-    let row_h = 24.0_f32;
-    let row_rect = Rect::from_min_size(
+    let label_h = 24.0_f32;
+    let label_rect = Rect::from_min_size(
         Pos2::new(content_x + margin, label_top),
-        Vec2::new(section_w, row_h),
+        Vec2::new(section_w, label_h),
     );
+
+    // Paint label text
     ui.painter().text(
-        Pos2::new(row_rect.min.x, row_rect.center().y),
+        Pos2::new(label_rect.min.x, label_rect.center().y),
         Align2::LEFT_CENTER,
         "Attributes",
         FontId::new(13.0, egui::FontFamily::Name("InterBold".into())),
         t.txt_sec,
     );
 
-    // Legend icon (\u{F505} = question-circle)
-    let icon_x = row_rect.min.x + ui.ctx().fonts(|f| {
-        f.layout_no_wrap("Attributes".to_owned(), FontId::new(13.0, egui::FontFamily::Name("InterBold".into())), t.txt_sec)
-            .rect.width()
-    }) + 6.0;
+    // Legend (?) icon — interact() does not advance the cursor
+    let attr_lbl_w = ui.ctx().fonts(|f| {
+        f.layout_no_wrap(
+            "Attributes".to_owned(),
+            FontId::new(13.0, egui::FontFamily::Name("InterBold".into())),
+            t.txt_sec,
+        ).rect.width()
+    });
     let icon_rect = Rect::from_min_size(
-        Pos2::new(icon_x, row_rect.center().y - 8.0),
+        Pos2::new(label_rect.min.x + attr_lbl_w + 6.0, label_rect.center().y - 8.0),
         Vec2::splat(16.0),
     );
-    let icon_resp = ui.allocate_rect(icon_rect, Sense::hover());
+    let icon_resp = ui.interact(icon_rect, Id::new("health_attr_legend_icon"), Sense::hover());
     ui.painter().text(
         icon_rect.center(),
         Align2::CENTER_CENTER,
@@ -856,53 +852,44 @@ fn draw_attributes(
     if icon_resp.hovered() {
         if let Some(pos) = ui.ctx().pointer_latest_pos() {
             show_tooltip_text(
-                ui.ctx(),
-                Id::new("health_attr_legend"),
-                pos,
-                t,
+                ui.ctx(), Id::new("health_attr_legend_tt"), pos, t,
                 "Cur = current normalized value (100 = best)\nWst = worst recorded value\nThr = failure threshold\nRaw = actual raw sensor count",
             );
         }
     }
 
-    ui.advance_cursor_after_rect(row_rect);
+    // Advance past the label row exactly once
+    ui.advance_cursor_after_rect(label_rect);
     ui.add_space(6.0);
 
-    // 2-column grid
-    let card_h = 70.0_f32;
-    let card_gap = 8.0_f32;
-    let col_gap = 8.0_f32;
-    let cols = 2usize;
-    let card_w = (section_w - col_gap) / cols as f32;
+    // ── 2-column card grid ────────────────────────────────────────────────────
+    let card_h   = 70.0_f32;
+    let card_gap =  8.0_f32;
+    let col_gap  =  8.0_f32;
+    let card_w   = (section_w - col_gap) / 2.0;
 
-    for (i, attr) in attrs.iter().enumerate() {
-        let col = i % cols;
-        let row = i / cols;
-        let x = content_x + margin + col as f32 * (card_w + col_gap);
-        let top = ui.cursor().min.y;
-        let _y = if col == 0 { top } else { top - (if i > 1 { card_h + card_gap } else { 0.0 }) };
+    // Iterate in pairs (chunks of 2) so we control the cursor exactly once per row.
+    for (row_idx, chunk) in attrs.chunks(2).enumerate() {
+        let row_y = ui.cursor().min.y;
 
-        // For the first card in each row, just use cursor y
-        let card_y = if col == 0 {
-            top
-        } else {
-            // same row as the previous card
-            top - card_h - card_gap
-        };
+        // Paint all cards in this row without touching the cursor
+        for (col, attr) in chunk.iter().enumerate() {
+            let x = content_x + margin + col as f32 * (card_w + col_gap);
+            let card = Rect::from_min_size(Pos2::new(x, row_y), Vec2::new(card_w, card_h));
+            draw_attribute_card(ui, t, dark, card, attr);
+        }
 
-        let _ = row;
-        let card = Rect::from_min_size(Pos2::new(x, card_y), Vec2::new(card_w, card_h));
-        draw_attribute_card(ui, t, dark, card, attr);
+        // Advance the cursor past this full row
+        let row_rect = Rect::from_min_size(
+            Pos2::new(content_x + margin, row_y),
+            Vec2::new(section_w, card_h),
+        );
+        ui.advance_cursor_after_rect(row_rect);
 
-        if col == cols - 1 || i == attrs.len() - 1 {
-            let advance_rect = Rect::from_min_size(
-                Pos2::new(content_x + margin, card.min.y),
-                Vec2::new(section_w, card_h),
-            );
-            ui.advance_cursor_after_rect(advance_rect);
-            if i != attrs.len() - 1 {
-                ui.add_space(card_gap);
-            }
+        // Gap between rows (skip after the last row)
+        let total_rows = (attrs.len() + 1) / 2;
+        if row_idx + 1 < total_rows {
+            ui.add_space(card_gap);
         }
     }
 }
@@ -989,7 +976,7 @@ fn draw_self_test(
     }
 
     let cursor_y = ui.cursor().min.y;
-    let card_bot = card.max.y + pad;
+    let card_bot = card.max.y;
     if cursor_y < card_bot {
         ui.add_space(card_bot - cursor_y);
     }
