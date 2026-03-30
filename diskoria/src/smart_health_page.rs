@@ -452,7 +452,7 @@ fn paint_temp_bar(
     // Match the same label column width as paint_vitals_kv
     let label_col_w = (card_inner_w * 0.30).max(150.0);
     let bar_h = 8.0_f32;
-    // Reserve 110px on the right for the "37Â°C  (0 - 70Â°C)" range label
+    // Reserve 110px on the right for the "37°C  (0 - 70°C)" range label
     let range_reserve = 110.0_f32;
     let bar_x = card_x + pad + label_col_w + 8.0;
     // Bar spans from bar_x to the start of the range label area
@@ -472,7 +472,7 @@ fn paint_temp_bar(
     // Background track
     ui.painter().rect_filled(bar_rect, 4.0, t.border);
 
-    // Fill (clamp 0-70 Â°C)
+    // Fill (clamp 0-70 °C)
     let pct = (temp_c as f32 / 70.0).clamp(0.0, 1.0);
     let fill_color = if temp_c < 40 {
         Color32::from_rgb(39, 174, 96)
@@ -494,7 +494,7 @@ fn paint_temp_bar(
     ui.painter().text(
         Pos2::new(right_inner, row_y + row_h * 0.5),
         Align2::RIGHT_CENTER,
-        format!("{}Â°C  (0 - 70Â°C)", temp_c),
+        format!("{}°C  (0 - 70°C)", temp_c),
         FontId::proportional(12.0),
         t.txt_sec,
     );
@@ -908,7 +908,7 @@ fn build_report_html(drive: &DetectedDrive, report: &SmartReport) -> String {
 
     let body = match report {
         SmartReport::Ata(data) => {
-            let temp = data.temperature_c.map(|c| format!("{c}Â°C")).unwrap_or_else(|| "N/A".to_string());
+            let temp = data.temperature_c.map(|c| format!("{c}°C")).unwrap_or_else(|| "N/A".to_string());
             let poh  = data.power_on_hours.map(|h| fmt_thousands(h)).unwrap_or_else(|| "N/A".to_string());
             let pc   = data.power_cycles.map(|c| fmt_thousands(c)).unwrap_or_else(|| "N/A".to_string());
 
@@ -946,7 +946,7 @@ fn build_report_html(drive: &DetectedDrive, report: &SmartReport) -> String {
             let warn_str = if d.critical_warning == 0 { "None".to_string() } else { format!("0x{:02X}", d.critical_warning) };
             format!(
                 r#"<div class="vitals">
-<p><strong>Temperature</strong><span>{}Â°C</span></p>
+<p><strong>Temperature</strong><span>{}°C</span></p>
 <p><strong>Percentage Used</strong><span>{}%</span></p>
 <p><strong>Available Spare</strong><span>{}% (threshold {}%)</span></p>
 <p><strong>Power-On Hours</strong><span>{}</span></p>
@@ -1280,14 +1280,14 @@ impl DiskoriaApp {
                 match &report {
                     SmartReport::Ata(d) => log::info!(
                         target: "diskoria",
-                        "health: ATA report received â€” temp={temp}Â°C poh={poh}h attrs={n}",
+                        "health: ATA report received â€” temp={temp}°C poh={poh}h attrs={n}",
                         temp = d.temperature_c.map(|c| c.to_string()).unwrap_or_else(|| "N/A".into()),
                         poh  = d.power_on_hours.unwrap_or(0),
                         n    = d.attributes.len(),
                     ),
                     SmartReport::Nvme(d) => log::info!(
                         target: "diskoria",
-                        "health: NVMe report received â€” temp={}Â°C wear={}% spare={}%",
+                        "health: NVMe report received â€” temp={}°C wear={}% spare={}%",
                         d.temperature_c, d.percentage_used, d.available_spare_pct,
                     ),
                     SmartReport::Unavailable { reason } => log::warn!(
