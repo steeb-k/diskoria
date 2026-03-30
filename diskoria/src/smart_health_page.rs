@@ -1,0 +1,1320 @@
+//! Health Status page — raw SMART / NVMe diagnostics for any drive the user selects.
+//!
+//! This module owns the per-page state fields on `DiskoriaApp` that carry the selected
+//! drive index and the polled `SmartReport`.  Page drawing is done by free functions
+//! called from `DiskoriaApp::draw_health_status_page`.
+
+use egui::{
+    Align2, Color32, FontId, Id, Pos2, Rect, RichText, Sense, Stroke,
+    StrokeKind, UiBuilder, Vec2,
+};
+
+use crate::detected_drive::{BusKind, DetectedDrive, MediaKind};
+use crate::smart_reader::{AtaAttribute, AtaSmartData, AttrStatus, NvmeHealthData, SmartReport};
+use crate::theme::Theme;
+use crate::widgets::{show_tooltip_text, small_browse_style_button};
+use crate::DiskoriaApp;
+
+// ── Icon constants (Bootstrap Icons PUA) ─────────────────────────────────────
+
+const ICON_FILETYPE_HTML: char = '\u{f3e9}';
+const ICON_HEART_PULSE: char = '\u{f473}';
+const ICON_WARNING: char = '\u{f333}';
+const ICON_QUESTION: char = '\u{f505}';
+
+// ── Public state fields (held on DiskoriaApp) ─────────────────────────────────
+
+// ── Attr tooltip table ────────────────────────────────────────────────────────
+
+pub fn attr_description(id: u8) -> &'static str {
+    match id {
+        0x01 => "Counts low-level errors when reading from the magnetic surface.",
+        0x02 => "Drive's throughput relative to its hardware design capability.",
+        0x03 => "Time (ms) needed for the disk motor to spin up to full speed.",
+        0x04 => "Total spindle start/stop cycles since leaving the factory.",
+        0x05 => "Sectors remapped to reserve area due to uncorrectable errors.",
+        0x07 => "Rate of seek errors — how often the head fails to reach the right track.",
+        0x09 => "Total power-on time in hours.",
+        0x0A => "Retries to reach target RPM — elevated count suggests bearing problems.",
+        0x0B => "Number of times the drive had to recalibrate its heads.",
+        0x0C => "Total power on/off cycles.",
+        0xBB => "Sectors that could not be corrected by hardware ECC.",
+        0xBC => "Commands that timed out — often a sign of communication issues.",
+        0xBD => "Writes made at excessive head-fly height — can corrupt sectors.",
+        0xBE => "Drive temperature measured at a secondary sensor.",
+        0xC0 => "Emergency head retractions triggered by loss of power.",
+        0xC1 => "Total load/unload cycles (head park operations).",
+        0xC2 => "Drive temperature in degrees Celsius.",
+        0xC3 => "Number of errors corrected by hardware ECC (info only).",
+        0xC4 => "Total count of reallocation events (sectors moved to reserve).",
+        0xC5 => "Sectors waiting to be remapped — read/write may still succeed.",
+        0xC6 => "Sectors that could not be recovered even with error recovery.",
+        0xC7 => "CRC errors on the interface cable between drive and controller. A high count usually means a faulty or loose cable.",
+        0xE7 => "Drive's self-reported remaining lifespan as a percentage.",
+        0xF0 => "Total hours the head assembly has been in loaded position.",
+        0xF1 => "Total logical blocks written over the drive's lifetime.",
+        0xF2 => "Total logical blocks read over the drive's lifetime.",
+        _ => "",
+    }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn fmt_thousands(n: u64) -> String {
+    let s = n.to_string();
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::new();
+    for (i, ch) in chars.iter().enumerate() {
+        if i > 0 && (chars.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(*ch);
+    }
+    out
+}
+
+fn chip_width(ctx: &egui::Context, label: &str) -> f32 {
+    let galley = ctx.fonts(|f| f.layout_no_wrap(label.to_owned(), FontId::proportional(12.0), Color32::WHITE));
+    galley.rect.width() + 20.0
+}
+
+fn chip_colors_media(m: MediaKind) -> (Color32, Color32) {
+    match m {
+        MediaKind::Hdd    => (Color32::from_rgb(52, 73, 94),   Color32::WHITE),
+        MediaKind::Ssd    => (Color32::from_rgb(41, 128, 185), Color32::WHITE),
+        MediaKind::SdCard => (Color32::from_rgb(39, 174, 96),  Color32::WHITE),
+        MediaKind::Flash  => (Color32::from_rgb(155, 89, 182), Color32::WHITE),
+        MediaKind::EMmc   => (Color32::from_rgb(26, 188, 156), Color32::WHITE),
+        MediaKind::Unknown => (Color32::from_rgb(127, 140, 141), Color32::WHITE),
+    }
+}
+
+fn chip_colors_bus(b: BusKind) -> (Color32, Color32) {
+    match b {
+        BusKind::Nvme => (Color32::from_rgb(142, 68, 173),  Color32::WHITE),
+        BusKind::Sata => (Color32::from_rgb(22, 160, 133),  Color32::WHITE),
+        BusKind::Usb  => (Color32::from_rgb(230, 126, 34),  Color32::WHITE),
+        BusKind::Ufs  => (Color32::from_rgb(52, 152, 219),  Color32::WHITE),
+    }
+}
+
+fn chip_pill(painter: &egui::Painter, rect: Rect, label: &str, bg: Color32, fg: Color32) {
+    painter.rect_filled(rect, 6.0, bg);
+    painter.text(rect.center(), Align2::CENTER_CENTER, label, FontId::proportional(12.0), fg);
+}
+
+fn status_color(status: AttrStatus, _dark: bool) -> Color32 {
+    match status {
+        AttrStatus::Good    => Color32::from_rgb(39, 174, 96),
+        AttrStatus::Warning => Color32::from_rgb(241, 196, 15),
+        AttrStatus::Failed  => Color32::from_rgb(231, 76, 60),
+        AttrStatus::Info    => Color32::from_rgb(52, 152, 219),
+    }
+}
+
+// ── Card frame helper ─────────────────────────────────────────────────────────
+
+fn card_rect(
+    ui: &mut egui::Ui,
+    t: &Theme,
+    content_x: f32,
+    margin: f32,
+    section_w: f32,
+    height: f32,
+) -> Rect {
+    let top = ui.cursor().min.y;
+    let rect = Rect::from_min_size(
+        Pos2::new(content_x + margin, top),
+        Vec2::new(section_w, height),
+    );
+    ui.painter().rect_filled(rect, 8.0, t.bg_pri);
+    ui.painter().rect_stroke(rect, 8.0, Stroke::new(1.5, t.border), StrokeKind::Middle);
+    rect
+}
+
+// ── Drive picker ──────────────────────────────────────────────────────────────
+
+fn draw_drive_picker(
+    app: &mut DiskoriaApp,
+    ui: &mut egui::Ui,
+    t: &Theme,
+    content_x: f32,
+    margin: f32,
+    section_w: f32,
+) {
+    let row_h = 34.0_f32;
+    let chip_h = 26.0_f32;
+    let gap_chips = 8.0_f32;
+    let gap_combo_chips = 12.0_f32;
+
+    let drives = &app.drives;
+    let sel = app.health_selected_drive.min(drives.len().saturating_sub(1));
+    let options: Vec<String> = drives.iter().map(|d| d.summary.clone()).collect();
+
+    let y_row = ui.cursor().min.y;
+
+    let combo_w = if !drives.is_empty() {
+        let d = &drives[sel];
+        let mw = chip_width(ui.ctx(), d.media.label());
+        let bw = chip_width(ui.ctx(), d.bus.label());
+        (section_w - gap_combo_chips - mw - gap_chips - bw).max(120.0)
+    } else {
+        section_w
+    };
+
+    let combo_rect = Rect::from_min_size(
+        Pos2::new(content_x + margin, y_row),
+        Vec2::new(combo_w, row_h),
+    );
+    ui.painter().rect_filled(combo_rect, 0.0, t.bg_pri);
+    ui.painter().line_segment(
+        [combo_rect.left_bottom(), combo_rect.right_bottom()],
+        Stroke::new(1.5, t.accent),
+    );
+
+    let combo_inner = combo_rect.shrink2(Vec2::new(8.0, 4.0));
+    let mut combo_style = (**ui.style()).clone();
+    combo_style.spacing.button_padding = Vec2::new(10.0, 6.0);
+    for w in [
+        &mut combo_style.visuals.widgets.inactive,
+        &mut combo_style.visuals.widgets.hovered,
+        &mut combo_style.visuals.widgets.active,
+        &mut combo_style.visuals.widgets.open,
+    ] {
+        w.weak_bg_fill = Color32::TRANSPARENT;
+        w.bg_stroke = Stroke::NONE;
+        w.fg_stroke = Stroke::new(1.0, t.txt_pri);
+    }
+
+    let prev_sel = app.health_selected_drive;
+
+    ui.allocate_new_ui(
+        UiBuilder::new()
+            .max_rect(combo_inner)
+            .style(std::sync::Arc::new(combo_style)),
+        |ui| {
+            egui::ComboBox::from_id_salt("diskoria_health_drive_combo")
+                .selected_text(options.get(sel).map(|s: &String| s.as_str()).unwrap_or("—"))
+                .width(combo_inner.width())
+                .truncate()
+                .show_ui(ui, |ui| {
+                    ui.style_mut().visuals.override_text_color = Some(t.txt_pri);
+                    for (idx, label) in options.iter().enumerate() {
+                        ui.selectable_value(&mut app.health_selected_drive, idx, label);
+                    }
+                });
+        },
+    );
+
+    // If selection changed, clear the old report so we re-poll
+    if app.health_selected_drive != prev_sel {
+        app.health_report = None;
+        app.health_poll_running = false;
+    }
+
+    if !app.drives.is_empty() {
+        let d = &app.drives[sel];
+        let chip_y = y_row + (row_h - chip_h) * 0.5;
+        let mut x = combo_rect.right() + gap_combo_chips;
+
+        let (m_bg, m_fg) = chip_colors_media(d.media);
+        let mw = chip_width(ui.ctx(), d.media.label());
+        let mr = Rect::from_min_size(Pos2::new(x, chip_y), Vec2::new(mw, chip_h));
+        chip_pill(ui.painter(), mr, d.media.label(), m_bg, m_fg);
+        x += mw + gap_chips;
+
+        let (b_bg, b_fg) = chip_colors_bus(d.bus);
+        let bw = chip_width(ui.ctx(), d.bus.label());
+        let br = Rect::from_min_size(Pos2::new(x, chip_y), Vec2::new(bw, chip_h));
+        chip_pill(ui.painter(), br, d.bus.label(), b_bg, b_fg);
+    }
+
+    let row_rect = Rect::from_min_max(
+        Pos2::new(content_x + margin, y_row),
+        Pos2::new(content_x + margin + section_w, y_row + row_h),
+    );
+    ui.advance_cursor_after_rect(row_rect);
+}
+
+// ── Unavailable card ──────────────────────────────────────────────────────────
+
+fn draw_unavailable(
+    ui: &mut egui::Ui,
+    t: &Theme,
+    content_x: f32,
+    margin: f32,
+    section_w: f32,
+    reason: &str,
+) {
+    let pad = 16.0_f32;
+    let inner_w = section_w - pad * 2.0;
+    let icon_size = 26.0_f32;
+    let gap = 10.0_f32;
+    let text_w = inner_w - icon_size - gap;
+
+    let galley = ui.ctx().fonts(|f| {
+        f.layout(
+            reason.to_owned(),
+            FontId::proportional(13.0),
+            t.txt_sec,
+            text_w.max(80.0),
+        )
+    });
+    let text_h = galley.rect.height();
+    let content_h = icon_size.max(text_h);
+    let card_h = pad + content_h + pad;
+
+    let card = card_rect(ui, t, content_x, margin, section_w, card_h);
+    let inner = Rect::from_min_size(Pos2::new(card.min.x + pad, card.min.y + pad), Vec2::new(inner_w, content_h));
+
+    let icon_rect = Rect::from_min_size(
+        Pos2::new(inner.min.x, inner.min.y + (content_h - icon_size) * 0.5),
+        Vec2::splat(icon_size),
+    );
+    ui.painter().text(
+        icon_rect.center(),
+        Align2::CENTER_CENTER,
+        format!("{}", ICON_HEART_PULSE),
+        FontId::proportional(20.0),
+        t.txt_sec,
+    );
+
+    let text_pos = Pos2::new(inner.min.x + icon_size + gap, inner.min.y + (content_h - text_h) * 0.5);
+    ui.painter().add(egui::Shape::galley(text_pos, galley, t.txt_sec));
+
+    ui.advance_cursor_after_rect(card);
+}
+
+// ── Section label row ─────────────────────────────────────────────────────────
+
+fn draw_section_label(
+    ui: &mut egui::Ui,
+    t: &Theme,
+    content_x: f32,
+    margin: f32,
+    section_w: f32,
+    label: &str,
+    live_badge: bool,
+) {
+    let row_top = ui.cursor().min.y;
+    let row_h = 24.0_f32;
+    let row_rect = Rect::from_min_size(
+        Pos2::new(content_x + margin, row_top),
+        Vec2::new(section_w, row_h),
+    );
+
+    ui.painter().text(
+        Pos2::new(row_rect.min.x, row_rect.center().y),
+        Align2::LEFT_CENTER,
+        label,
+        FontId::new(13.0, egui::FontFamily::Name("InterBold".into())),
+        t.txt_sec,
+    );
+
+    if live_badge {
+        let badge_text = "LIVE";
+        let badge_galley = ui.ctx().fonts(|f| {
+            f.layout_no_wrap(badge_text.to_owned(), FontId::proportional(11.0), Color32::WHITE)
+        });
+        let bw = badge_galley.rect.width() + 10.0;
+        let bh = 16.0_f32;
+        let badge_rect = Rect::from_min_size(
+            Pos2::new(row_rect.max.x - bw, row_rect.center().y - bh * 0.5),
+            Vec2::new(bw, bh),
+        );
+        ui.painter().rect_filled(badge_rect, 4.0, Color32::from_rgb(39, 174, 96));
+        ui.painter().add(egui::Shape::galley(
+            Pos2::new(badge_rect.min.x + 5.0, badge_rect.min.y + (bh - badge_galley.rect.height()) * 0.5),
+            badge_galley,
+            Color32::WHITE,
+        ));
+    }
+
+    ui.advance_cursor_after_rect(row_rect);
+}
+
+// ── Vitals key/value row ──────────────────────────────────────────────────────
+
+fn draw_vitals_kv(
+    ui: &mut egui::Ui,
+    t: &Theme,
+    card_x: f32,
+    card_inner_w: f32,
+    pad: f32,
+    label: &str,
+    value: &str,
+    tooltip: Option<&str>,
+) {
+    let row_h = 22.0_f32;
+    let label_col_w = card_inner_w * 0.45;
+    let _value_col_w = card_inner_w - label_col_w - 8.0;
+    let row_top = ui.cursor().min.y;
+    let row_rect = Rect::from_min_size(
+        Pos2::new(card_x + pad, row_top),
+        Vec2::new(card_inner_w, row_h),
+    );
+
+    // Label (right-aligned in label column)
+    ui.painter().text(
+        Pos2::new(card_x + pad + label_col_w, row_rect.center().y),
+        Align2::RIGHT_CENTER,
+        label,
+        FontId::proportional(13.0),
+        t.txt_sec,
+    );
+
+    // Value
+    ui.painter().text(
+        Pos2::new(card_x + pad + label_col_w + 8.0, row_rect.center().y),
+        Align2::LEFT_CENTER,
+        value,
+        FontId::proportional(13.0),
+        t.txt_pri,
+    );
+
+    // Hover-sensitive tooltip area
+    if let Some(tip) = tooltip {
+        let resp = ui.allocate_rect(row_rect, Sense::hover());
+        if resp.hovered() {
+            if let Some(pos) = ui.ctx().pointer_latest_pos() {
+                show_tooltip_text(ui.ctx(), Id::new(format!("health_tip_{label}")), pos, t, tip);
+            }
+        }
+    } else {
+        ui.advance_cursor_after_rect(row_rect);
+    }
+}
+
+// ── Temperature bar ───────────────────────────────────────────────────────────
+
+fn draw_temp_bar(
+    ui: &mut egui::Ui,
+    t: &Theme,
+    card_x: f32,
+    card_inner_w: f32,
+    pad: f32,
+    temp_c: i32,
+) {
+    let label_col_w = card_inner_w * 0.45;
+    let bar_col_w = card_inner_w - label_col_w - 8.0;
+    let row_top = ui.cursor().min.y;
+    let row_h = 22.0_f32;
+    let bar_h = 8.0_f32;
+
+    // Label
+    ui.painter().text(
+        Pos2::new(card_x + pad + label_col_w, row_top + row_h * 0.5),
+        Align2::RIGHT_CENTER,
+        "Temperature",
+        FontId::proportional(13.0),
+        t.txt_sec,
+    );
+
+    let bar_x = card_x + pad + label_col_w + 8.0;
+    let bar_y = row_top + (row_h - bar_h) * 0.5;
+    let full_bar_w = bar_col_w - 60.0;
+    let bar_rect = Rect::from_min_size(Pos2::new(bar_x, bar_y), Vec2::new(full_bar_w, bar_h));
+
+    // Background track
+    ui.painter().rect_filled(bar_rect, 4.0, t.border);
+
+    // Fill (clamp 0-70 °C)
+    let pct = (temp_c as f32 / 70.0).clamp(0.0, 1.0);
+    let fill_color = if temp_c < 40 {
+        Color32::from_rgb(39, 174, 96)
+    } else if temp_c < 55 {
+        Color32::from_rgb(241, 196, 15)
+    } else {
+        Color32::from_rgb(231, 76, 60)
+    };
+    let fill_rect = Rect::from_min_size(
+        bar_rect.min,
+        Vec2::new(bar_rect.width() * pct, bar_h),
+    );
+    if fill_rect.width() > 0.0 {
+        ui.painter().rect_filled(fill_rect, 4.0, fill_color);
+    }
+
+    // Range label
+    ui.painter().text(
+        Pos2::new(bar_x + full_bar_w + 6.0, row_top + row_h * 0.5),
+        Align2::LEFT_CENTER,
+        format!("{}°C  (0 - 70°C)", temp_c),
+        FontId::proportional(12.0),
+        t.txt_sec,
+    );
+
+    let row_rect = Rect::from_min_size(
+        Pos2::new(card_x + pad, row_top),
+        Vec2::new(card_inner_w, row_h),
+    );
+    ui.advance_cursor_after_rect(row_rect);
+}
+
+// ── ATA vitals card ───────────────────────────────────────────────────────────
+
+fn draw_ata_vitals(
+    ui: &mut egui::Ui,
+    t: &Theme,
+    content_x: f32,
+    margin: f32,
+    section_w: f32,
+    data: &AtaSmartData,
+) {
+    let pad = 16.0_f32;
+    let inner_w = section_w - pad * 2.0;
+    let row_h = 22.0_f32;
+    let gap = 4.0_f32;
+
+    let row_count = 1  // temperature or placeholder
+        + if data.power_on_hours.is_some() { 1 } else { 0 }
+        + if data.power_cycles.is_some() { 1 } else { 0 };
+
+    let card_h = pad + row_count as f32 * (row_h + gap) - gap + pad;
+
+    draw_section_label(ui, t, content_x, margin, section_w, "Vitals", true);
+    ui.add_space(6.0);
+
+    let card = card_rect(ui, t, content_x, margin, section_w, card_h);
+
+    let card_x = card.min.x;
+
+    // Advance cursor into card
+    let inner_start = Rect::from_min_size(
+        Pos2::new(card.min.x + pad, card.min.y + pad),
+        Vec2::new(inner_w, row_h),
+    );
+    ui.advance_cursor_after_rect(inner_start);
+
+    if let Some(tc) = data.temperature_c {
+        draw_temp_bar(ui, t, card_x, inner_w, pad, tc);
+        ui.add_space(gap);
+    } else {
+        draw_vitals_kv(ui, t, card_x, inner_w, pad, "Temperature", "N/A", None);
+        ui.add_space(gap);
+    }
+
+    if let Some(poh) = data.power_on_hours {
+        let days = poh / 24;
+        let label = if days > 0 {
+            format!("{} hours ({} days)", fmt_thousands(poh), fmt_thousands(days))
+        } else {
+            format!("{} hours", poh)
+        };
+        draw_vitals_kv(ui, t, card_x, inner_w, pad, "Power-On Hours", &label, None);
+        ui.add_space(gap);
+    }
+
+    if let Some(pc) = data.power_cycles {
+        draw_vitals_kv(ui, t, card_x, inner_w, pad, "Power Cycles", &fmt_thousands(pc), None);
+    }
+
+    // Advance past card bottom
+    let cursor_y = ui.cursor().min.y;
+    let card_bot = card.max.y + pad;
+    if cursor_y < card_bot {
+        ui.add_space(card_bot - cursor_y);
+    }
+}
+
+// ── NVMe vitals card ──────────────────────────────────────────────────────────
+
+fn draw_nvme_vitals(
+    ui: &mut egui::Ui,
+    t: &Theme,
+    content_x: f32,
+    margin: f32,
+    section_w: f32,
+    data: &NvmeHealthData,
+) {
+    let pad = 16.0_f32;
+    let inner_w = section_w - pad * 2.0;
+    let row_h = 22.0_f32;
+    let gap = 4.0_f32;
+
+    // Rows: temp, % used, spare, POH, power cycles, data written, unsafe shutdowns, media errors, critical warning
+    let rows = 9usize;
+    let card_h = pad + rows as f32 * (row_h + gap) - gap + pad;
+
+    draw_section_label(ui, t, content_x, margin, section_w, "Vitals", true);
+    ui.add_space(6.0);
+
+    let card = card_rect(ui, t, content_x, margin, section_w, card_h);
+    let card_x = card.min.x;
+
+    let inner_start = Rect::from_min_size(
+        Pos2::new(card.min.x + pad, card.min.y + pad),
+        Vec2::new(inner_w, row_h),
+    );
+    ui.advance_cursor_after_rect(inner_start);
+
+    draw_temp_bar(ui, t, card_x, inner_w, pad, data.temperature_c as i32);
+    ui.add_space(gap);
+
+    draw_vitals_kv(
+        ui, t, card_x, inner_w, pad,
+        "Percentage Used",
+        &format!("{}%", data.percentage_used),
+        Some("Controller-estimated drive endurance consumed. 100% does not necessarily mean the drive has failed."),
+    );
+    ui.add_space(gap);
+
+    draw_vitals_kv(
+        ui, t, card_x, inner_w, pad,
+        "Available Spare",
+        &format!("{}% (threshold {}%)", data.available_spare_pct, data.available_spare_threshold),
+        Some("Remaining spare NAND blocks the controller can use for remapping bad cells."),
+    );
+    ui.add_space(gap);
+
+    let poh = data.power_on_hours;
+    let days = poh / 24;
+    let poh_label = if days > 0 {
+        format!("{} hours ({} days)", fmt_thousands(poh), fmt_thousands(days))
+    } else {
+        format!("{} hours", poh)
+    };
+    draw_vitals_kv(
+        ui, t, card_x, inner_w, pad,
+        "Power-On Hours",
+        &poh_label,
+        Some("Total time the drive has been powered on since manufacture."),
+    );
+    ui.add_space(gap);
+
+    draw_vitals_kv(
+        ui, t, card_x, inner_w, pad,
+        "Power Cycles",
+        &fmt_thousands(data.power_cycles),
+        Some("Number of times the drive has been powered on and off."),
+    );
+    ui.add_space(gap);
+
+    // Data written: NVMe reports in 512 KiB units
+    let dw_gib = data.data_units_written as f64 * 512.0 / (1024.0 * 1024.0);
+    let dw_label = if dw_gib >= 1024.0 {
+        format!("{:.2} TiB", dw_gib / 1024.0)
+    } else {
+        format!("{:.1} GiB", dw_gib)
+    };
+    draw_vitals_kv(
+        ui, t, card_x, inner_w, pad,
+        "Data Written",
+        &dw_label,
+        Some("Cumulative host data written in 512 KiB units (NVMe spec)."),
+    );
+    ui.add_space(gap);
+
+    draw_vitals_kv(
+        ui, t, card_x, inner_w, pad,
+        "Unsafe Shutdowns",
+        &fmt_thousands(data.unsafe_shutdowns),
+        Some("Power loss events that did not allow the drive to flush its cache. High counts can accelerate NAND wear."),
+    );
+    ui.add_space(gap);
+
+    let media_color = if data.media_errors > 0 { Color32::from_rgb(241, 196, 15) } else { t.txt_pri };
+    // Use manual painter for coloured value
+    let label_col_w = inner_w * 0.45;
+    let row_top = ui.cursor().min.y;
+    let row_rect = Rect::from_min_size(Pos2::new(card_x + pad, row_top), Vec2::new(inner_w, row_h));
+    ui.painter().text(
+        Pos2::new(card_x + pad + label_col_w, row_top + row_h * 0.5),
+        Align2::RIGHT_CENTER, "Media Errors",
+        FontId::proportional(13.0), t.txt_sec,
+    );
+    ui.painter().text(
+        Pos2::new(card_x + pad + label_col_w + 8.0, row_top + row_h * 0.5),
+        Align2::LEFT_CENTER,
+        &fmt_thousands(data.media_errors),
+        FontId::proportional(13.0), media_color,
+    );
+    let resp = ui.allocate_rect(row_rect, Sense::hover());
+    if resp.hovered() {
+        if let Some(pos) = ui.ctx().pointer_latest_pos() {
+            show_tooltip_text(ui.ctx(), Id::new("health_tip_media_err"), pos, t,
+                "Errors that occurred directly on the NAND media. Anything above zero warrants attention.");
+        }
+    }
+    ui.add_space(gap);
+
+    let warn_color = if data.critical_warning != 0 { Color32::from_rgb(231, 76, 60) } else { t.txt_pri };
+    let warn_text = if data.critical_warning == 0 {
+        "None".to_string()
+    } else {
+        format!("0x{:02X}", data.critical_warning)
+    };
+    let row_top = ui.cursor().min.y;
+    let row_rect = Rect::from_min_size(Pos2::new(card_x + pad, row_top), Vec2::new(inner_w, row_h));
+    ui.painter().text(
+        Pos2::new(card_x + pad + label_col_w, row_top + row_h * 0.5),
+        Align2::RIGHT_CENTER, "Critical Warning",
+        FontId::proportional(13.0), t.txt_sec,
+    );
+    ui.painter().text(
+        Pos2::new(card_x + pad + label_col_w + 8.0, row_top + row_h * 0.5),
+        Align2::LEFT_CENTER, &warn_text,
+        FontId::proportional(13.0), warn_color,
+    );
+    let resp = ui.allocate_rect(row_rect, Sense::hover());
+    if resp.hovered() {
+        if let Some(pos) = ui.ctx().pointer_latest_pos() {
+            show_tooltip_text(ui.ctx(), Id::new("health_tip_crit_warn"), pos, t,
+                "Bit field set by the controller for serious health events (spare below threshold, temperature excursion, read-only mode, etc.).");
+        }
+    }
+
+    let cursor_y = ui.cursor().min.y;
+    let card_bot = card.max.y + pad;
+    if cursor_y < card_bot {
+        ui.add_space(card_bot - cursor_y);
+    }
+}
+
+// ── ATA attribute grid ────────────────────────────────────────────────────────
+
+fn draw_attribute_card(
+    ui: &mut egui::Ui,
+    t: &Theme,
+    dark: bool,
+    rect: Rect,
+    attr: &AtaAttribute,
+) {
+    let status_color = status_color(attr.status, dark);
+    ui.painter().rect_filled(rect, 8.0, t.bg_pri);
+    ui.painter().rect_stroke(rect, 8.0, Stroke::new(1.5, t.border), StrokeKind::Middle);
+
+    let pad = 10.0_f32;
+    let inner_x = rect.min.x + pad;
+    let inner_w = rect.width() - pad * 2.0;
+
+    // Status bar on left edge
+    let bar_rect = Rect::from_min_size(
+        rect.min + Vec2::new(0.0, 0.0),
+        Vec2::new(4.0, rect.height()),
+    );
+    ui.painter().rect_filled(bar_rect, egui::CornerRadius { nw: 8, sw: 8, ne: 0, se: 0 }, status_color);
+
+    // Attribute ID + name
+    let id_str = format!("0x{:02X}", attr.id);
+    ui.painter().text(
+        Pos2::new(inner_x, rect.min.y + 10.0),
+        Align2::LEFT_TOP,
+        &id_str,
+        FontId::proportional(11.0),
+        t.txt_sec,
+    );
+
+    // Name (may be truncated) — right side of same row
+    let name_galley = ui.ctx().fonts(|f| {
+        f.layout(
+            attr.name.to_owned(),
+            FontId::proportional(13.0),
+            t.txt_pri,
+            inner_w - 30.0,
+        )
+    });
+    ui.painter().add(egui::Shape::galley(
+        Pos2::new(inner_x + 30.0, rect.min.y + 8.0),
+        name_galley,
+        t.txt_pri,
+    ));
+
+    // C7 cable warning icon
+    if attr.id == 0xC7 && attr.raw > 0 {
+        let icon_id = Id::new(format!("health_c7_warn_{}", attr.id));
+        let icon_rect = Rect::from_min_size(
+            Pos2::new(rect.max.x - 20.0, rect.min.y + 6.0),
+            Vec2::splat(16.0),
+        );
+        let warn_r = ui.allocate_rect(icon_rect, Sense::hover());
+        ui.painter().text(
+            icon_rect.center(),
+            Align2::CENTER_CENTER,
+            format!("{}", ICON_WARNING),
+            FontId::proportional(14.0),
+            Color32::from_rgb(231, 76, 60),
+        );
+        if warn_r.hovered() {
+            if let Some(pos) = ui.ctx().pointer_latest_pos() {
+                show_tooltip_text(
+                    ui.ctx(), icon_id, pos, t,
+                    "High C7 (UltraDMA CRC Errors) usually means a faulty or loose SATA cable. Try reseating the cable.",
+                );
+            }
+        }
+    }
+
+    // Cur / Wst / Thr / Raw columns
+    let col_y = rect.min.y + 30.0;
+    let col_labels = ["Cur", "Wst", "Thr"];
+    let col_vals = [
+        attr.current.to_string(),
+        attr.worst.to_string(),
+        attr.threshold.to_string(),
+    ];
+    let col_count = 3usize;
+    let raw_col_w = inner_w * 0.4;
+    let meta_col_w = inner_w - raw_col_w;
+    let each_w = meta_col_w / col_count as f32;
+
+    for (i, (lbl, val)) in col_labels.iter().zip(col_vals.iter()).enumerate() {
+        let cx = inner_x + i as f32 * each_w + each_w * 0.5;
+        ui.painter().text(
+            Pos2::new(cx, col_y),
+            Align2::CENTER_TOP,
+            lbl,
+            FontId::proportional(11.0),
+            t.txt_sec,
+        );
+        ui.painter().text(
+            Pos2::new(cx, col_y + 14.0),
+            Align2::CENTER_TOP,
+            val,
+            FontId::proportional(13.0),
+            t.txt_pri,
+        );
+    }
+
+    // Raw
+    let raw_x = inner_x + meta_col_w;
+    ui.painter().text(
+        Pos2::new(raw_x + raw_col_w * 0.5, col_y),
+        Align2::CENTER_TOP,
+        "Raw",
+        FontId::proportional(11.0),
+        t.txt_sec,
+    );
+    let raw_str = fmt_thousands(attr.raw);
+    ui.painter().text(
+        Pos2::new(raw_x + raw_col_w * 0.5, col_y + 14.0),
+        Align2::CENTER_TOP,
+        &raw_str,
+        FontId::proportional(13.0),
+        status_color,
+    );
+
+    // Tooltip on hover (from attr_description)
+    let tip = attr_description(attr.id);
+    if !tip.is_empty() {
+        let hover_resp = ui.allocate_rect(rect, Sense::hover());
+        if hover_resp.hovered() {
+            if let Some(pos) = ui.ctx().pointer_latest_pos() {
+                show_tooltip_text(
+                    ui.ctx(),
+                    Id::new(format!("health_attr_tip_{}", attr.id)),
+                    pos,
+                    t,
+                    tip,
+                );
+            }
+        }
+    }
+}
+
+fn draw_attributes(
+    ui: &mut egui::Ui,
+    t: &Theme,
+    dark: bool,
+    content_x: f32,
+    margin: f32,
+    section_w: f32,
+    attrs: &[AtaAttribute],
+) {
+    // Section label + legend tooltip icon
+    let label_top = ui.cursor().min.y;
+    let row_h = 24.0_f32;
+    let row_rect = Rect::from_min_size(
+        Pos2::new(content_x + margin, label_top),
+        Vec2::new(section_w, row_h),
+    );
+    ui.painter().text(
+        Pos2::new(row_rect.min.x, row_rect.center().y),
+        Align2::LEFT_CENTER,
+        "Attributes",
+        FontId::new(13.0, egui::FontFamily::Name("InterBold".into())),
+        t.txt_sec,
+    );
+
+    // Legend icon (\u{F505} = question-circle)
+    let icon_x = row_rect.min.x + ui.ctx().fonts(|f| {
+        f.layout_no_wrap("Attributes".to_owned(), FontId::new(13.0, egui::FontFamily::Name("InterBold".into())), t.txt_sec)
+            .rect.width()
+    }) + 6.0;
+    let icon_rect = Rect::from_min_size(
+        Pos2::new(icon_x, row_rect.center().y - 8.0),
+        Vec2::splat(16.0),
+    );
+    let icon_resp = ui.allocate_rect(icon_rect, Sense::hover());
+    ui.painter().text(
+        icon_rect.center(),
+        Align2::CENTER_CENTER,
+        format!("{}", ICON_QUESTION),
+        FontId::proportional(15.0),
+        t.accent,
+    );
+    if icon_resp.hovered() {
+        if let Some(pos) = ui.ctx().pointer_latest_pos() {
+            show_tooltip_text(
+                ui.ctx(),
+                Id::new("health_attr_legend"),
+                pos,
+                t,
+                "Cur = current normalized value (100 = best)\nWst = worst recorded value\nThr = failure threshold\nRaw = actual raw sensor count",
+            );
+        }
+    }
+
+    ui.advance_cursor_after_rect(row_rect);
+    ui.add_space(6.0);
+
+    // 2-column grid
+    let card_h = 70.0_f32;
+    let card_gap = 8.0_f32;
+    let col_gap = 8.0_f32;
+    let cols = 2usize;
+    let card_w = (section_w - col_gap) / cols as f32;
+
+    for (i, attr) in attrs.iter().enumerate() {
+        let col = i % cols;
+        let row = i / cols;
+        let x = content_x + margin + col as f32 * (card_w + col_gap);
+        let top = ui.cursor().min.y;
+        let _y = if col == 0 { top } else { top - (if i > 1 { card_h + card_gap } else { 0.0 }) };
+
+        // For the first card in each row, just use cursor y
+        let card_y = if col == 0 {
+            top
+        } else {
+            // same row as the previous card
+            top - card_h - card_gap
+        };
+
+        let _ = row;
+        let card = Rect::from_min_size(Pos2::new(x, card_y), Vec2::new(card_w, card_h));
+        draw_attribute_card(ui, t, dark, card, attr);
+
+        if col == cols - 1 || i == attrs.len() - 1 {
+            let advance_rect = Rect::from_min_size(
+                Pos2::new(content_x + margin, card.min.y),
+                Vec2::new(section_w, card_h),
+            );
+            ui.advance_cursor_after_rect(advance_rect);
+            if i != attrs.len() - 1 {
+                ui.add_space(card_gap);
+            }
+        }
+    }
+}
+
+// ── Self-test card ────────────────────────────────────────────────────────────
+
+fn draw_self_test(
+    ui: &mut egui::Ui,
+    t: &Theme,
+    content_x: f32,
+    margin: f32,
+    section_w: f32,
+    data: &AtaSmartData,
+    ctx: &egui::Context,
+    device_path: &str,
+) {
+    use crate::smart_reader::SelfTestStatus;
+
+    let pad = 16.0_f32;
+    let row_h = 22.0_f32;
+    let btn_h = 32.0_f32;
+    let card_h = pad + row_h + 8.0 + btn_h + pad;
+
+    draw_section_label(ui, t, content_x, margin, section_w, "Self-Test", false);
+    ui.add_space(6.0);
+
+    let card = card_rect(ui, t, content_x, margin, section_w, card_h);
+    let inner_w = section_w - pad * 2.0;
+
+    // Last result row
+    let result_text = match &data.self_test {
+        None => "No self-test log available.".to_string(),
+        Some(r) => {
+            let kind_str = r.kind.label();
+            match &r.status {
+                SelfTestStatus::Passed => format!("{kind_str} test passed."),
+                SelfTestStatus::Failed { reason } => format!("{kind_str} test FAILED: {reason}"),
+                SelfTestStatus::InProgress { pct_remaining } =>
+                    format!("{kind_str} test in progress ({pct_remaining}% remaining)"),
+                SelfTestStatus::Aborted => format!("{kind_str} test was aborted."),
+                SelfTestStatus::NeverRun => "No self-test has been run.".to_string(),
+                SelfTestStatus::Unknown => "Unknown self-test status.".to_string(),
+            }
+        }
+    };
+
+    let result_color = match &data.self_test {
+        Some(r) => match &r.status {
+            SelfTestStatus::Passed => Color32::from_rgb(39, 174, 96),
+            SelfTestStatus::Failed { .. } => Color32::from_rgb(231, 76, 60),
+            _ => t.txt_sec,
+        },
+        None => t.txt_sec,
+    };
+
+    ui.painter().text(
+        Pos2::new(card.min.x + pad, card.min.y + pad + row_h * 0.5),
+        Align2::LEFT_CENTER,
+        &result_text,
+        FontId::proportional(13.0),
+        result_color,
+    );
+
+    // Short + Long test buttons
+    let btn_y = card.min.y + pad + row_h + 8.0;
+    let btn_w = (inner_w - 8.0) * 0.5;
+
+    let short_rect = Rect::from_min_size(Pos2::new(card.min.x + pad, btn_y), Vec2::new(btn_w, btn_h));
+    let long_rect = Rect::from_min_size(Pos2::new(card.min.x + pad + btn_w + 8.0, btn_y), Vec2::new(btn_w, btn_h));
+
+    for (rect, label, long) in [
+        (short_rect, "Run Short Test", false),
+        (long_rect, "Run Extended Test", true),
+    ] {
+        let r = ui.interact(rect, Id::new(format!("health_test_{}", label)), Sense::click());
+        let bg = if r.hovered() { t.hover } else { t.bg_sec };
+        ui.painter().rect_filled(rect, 4.0, bg);
+        ui.painter().rect_stroke(rect, 4.0, Stroke::new(1.5, t.border), StrokeKind::Middle);
+        ui.painter().text(rect.center(), Align2::CENTER_CENTER, label, FontId::proportional(13.0), t.txt_pri);
+        if r.clicked() {
+            crate::smart_reader::trigger_self_test(device_path, long);
+            ctx.request_repaint();
+        }
+    }
+
+    let cursor_y = ui.cursor().min.y;
+    let card_bot = card.max.y + pad;
+    if cursor_y < card_bot {
+        ui.add_space(card_bot - cursor_y);
+    }
+}
+
+// ── HTML report ───────────────────────────────────────────────────────────────
+
+fn build_report_html(drive: &DetectedDrive, report: &SmartReport) -> String {
+    let now = chrono::Local::now();
+    let ts = now.format("%Y-%m-%d %H:%M:%S").to_string();
+
+    let body = match report {
+        SmartReport::Ata(data) => {
+            let attrs: String = data.attributes.iter().map(|a| {
+                let status_str = match a.status {
+                    AttrStatus::Good    => "good",
+                    AttrStatus::Warning => "warn",
+                    AttrStatus::Failed  => "fail",
+                    AttrStatus::Info    => "info",
+                };
+                format!(
+                    r#"<tr class="{st}"><td>0x{id:02X}</td><td>{name}</td><td>{cur}</td><td>{wst}</td><td>{thr}</td><td>{raw}</td></tr>"#,
+                    st = status_str, id = a.id, name = a.name,
+                    cur = a.current, wst = a.worst, thr = a.threshold,
+                    raw = fmt_thousands(a.raw),
+                )
+            }).collect();
+
+            let vitals = {
+                let temp = data.temperature_c.map(|c| format!("{c}°C")).unwrap_or_else(|| "N/A".to_string());
+                let poh = data.power_on_hours.map(|h| format!("{} hours", fmt_thousands(h))).unwrap_or_else(|| "N/A".to_string());
+                let pc = data.power_cycles.map(|c| fmt_thousands(c)).unwrap_or_else(|| "N/A".to_string());
+                format!(
+                    r#"<div class="vitals"><strong>Temperature:</strong> <span>{temp}</span></div>
+<div class="vitals"><strong>Power-On Hours:</strong> <span>{poh}</span></div>
+<div class="vitals"><strong>Power Cycles:</strong> <span>{pc}</span></div>"#
+                )
+            };
+
+            format!(
+                r#"<h2>ATA SMART</h2>{vitals}
+<table>
+<thead><tr><th>ID</th><th>Name</th><th>Cur</th><th>Wst</th><th>Thr</th><th>Raw</th></tr></thead>
+<tbody>{attrs}</tbody>
+</table>"#
+            )
+        }
+        SmartReport::Nvme(d) => {
+            let dw_gib = d.data_units_written as f64 * 512.0 / (1024.0 * 1024.0);
+            let dw_label = if dw_gib >= 1024.0 { format!("{:.2} TiB", dw_gib / 1024.0) } else { format!("{:.1} GiB", dw_gib) };
+            format!(
+                r#"<h2>NVMe Health</h2>
+<div class="vitals"><strong>Temperature:</strong> <span>{}°C</span></div>
+<div class="vitals"><strong>Percentage Used:</strong> <span>{}%</span></div>
+<div class="vitals"><strong>Available Spare:</strong> <span>{}% (threshold {}%)</span></div>
+<div class="vitals"><strong>Power-On Hours:</strong> <span>{} hours</span></div>
+<div class="vitals"><strong>Power Cycles:</strong> <span>{}</span></div>
+<div class="vitals"><strong>Data Written:</strong> <span>{}</span></div>
+<div class="vitals"><strong>Unsafe Shutdowns:</strong> <span>{}</span></div>
+<div class="vitals"><strong>Media Errors:</strong> <span>{}</span></div>
+<div class="vitals"><strong>Critical Warning:</strong> <span>0x{:02X}</span></div>"#,
+                d.temperature_c, d.percentage_used,
+                d.available_spare_pct, d.available_spare_threshold,
+                fmt_thousands(d.power_on_hours),
+                fmt_thousands(d.power_cycles),
+                dw_label,
+                fmt_thousands(d.unsafe_shutdowns),
+                fmt_thousands(d.media_errors),
+                d.critical_warning,
+            )
+        }
+        SmartReport::Unavailable { reason } => {
+            format!("<p>SMART data unavailable: {reason}</p>")
+        }
+    };
+
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Health Status Report</title>
+<style>
+  body {{ background:#1e1e1e; color:#d4d4d4; font-family:sans-serif; margin:2em; }}
+  h1 {{ color:#c0a0f0; }}
+  h2 {{ color:#8e8e8e; border-bottom:1px solid #333; padding-bottom:6px; }}
+  table {{ border-collapse:collapse; width:100%; margin-top:1em; }}
+  th {{ background:#2d2d2d; color:#a0a0a0; padding:6px 10px; text-align:left; }}
+  td {{ padding:6px 10px; border-bottom:1px solid #2a2a2a; }}
+  tr.good td:first-child {{ border-left:4px solid #27ae60; }}
+  tr.warn td:first-child {{ border-left:4px solid #f1c40f; }}
+  tr.fail td:first-child {{ border-left:4px solid #e74c3c; }}
+  tr.info td:first-child {{ border-left:4px solid #2980b9; }}
+  .vitals {{ margin:4px 0; }}
+  .vitals strong {{ color:#a0a0a0; margin-right:8px; }}
+</style>
+</head>
+<body>
+<h1>Health Status Report</h1>
+<p><strong>Drive:</strong> {model}</p>
+<p><strong>Bus:</strong> {bus} &nbsp; <strong>Serial:</strong> {serial}</p>
+<p><strong>Generated:</strong> {ts}</p>
+{body}
+</body>
+</html>"#,
+        model = drive.model,
+        bus = drive.bus.label(),
+        serial = drive.serial,
+    )
+}
+
+pub fn save_smart_report(drive: &DetectedDrive, report: &SmartReport) {
+    let html = build_report_html(drive, report);
+    let filename = format!("SMART-{}.html", drive.safe_filename_stem());
+
+    std::thread::spawn(move || {
+        let path = rfd::FileDialog::new()
+            .set_file_name(&filename)
+            .add_filter("HTML file", &["html"])
+            .save_file();
+        if let Some(p) = path {
+            let _ = std::fs::write(p, html.as_bytes());
+        }
+    });
+}
+
+// ── Main page drawing entry point ─────────────────────────────────────────────
+
+impl DiskoriaApp {
+    pub fn draw_health_status_page(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        t: &Theme,
+        dark: bool,
+        margin: f32,
+        content_x: f32,
+        content_w: f32,
+    ) {
+        let section_w = content_w - margin * 2.0;
+
+        // ── Page title row ────────────────────────────────────────────────────
+        crate::about::draw_about_header_row(
+            self, ui, t, margin, content_x, content_w,
+            "Health Status",
+        );
+
+        // ── Subtitle + refresh button ─────────────────────────────────────────
+        ui.horizontal(|ui| {
+            let pad = (content_x + margin) - ui.min_rect().left();
+            if pad > 0.0 { ui.add_space(pad); }
+
+            ui.label(
+                RichText::new("Monitor drive health by viewing self-reported diagnostics.")
+                    .size(14.0)
+                    .color(t.txt_sec),
+            );
+            ui.add_space(16.0);
+
+            ui.push_id("diskoria_health_refresh", |ui| {
+                let refresh = ui.add_enabled(
+                    !self.drives_loading,
+                    egui::Button::new(RichText::new("⟳ Refresh").color(t.txt_pri)),
+                );
+                if refresh.clicked() {
+                    self.health_report = None;
+                    self.health_poll_running = false;
+                    self.spawn_drive_enumeration(ctx);
+                }
+            });
+
+            if self.drives_loading {
+                ui.add_space(10.0);
+                ui.spinner();
+                ui.label(RichText::new("Loading drives…").color(t.txt_sec));
+            }
+        });
+        ui.add_space(20.0);
+
+        // Error / empty states
+        if let Some(ref err) = self.drives_error {
+            ui.horizontal(|ui| {
+                let pad = (content_x + margin) - ui.min_rect().left();
+                if pad > 0.0 { ui.add_space(pad); }
+                ui.label(RichText::new(format!("Could not enumerate drives: {err}")).size(13.0).color(Color32::from_rgb(231, 76, 60)));
+            });
+            ui.add_space(12.0);
+        }
+
+        if !self.drives_loading && self.drives.is_empty() && self.drives_error.is_none() {
+            ui.horizontal(|ui| {
+                let pad = (content_x + margin) - ui.min_rect().left();
+                if pad > 0.0 { ui.add_space(pad); }
+                ui.label(RichText::new("No physical disks found.").size(14.0).color(t.txt_sec));
+            });
+            return;
+        }
+
+        if self.drives.is_empty() {
+            return;
+        }
+
+        // ── Drive picker ──────────────────────────────────────────────────────
+        draw_drive_picker(self, ui, t, content_x, margin, section_w);
+        ui.add_space(16.0);
+
+        // Trigger poll if we don't have a report yet for this drive
+        self.spawn_health_poll_if_needed(ctx);
+
+        // Poll incoming result
+        self.poll_health_report(ctx);
+
+        // ── Poll spinner ──────────────────────────────────────────────────────
+        if self.health_poll_running && self.health_report.is_none() {
+            ui.horizontal(|ui| {
+                let pad = (content_x + margin) - ui.min_rect().left();
+                if pad > 0.0 { ui.add_space(pad); }
+                ui.spinner();
+                ui.label(RichText::new("Reading drive health…").color(t.txt_sec));
+            });
+            ui.add_space(8.0);
+            return;
+        }
+
+        let report = match &self.health_report {
+            Some(r) => r.clone(),
+            None => return,
+        };
+
+        let sel = self.health_selected_drive.min(self.drives.len().saturating_sub(1));
+        let drive = self.drives[sel].clone();
+
+        // ── Report display ────────────────────────────────────────────────────
+        match &report {
+            SmartReport::Ata(data) => {
+                let data = data.clone();
+                draw_ata_vitals(ui, t, content_x, margin, section_w, &data);
+                ui.add_space(16.0);
+
+                if !data.attributes.is_empty() {
+                    draw_attributes(ui, t, dark, content_x, margin, section_w, &data.attributes);
+                    ui.add_space(16.0);
+                }
+
+                draw_self_test(
+                    ui, t, content_x, margin, section_w, &data,
+                    ctx, &drive.device_id,
+                );
+                ui.add_space(16.0);
+            }
+            SmartReport::Nvme(data) => {
+                let data = data.clone();
+                draw_nvme_vitals(ui, t, content_x, margin, section_w, &data);
+                ui.add_space(16.0);
+            }
+            SmartReport::Unavailable { reason } => {
+                let reason = reason.clone();
+                draw_unavailable(ui, t, content_x, margin, section_w, &reason);
+                ui.add_space(16.0);
+            }
+        }
+
+        // ── Save Report button ────────────────────────────────────────────────
+        if !matches!(report, SmartReport::Unavailable { .. }) {
+            ui.horizontal(|ui| {
+                let pad = (content_x + margin) - ui.min_rect().left();
+                if pad > 0.0 { ui.add_space(pad); }
+                let save_btn = small_browse_style_button(
+                    ui, t,
+                    Id::new("diskoria_health_save_report"),
+                    ICON_FILETYPE_HTML,
+                    "Save Report",
+                    true,
+                );
+                if save_btn.clicked() {
+                    save_smart_report(&drive, &report);
+                }
+            });
+            ui.add_space(16.0);
+        }
+    }
+
+    // ── Poll lifecycle ────────────────────────────────────────────────────────
+
+    fn spawn_health_poll_if_needed(&mut self, ctx: &egui::Context) {
+        if self.health_poll_running || self.health_report.is_some() {
+            return;
+        }
+        if self.drives.is_empty() {
+            return;
+        }
+        let sel = self.health_selected_drive.min(self.drives.len().saturating_sub(1));
+        let drive = &self.drives[sel];
+        let device_path = drive.device_id.clone();
+        let bus = drive.bus;
+
+        self.health_poll_running = true;
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.health_poll_rx = Some(rx);
+
+        std::thread::spawn(move || {
+            let report = crate::smart_reader::query_smart_detail(&device_path, bus);
+            let _ = tx.send(report);
+        });
+
+        ctx.request_repaint();
+    }
+
+    fn poll_health_report(&mut self, ctx: &egui::Context) {
+        let rx = match self.health_poll_rx.take() {
+            Some(r) => r,
+            None => return,
+        };
+        match rx.try_recv() {
+            Ok(report) => {
+                self.health_report = Some(report);
+                self.health_poll_running = false;
+                ctx.request_repaint();
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                self.health_poll_rx = Some(rx);
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.health_poll_running = false;
+            }
+        }
+    }
+}

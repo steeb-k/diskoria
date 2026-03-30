@@ -56,6 +56,7 @@ const NAV_TOP: &[(&str, &str)] = &[
     ("\u{f3f8}", "Sector Test"),
     ("\u{f33b}", "Destructive Test"),
     ("\u{f57f}", "Speed Test"),
+    ("\u{f473}", "Health Status"),
 ];
 const NAV_BOTTOM: &[(&str, &str)] = &[
     ("\u{f431}", "About"),
@@ -144,9 +145,9 @@ pub struct DiskoriaApp {
     logo: Option<egui::TextureHandle>,
     logo_light: Option<egui::TextureHandle>,
     logo_size: [usize; 2],
-    drives: Vec<DetectedDrive>,
-    drives_loading: bool,
-    drives_error: Option<String>,
+    pub(crate) drives: Vec<DetectedDrive>,
+    pub(crate) drives_loading: bool,
+    pub(crate) drives_error: Option<String>,
     drive_poll_rx: Option<mpsc::Receiver<Result<Vec<DetectedDrive>, String>>>,
     selected_drive: usize,
 
@@ -278,6 +279,12 @@ pub struct DiskoriaApp {
     /// Confirm before stopping an in-progress destructive test.
     show_destructive_stop_confirm: bool,
     destructive_stop_confirm_focus: Option<usize>,
+
+    /// Health Status page state.
+    pub(crate) health_selected_drive: usize,
+    pub(crate) health_report: Option<crate::smart_reader::SmartReport>,
+    pub(crate) health_poll_rx: Option<std::sync::mpsc::Receiver<crate::smart_reader::SmartReport>>,
+    pub(crate) health_poll_running: bool,
 
     pub(crate) about_appicon: Option<egui::TextureHandle>,
     #[cfg(windows)]
@@ -472,6 +479,10 @@ impl DiskoriaApp {
             destructive_start_confirm_focus: None,
             show_destructive_stop_confirm: false,
             destructive_stop_confirm_focus: None,
+            health_selected_drive: 0,
+            health_report: None,
+            health_poll_rx: None,
+            health_poll_running: false,
             about_appicon,
             #[cfg(windows)]
             update_check_rx: None,
@@ -1574,7 +1585,7 @@ impl DiskoriaApp {
         }
     }
 
-    fn spawn_drive_enumeration(&mut self, ctx: &egui::Context) {
+    pub(crate) fn spawn_drive_enumeration(&mut self, ctx: &egui::Context) {
         log::debug!(target: "diskoria", "spawn_drive_enumeration: starting WMI thread");
         self.surface_drive_removed_msg = None;
         self.speed_drive_removed_msg = None;
@@ -2721,8 +2732,9 @@ impl DiskoriaApp {
                             0 => self.draw_sector_page(ui, ctx, &t, dark, margin, content_x, content_w),
                             1 => self.draw_destructive_page(ui, ctx, &t, dark, margin, content_x, content_w),
                             2 => self.draw_speed_page(ui, ctx, &t, dark, margin, content_x, content_w),
-                            3 => self.draw_about_page(ui, ctx, &t, margin, content_x, content_w),
-                            4 => self.draw_settings_theme(ui, ctx, &t, margin, content_x, content_w),
+                            3 => self.draw_health_status_page(ui, ctx, &t, dark, margin, content_x, content_w),
+                            4 => self.draw_about_page(ui, ctx, &t, margin, content_x, content_w),
+                            5 => self.draw_settings_theme(ui, ctx, &t, margin, content_x, content_w),
                             _ => {}
                         }
                     });

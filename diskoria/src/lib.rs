@@ -19,6 +19,7 @@ pub mod destructive_test;
 mod shortcuts;
 mod smart_health;
 pub mod smart_reader;
+mod smart_health_page;
 mod theme;
 mod update;
 mod widgets;
