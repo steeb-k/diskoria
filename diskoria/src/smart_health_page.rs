@@ -1000,57 +1000,58 @@ fn draw_self_test(
 fn build_report_html(drive: &DetectedDrive, report: &SmartReport) -> String {
     let now = chrono::Local::now();
     let ts = now.format("%Y-%m-%d %H:%M:%S").to_string();
+    let capacity = crate::detected_drive::DetectedDrive::format_size(drive.size_bytes);
 
     let body = match report {
         SmartReport::Ata(data) => {
+            let temp = data.temperature_c.map(|c| format!("{c}°C")).unwrap_or_else(|| "N/A".to_string());
+            let poh  = data.power_on_hours.map(|h| fmt_thousands(h)).unwrap_or_else(|| "N/A".to_string());
+            let pc   = data.power_cycles.map(|c| fmt_thousands(c)).unwrap_or_else(|| "N/A".to_string());
+
+            let vitals = format!(
+                r#"<div class="vitals"><p><strong>Temperature</strong><span>{temp}</span></p><p><strong>Power-On Hours</strong><span>{poh}</span></p><p><strong>Power Cycles</strong><span>{pc}</span></p></div>"#
+            );
+
             let attrs: String = data.attributes.iter().map(|a| {
-                let status_str = match a.status {
-                    AttrStatus::Good    => "good",
-                    AttrStatus::Warning => "warn",
-                    AttrStatus::Failed  => "fail",
-                    AttrStatus::Info    => "info",
+                let (cls, status_str) = match a.status {
+                    AttrStatus::Good    => ("good", "GOOD"),
+                    AttrStatus::Warning => ("warn", "WARN"),
+                    AttrStatus::Failed  => ("fail", "FAIL"),
+                    AttrStatus::Info    => ("info", "INFO"),
                 };
                 format!(
-                    r#"<tr class="{st}"><td>0x{id:02X}</td><td>{name}</td><td>{cur}</td><td>{wst}</td><td>{thr}</td><td>{raw}</td></tr>"#,
-                    st = status_str, id = a.id, name = a.name,
+                    "<tr class=\"{cls}\">\n<td>{id:02X}</td><td>{name}</td><td>{st}</td>\n<td>{cur}</td><td>{wst}</td><td>{thr}</td><td>{raw}</td>\n</tr>",
+                    id = a.id, name = a.name, st = status_str,
                     cur = a.current, wst = a.worst, thr = a.threshold,
                     raw = fmt_thousands(a.raw),
                 )
-            }).collect();
-
-            let vitals = {
-                let temp = data.temperature_c.map(|c| format!("{c}°C")).unwrap_or_else(|| "N/A".to_string());
-                let poh = data.power_on_hours.map(|h| format!("{} hours", fmt_thousands(h))).unwrap_or_else(|| "N/A".to_string());
-                let pc = data.power_cycles.map(|c| fmt_thousands(c)).unwrap_or_else(|| "N/A".to_string());
-                format!(
-                    r#"<div class="vitals"><strong>Temperature:</strong> <span>{temp}</span></div>
-<div class="vitals"><strong>Power-On Hours:</strong> <span>{poh}</span></div>
-<div class="vitals"><strong>Power Cycles:</strong> <span>{pc}</span></div>"#
-                )
-            };
+            }).collect::<Vec<_>>().join("\n");
 
             format!(
-                r#"<h2>ATA SMART</h2>{vitals}
-<table>
-<thead><tr><th>ID</th><th>Name</th><th>Cur</th><th>Wst</th><th>Thr</th><th>Raw</th></tr></thead>
-<tbody>{attrs}</tbody>
-</table>"#
+                r#"{vitals}<h2>Attributes</h2>
+<table class="attrs">
+<thead><tr>
+<th>ID</th><th>Name</th><th>Status</th>
+<th>Current</th><th>Worst</th><th>Threshold</th><th>Raw</th>
+</tr></thead><tbody>{attrs}</tbody></table>"#
             )
         }
         SmartReport::Nvme(d) => {
             let dw_gib = d.data_units_written as f64 * 512.0 / (1024.0 * 1024.0);
             let dw_label = if dw_gib >= 1024.0 { format!("{:.2} TiB", dw_gib / 1024.0) } else { format!("{:.1} GiB", dw_gib) };
+            let warn_str = if d.critical_warning == 0 { "None".to_string() } else { format!("0x{:02X}", d.critical_warning) };
             format!(
-                r#"<h2>NVMe Health</h2>
-<div class="vitals"><strong>Temperature:</strong> <span>{}°C</span></div>
-<div class="vitals"><strong>Percentage Used:</strong> <span>{}%</span></div>
-<div class="vitals"><strong>Available Spare:</strong> <span>{}% (threshold {}%)</span></div>
-<div class="vitals"><strong>Power-On Hours:</strong> <span>{} hours</span></div>
-<div class="vitals"><strong>Power Cycles:</strong> <span>{}</span></div>
-<div class="vitals"><strong>Data Written:</strong> <span>{}</span></div>
-<div class="vitals"><strong>Unsafe Shutdowns:</strong> <span>{}</span></div>
-<div class="vitals"><strong>Media Errors:</strong> <span>{}</span></div>
-<div class="vitals"><strong>Critical Warning:</strong> <span>0x{:02X}</span></div>"#,
+                r#"<div class="vitals">
+<p><strong>Temperature</strong><span>{}°C</span></p>
+<p><strong>Percentage Used</strong><span>{}%</span></p>
+<p><strong>Available Spare</strong><span>{}% (threshold {}%)</span></p>
+<p><strong>Power-On Hours</strong><span>{}</span></p>
+<p><strong>Power Cycles</strong><span>{}</span></p>
+<p><strong>Data Written</strong><span>{}</span></p>
+<p><strong>Unsafe Shutdowns</strong><span>{}</span></p>
+<p><strong>Media Errors</strong><span>{}</span></p>
+<p><strong>Critical Warning</strong><span>{}</span></p>
+</div>"#,
                 d.temperature_c, d.percentage_used,
                 d.available_spare_pct, d.available_spare_threshold,
                 fmt_thousands(d.power_on_hours),
@@ -1058,11 +1059,11 @@ fn build_report_html(drive: &DetectedDrive, report: &SmartReport) -> String {
                 dw_label,
                 fmt_thousands(d.unsafe_shutdowns),
                 fmt_thousands(d.media_errors),
-                d.critical_warning,
+                warn_str,
             )
         }
         SmartReport::Unavailable { reason } => {
-            format!("<p>SMART data unavailable: {reason}</p>")
+            format!("<p class=\"fail\">SMART data unavailable: {reason}</p>")
         }
     };
 
@@ -1070,34 +1071,61 @@ fn build_report_html(drive: &DetectedDrive, report: &SmartReport) -> String {
         r#"<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<title>Health Status Report</title>
+<meta charset="utf-8">
+<title>Health Data Report — {model}</title>
 <style>
-  body {{ background:#1e1e1e; color:#d4d4d4; font-family:sans-serif; margin:2em; }}
-  h1 {{ color:#c0a0f0; }}
-  h2 {{ color:#8e8e8e; border-bottom:1px solid #333; padding-bottom:6px; }}
-  table {{ border-collapse:collapse; width:100%; margin-top:1em; }}
-  th {{ background:#2d2d2d; color:#a0a0a0; padding:6px 10px; text-align:left; }}
-  td {{ padding:6px 10px; border-bottom:1px solid #2a2a2a; }}
-  tr.good td:first-child {{ border-left:4px solid #27ae60; }}
-  tr.warn td:first-child {{ border-left:4px solid #f1c40f; }}
-  tr.fail td:first-child {{ border-left:4px solid #e74c3c; }}
-  tr.info td:first-child {{ border-left:4px solid #2980b9; }}
-  .vitals {{ margin:4px 0; }}
-  .vitals strong {{ color:#a0a0a0; margin-right:8px; }}
+*, *::before, *::after {{ box-sizing: border-box; }}
+body {{
+  font-family: system-ui, -apple-system, sans-serif;
+  max-width: 920px; margin: 40px auto; padding: 0 24px;
+  background: #1e1e1e; color: #e0e0e0;
+  line-height: 1.5;
+}}
+h1 {{ font-size: 1.5rem; margin: 0 0 4px; color: #fff; }}
+h2 {{ font-size: 1rem; margin: 28px 0 10px; color: #aaa;
+      text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }}
+.meta {{ color: #777; font-size: 0.85rem; margin-bottom: 28px; }}
+table {{ border-collapse: collapse; width: 100%; margin-bottom: 20px; font-size: 0.9rem; }}
+th, td {{ text-align: left; padding: 7px 12px; border: 1px solid #333; }}
+thead th {{
+  background: #2a2a2a; color: #aaa;
+  font-size: 0.75rem; text-transform: uppercase; letter-spacing: .05em;
+  font-weight: 600;
+}}
+table.info th {{ width: 180px; background: #252525; color: #888; font-weight: 500; }}
+table.info td {{ background: #222; }}
+table.attrs tbody tr {{ background: #222; }}
+table.attrs tbody tr:hover {{ background: #272727; }}
+.good td:nth-child(3) {{ color: #66bb6a; font-weight: 600; }}
+.warn td:nth-child(3) {{ color: #ffa726; font-weight: 600; }}
+.fail td:nth-child(3) {{ color: #ef5350; font-weight: 600; }}
+.info td:nth-child(3) {{ color: #78909c; }}
+.fail {{ background: #2a1a1a !important; }}
+.warn {{ background: #2a2010 !important; }}
+p.fail {{ color: #ef5350; }}
+.vitals p {{ margin: 4px 0; }}
+.vitals strong {{ color: #bbb; font-weight: 500; }}
+.vitals span {{ color: #fff; font-weight: 600; margin-left: 6px; }}
 </style>
 </head>
 <body>
-<h1>Health Status Report</h1>
-<p><strong>Drive:</strong> {model}</p>
-<p><strong>Bus:</strong> {bus} &nbsp; <strong>Serial:</strong> {serial}</p>
-<p><strong>Generated:</strong> {ts}</p>
+<h1>Health Data Report — {model}</h1>
+<p class="meta">Generated {ts}</p>
+<table class="info">
+<tr><th>Model</th><td>{model}</td></tr>
+<tr><th>Serial</th><td>{serial}</td></tr>
+<tr><th>Bus</th><td>{bus}</td></tr>
+<tr><th>Media</th><td>{media}</td></tr>
+<tr><th>Capacity</th><td>{capacity}</td></tr>
+</table>
 {body}
 </body>
 </html>"#,
-        model = drive.model,
-        bus = drive.bus.label(),
-        serial = drive.serial,
+        model    = drive.model,
+        serial   = drive.serial,
+        bus      = drive.bus.label(),
+        media    = drive.media.label(),
+        capacity = capacity,
     )
 }
 
@@ -1131,11 +1159,61 @@ impl DiskoriaApp {
     ) {
         let section_w = content_w - margin * 2.0;
 
-        // ── Page title row ────────────────────────────────────────────────────
-        crate::about::draw_about_header_row(
-            self, ui, t, margin, content_x, content_w,
-            "Health Status",
-        );
+        // ── Page title row (title left, Export Log right) ─────────────────────
+        {
+            use crate::about::ABOUT_HEADER_ROW_H;
+            let row_top = ui.cursor().min.y;
+            let row_rect = Rect::from_min_size(
+                Pos2::new(content_x + margin, row_top),
+                Vec2::new(section_w, ABOUT_HEADER_ROW_H),
+            );
+
+            // Title
+            ui.painter().text(
+                Pos2::new(row_rect.min.x, row_rect.center().y),
+                Align2::LEFT_CENTER,
+                "Health Status",
+                egui::FontId::new(28.0, egui::FontFamily::Proportional),
+                t.txt_pri,
+            );
+
+            // Export Log button — only enabled when a non-Unavailable report is loaded
+            let has_report = self.health_report.as_ref()
+                .map(|r| !matches!(r, SmartReport::Unavailable { .. }))
+                .unwrap_or(false);
+
+            // We need to allocate the UI so the button sits right-aligned.
+            // Grab a copy of what we need before the mutable borrow below.
+            let export_drive = if has_report && !self.drives.is_empty() {
+                let sel = self.health_selected_drive.min(self.drives.len().saturating_sub(1));
+                Some(self.drives[sel].clone())
+            } else {
+                None
+            };
+            let export_report = if has_report { self.health_report.clone() } else { None };
+
+            ui.allocate_new_ui(
+                UiBuilder::new()
+                    .max_rect(row_rect)
+                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                |ui| {
+                    let btn = small_browse_style_button(
+                        ui, t,
+                        Id::new("diskoria_health_export"),
+                        ICON_FILETYPE_HTML,
+                        "Export Log",
+                        has_report,
+                    );
+                    if btn.clicked() {
+                        if let (Some(drv), Some(rep)) = (export_drive, export_report) {
+                            save_smart_report(&drv, &rep);
+                        }
+                    }
+                },
+            );
+
+            ui.advance_cursor_after_rect(row_rect);
+        }
 
         // ── Subtitle + refresh button ─────────────────────────────────────────
         ui.horizontal(|ui| {
@@ -1252,24 +1330,6 @@ impl DiskoriaApp {
             }
         }
 
-        // ── Save Report button ────────────────────────────────────────────────
-        if !matches!(report, SmartReport::Unavailable { .. }) {
-            ui.horizontal(|ui| {
-                let pad = (content_x + margin) - ui.min_rect().left();
-                if pad > 0.0 { ui.add_space(pad); }
-                let save_btn = small_browse_style_button(
-                    ui, t,
-                    Id::new("diskoria_health_save_report"),
-                    ICON_FILETYPE_HTML,
-                    "Save Report",
-                    true,
-                );
-                if save_btn.clicked() {
-                    save_smart_report(&drive, &report);
-                }
-            });
-            ui.add_space(16.0);
-        }
     }
 
     // ── Poll lifecycle ────────────────────────────────────────────────────────
