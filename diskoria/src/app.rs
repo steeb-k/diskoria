@@ -287,6 +287,10 @@ pub struct DiskoriaApp {
     pub(crate) health_poll_running: bool,
     /// When the last completed SMART poll finished (used for live refresh).
     pub(crate) health_last_poll: Option<std::time::Instant>,
+    /// Self-test modal state.
+    pub(crate) health_test_active: bool,
+    pub(crate) health_test_kind: Option<crate::smart_reader::SelfTestKind>,
+    pub(crate) health_test_error: Option<String>,
 
     pub(crate) about_appicon: Option<egui::TextureHandle>,
     #[cfg(windows)]
@@ -486,6 +490,9 @@ impl DiskoriaApp {
             health_poll_rx: None,
             health_poll_running: false,
             health_last_poll: None,
+            health_test_active: false,
+            health_test_kind: None,
+            health_test_error: None,
             about_appicon,
             #[cfg(windows)]
             update_check_rx: None,

@@ -216,7 +216,10 @@ pub fn query_smart_detail(_device_path: &str, _bus: crate::detected_drive::BusKi
 }
 
 #[cfg(not(windows))]
-pub fn trigger_self_test(_device_path: &str, _long_test: bool) {}
+pub fn trigger_self_test(_device_path: &str, _long_test: bool) -> bool { false }
+
+#[cfg(not(windows))]
+pub fn abort_self_test(_device_path: &str) -> bool { false }
 
 // ── Windows implementation ────────────────────────────────────────────────────
 
@@ -232,8 +235,10 @@ pub fn query_smart_detail(device_path: &str, bus: crate::detected_drive::BusKind
     }
 }
 
+/// Send an ATA SMART self-test or abort command.
+/// Returns `true` if the IOCTL was accepted by the driver.
 #[cfg(windows)]
-pub fn trigger_self_test(device_path: &str, long_test: bool) {
+fn send_self_test_cmd(device_path: &str, subcommand: u8) -> bool {
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
@@ -243,7 +248,6 @@ pub fn trigger_self_test(device_path: &str, long_test: bool) {
     const GENERIC_READ: u32 = 0x80000000;
     const GENERIC_WRITE: u32 = 0x40000000;
     const SMART_SEND_DRIVE_COMMAND: u32 = 0x0007C084;
-    const SMART_CMD: u8 = 0xB0;
     const EXECUTE_OFFLINE_DIAGS: u8 = 0xD4;
 
     let path_wide: Vec<u16> = device_path
@@ -263,19 +267,15 @@ pub fn trigger_self_test(device_path: &str, long_test: bool) {
         )
     };
     if handle == INVALID_HANDLE_VALUE {
-        return;
+        let err = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+        log::warn!(target: "diskoria", "send_self_test_cmd: CreateFileW failed path={device_path} err={err}");
+        return false;
     }
 
-    // SENDCMDINPARAMS: 32 bytes
+    // SENDCMDINPARAMS: 32 bytes (IDEREGS layout)
     let mut cmd_in = [0u8; 32];
     cmd_in[0..4].copy_from_slice(&512u32.to_le_bytes()); // cBufferSize
-    cmd_in[4] = if long_test { 0xC1 } else { 0x01 };    // bFeaturesReg (subcommand)
-    cmd_in[10] = EXECUTE_OFFLINE_DIAGS;                   // bCommandReg
-    cmd_in[11] = SMART_CMD;                               // bDriveHeadReg placeholder
-
-    // Reorder to actual IDEREGS layout: features, sectorcount, sectornumber, cyllow, cylhigh, drivehead, command, reserved
-    let sub = if long_test { 0xC1u8 } else { 0x01u8 };
-    cmd_in[4] = sub;             // bFeaturesReg
+    cmd_in[4] = subcommand;      // bFeaturesReg (subcommand)
     cmd_in[5] = 0x00;            // bSectorCountReg
     cmd_in[6] = 0x00;            // bSectorNumberReg
     cmd_in[7] = 0x4F;            // bCylLowReg
@@ -284,12 +284,11 @@ pub fn trigger_self_test(device_path: &str, long_test: bool) {
     cmd_in[10] = EXECUTE_OFFLINE_DIAGS; // bCommandReg
     cmd_in[11] = 0x00;           // bReserved
 
-    // SENDCMDOUTPARAMS header = 16 bytes
     let mut cmd_out = [0u8; 16];
     let mut bytes_returned = 0u32;
 
-    unsafe {
-        DeviceIoControl(
+    let ok = unsafe {
+        let result = DeviceIoControl(
             handle,
             SMART_SEND_DRIVE_COMMAND,
             cmd_in.as_mut_ptr() as *mut _,
@@ -298,9 +297,33 @@ pub fn trigger_self_test(device_path: &str, long_test: bool) {
             cmd_out.len() as u32,
             &mut bytes_returned,
             std::ptr::null_mut(),
-        );
+        ) != 0;
         windows_sys::Win32::Foundation::CloseHandle(handle);
+        result
+    };
+
+    if ok {
+        log::info!(target: "diskoria", "send_self_test_cmd: OK path={device_path} sub={subcommand:#04X}");
+    } else {
+        let err = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+        log::warn!(target: "diskoria", "send_self_test_cmd: DeviceIoControl failed path={device_path} sub={subcommand:#04X} err={err}");
     }
+    ok
+}
+
+/// Start an ATA short (long_test=false) or extended (long_test=true) self-test.
+/// Returns true if the command was accepted.
+#[cfg(windows)]
+pub fn trigger_self_test(device_path: &str, long_test: bool) -> bool {
+    let sub = if long_test { 0xC1u8 } else { 0x01u8 };
+    send_self_test_cmd(device_path, sub)
+}
+
+/// Abort any running ATA self-test.
+/// Returns true if the abort command was accepted.
+#[cfg(windows)]
+pub fn abort_self_test(device_path: &str) -> bool {
+    send_self_test_cmd(device_path, 0x7F)
 }
 
 // ── ATA SMART via SMART_RCV_DRIVE_DATA ───────────────────────────────────────

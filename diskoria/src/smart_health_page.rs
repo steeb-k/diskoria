@@ -900,8 +900,202 @@ fn draw_attributes(
     }
 }
 
+// ── Self-test progress modal ──────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelfTestModalAction {
+    Abort,
+    Dismiss,
+}
+
+/// Draws a centered modal overlay showing self-test progress.
+/// Returns `Some(action)` when the user clicks Abort or Dismiss.
+fn draw_self_test_modal(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    t: &Theme,
+    kind: Option<crate::smart_reader::SelfTestKind>,
+    data: &AtaSmartData,
+) -> Option<SelfTestModalAction> {
+    use crate::smart_reader::SelfTestStatus;
+
+    let kind_label = kind.map(|k| k.label()).unwrap_or("Unknown");
+    let title = format!("{kind_label} Self-Test");
+
+    // Determine progress and status from the most recent poll
+    let (status_text, status_color, progress_pct, is_running, is_done) = match data.self_test.as_ref() {
+        None => ("Waiting for first update…".to_string(), t.txt_sec, 0.0_f32, true, false),
+        Some(r) => match &r.status {
+            SelfTestStatus::InProgress { pct_remaining } => {
+                let done = (100u8.saturating_sub(*pct_remaining)) as f32 / 100.0;
+                (
+                    format!("{}% complete ({pct_remaining}% remaining)", 100 - pct_remaining),
+                    t.txt_sec,
+                    done,
+                    true,
+                    false,
+                )
+            }
+            SelfTestStatus::Passed => (
+                "Test passed successfully.".to_string(),
+                Color32::from_rgb(39, 174, 96),
+                1.0,
+                false,
+                true,
+            ),
+            SelfTestStatus::Failed { reason } => (
+                format!("Test FAILED: {reason}"),
+                Color32::from_rgb(231, 76, 60),
+                1.0,
+                false,
+                true,
+            ),
+            SelfTestStatus::Aborted => (
+                "Test was aborted.".to_string(),
+                t.txt_sec,
+                0.0,
+                false,
+                true,
+            ),
+            SelfTestStatus::NeverRun => (
+                "Waiting for drive to start test…".to_string(),
+                t.txt_sec,
+                0.0,
+                true,
+                false,
+            ),
+            SelfTestStatus::Unknown => (
+                "Waiting for drive to start test…".to_string(),
+                t.txt_sec,
+                0.0,
+                true,
+                false,
+            ),
+        },
+    };
+
+    let bar_color = if is_done && !matches!(data.self_test.as_ref().map(|r| &r.status), Some(SelfTestStatus::Failed { .. })) {
+        Color32::from_rgb(39, 174, 96)
+    } else if is_done {
+        Color32::from_rgb(231, 76, 60)
+    } else {
+        Color32::from_rgb(39, 174, 96) // green while running
+    };
+
+    // Modal card dimensions
+    let modal_w = 380.0_f32;
+    let pad = 20.0_f32;
+    let title_h = 28.0_f32;
+    let status_h = 22.0_f32;
+    let bar_h = 10.0_f32;
+    let gap = 10.0_f32;
+    let btn_h = 32.0_f32;
+    let modal_h = pad + title_h + gap + status_h + gap + bar_h + gap + btn_h + pad;
+
+    // Draw scrim (dimmed overlay behind the modal)
+    let screen = ctx.screen_rect();
+    ui.painter().rect_filled(screen, 0.0, Color32::from_rgba_unmultiplied(0, 0, 0, 140));
+
+    // Center the modal on screen
+    let modal_pos = Pos2::new(
+        (screen.center().x - modal_w * 0.5).round(),
+        (screen.center().y - modal_h * 0.5).round(),
+    );
+    let modal_rect = Rect::from_min_size(modal_pos, Vec2::new(modal_w, modal_h));
+
+    // Draw modal card background via Area so it sits above scroll content
+    let area_resp = egui::Area::new(Id::new("health_self_test_modal"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(modal_pos)
+        .show(ctx, |ui| {
+            ui.set_min_size(Vec2::new(modal_w, modal_h));
+            let painter = ui.painter();
+            painter.rect_filled(modal_rect, 12.0, t.bg_sec);
+            painter.rect_stroke(modal_rect, 12.0, Stroke::new(1.5, t.border), StrokeKind::Middle);
+
+            let mut y = modal_rect.min.y + pad;
+
+            // Title
+            painter.text(
+                Pos2::new(modal_rect.min.x + pad, y + title_h * 0.5),
+                Align2::LEFT_CENTER,
+                &title,
+                FontId::new(16.0, egui::FontFamily::Name("InterBold".into())),
+                t.txt_pri,
+            );
+            y += title_h + gap;
+
+            // Status text
+            painter.text(
+                Pos2::new(modal_rect.min.x + pad, y + status_h * 0.5),
+                Align2::LEFT_CENTER,
+                &status_text,
+                FontId::proportional(13.0),
+                status_color,
+            );
+            y += status_h + gap;
+
+            // Progress bar track
+            let bar_rect = Rect::from_min_size(
+                Pos2::new(modal_rect.min.x + pad, y + (bar_h * 0.5 - bar_h * 0.5).max(0.0)),
+                Vec2::new(modal_w - pad * 2.0, bar_h),
+            );
+            painter.rect_filled(bar_rect, 5.0, t.border);
+            if progress_pct > 0.0 {
+                let fill = Rect::from_min_size(bar_rect.min, Vec2::new(bar_rect.width() * progress_pct, bar_h));
+                painter.rect_filled(fill, 5.0, bar_color);
+            }
+            // Animated indeterminate "pulse" while waiting for first InProgress status
+            if is_running && progress_pct == 0.0 {
+                let t_anim = ctx.input(|i| i.time) as f32;
+                let pulse_x = (t_anim * 0.8).sin() * 0.5 + 0.5;
+                let pw = bar_rect.width() * 0.3;
+                let px = bar_rect.min.x + (bar_rect.width() - pw) * pulse_x;
+                let pulse_rect = Rect::from_min_size(Pos2::new(px, bar_rect.min.y), Vec2::new(pw, bar_h));
+                painter.rect_filled(pulse_rect, 5.0, t.accent);
+                ctx.request_repaint();
+            }
+            y += bar_h + gap;
+
+            // Buttons
+            let btn_w = (modal_w - pad * 2.0 - gap) / 2.0;
+
+            let mut action: Option<SelfTestModalAction> = None;
+
+            // Abort — only while running
+            if is_running {
+                let abort_rect = Rect::from_min_size(Pos2::new(modal_rect.min.x + pad, y), Vec2::new(btn_w, btn_h));
+                let abort_r = ui.interact(abort_rect, Id::new("health_modal_abort"), Sense::click());
+                let abort_bg = if abort_r.hovered() { Color32::from_rgba_unmultiplied(231, 76, 60, 40) } else { t.bg_sec };
+                painter.rect_filled(abort_rect, 4.0, abort_bg);
+                painter.rect_stroke(abort_rect, 4.0, Stroke::new(1.5, Color32::from_rgb(231, 76, 60)), StrokeKind::Middle);
+                painter.text(abort_rect.center(), Align2::CENTER_CENTER, "Abort Test", FontId::proportional(13.0), Color32::from_rgb(231, 76, 60));
+                if abort_r.clicked() {
+                    action = Some(SelfTestModalAction::Abort);
+                }
+            }
+
+            // Dismiss — only when done
+            if is_done {
+                let dismiss_rect = Rect::from_min_size(Pos2::new(modal_rect.min.x + pad, y), Vec2::new(modal_w - pad * 2.0, btn_h));
+                let dismiss_r = ui.interact(dismiss_rect, Id::new("health_modal_dismiss"), Sense::click());
+                let dismiss_bg = if dismiss_r.hovered() { t.hover } else { t.accent };
+                painter.rect_filled(dismiss_rect, 4.0, dismiss_bg);
+                painter.text(dismiss_rect.center(), Align2::CENTER_CENTER, "Dismiss", FontId::proportional(13.0), Color32::WHITE);
+                if dismiss_r.clicked() {
+                    action = Some(SelfTestModalAction::Dismiss);
+                }
+            }
+
+            action
+        });
+
+    area_resp.inner
+}
+
 // ── Self-test card ────────────────────────────────────────────────────────────
 
+/// Returns Some((kind,)) if a test button was clicked.
 fn draw_self_test(
     ui: &mut egui::Ui,
     t: &Theme,
@@ -909,15 +1103,17 @@ fn draw_self_test(
     margin: f32,
     section_w: f32,
     data: &AtaSmartData,
-    ctx: &egui::Context,
-    device_path: &str,
-) {
-    use crate::smart_reader::SelfTestStatus;
+    test_active: bool,
+    test_error: Option<&str>,
+) -> Option<(crate::smart_reader::SelfTestKind, )> {
+    use crate::smart_reader::{SelfTestKind, SelfTestStatus};
 
+    // Extra row for error text when a test trigger fails
+    let error_row_h = if test_error.is_some() { 22.0_f32 } else { 0.0_f32 };
     let pad = 16.0_f32;
     let row_h = 22.0_f32;
     let btn_h = 32.0_f32;
-    let card_h = pad + row_h + 8.0 + btn_h + pad;
+    let card_h = pad + row_h + 8.0 + btn_h + error_row_h + pad;
 
     draw_section_label(ui, t, content_x, margin, section_w, "Self-Test", false);
     ui.add_space(6.0);
@@ -959,26 +1155,41 @@ fn draw_self_test(
         result_color,
     );
 
-    // Short + Long test buttons
+    // Short + Long test buttons (grayed out while a test is running)
     let btn_y = card.min.y + pad + row_h + 8.0;
     let btn_w = (inner_w - 8.0) * 0.5;
 
     let short_rect = Rect::from_min_size(Pos2::new(card.min.x + pad, btn_y), Vec2::new(btn_w, btn_h));
     let long_rect = Rect::from_min_size(Pos2::new(card.min.x + pad + btn_w + 8.0, btn_y), Vec2::new(btn_w, btn_h));
 
-    for (rect, label, long) in [
-        (short_rect, "Run Short Test", false),
-        (long_rect, "Run Extended Test", true),
+    let mut clicked_kind: Option<SelfTestKind> = None;
+
+    for (rect, label, kind) in [
+        (short_rect, "Run Short Test", SelfTestKind::Short),
+        (long_rect, "Run Extended Test", SelfTestKind::Long),
     ] {
-        let r = ui.interact(rect, Id::new(format!("health_test_{}", label)), Sense::click());
-        let bg = if r.hovered() { t.hover } else { t.bg_sec };
+        let sense = if test_active { Sense::hover() } else { Sense::click() };
+        let r = ui.interact(rect, Id::new(format!("health_test_{}", label)), sense);
+        let label_color = if test_active { t.txt_sec } else { t.txt_pri };
+        let bg = if !test_active && r.hovered() { t.hover } else { t.bg_sec };
         ui.painter().rect_filled(rect, 4.0, bg);
         ui.painter().rect_stroke(rect, 4.0, Stroke::new(1.5, t.border), StrokeKind::Middle);
-        ui.painter().text(rect.center(), Align2::CENTER_CENTER, label, FontId::proportional(13.0), t.txt_pri);
-        if r.clicked() {
-            crate::smart_reader::trigger_self_test(device_path, long);
-            ctx.request_repaint();
+        ui.painter().text(rect.center(), Align2::CENTER_CENTER, label, FontId::proportional(13.0), label_color);
+        if !test_active && r.clicked() {
+            clicked_kind = Some(kind);
         }
+    }
+
+    // Inline error text below buttons when trigger failed
+    if let Some(err) = test_error {
+        let err_y = btn_y + btn_h + 6.0;
+        ui.painter().text(
+            Pos2::new(card.min.x + pad, err_y + error_row_h * 0.5),
+            Align2::LEFT_CENTER,
+            err,
+            FontId::proportional(12.0),
+            Color32::from_rgb(231, 76, 60),
+        );
     }
 
     let cursor_y = ui.cursor().min.y;
@@ -986,6 +1197,8 @@ fn draw_self_test(
     if cursor_y < card_bot {
         ui.add_space(card_bot - cursor_y);
     }
+
+    clicked_kind.map(|k| (k,))
 }
 
 // ── HTML report ───────────────────────────────────────────────────────────────
@@ -1295,6 +1508,10 @@ impl DiskoriaApp {
         let drive = self.drives[sel].clone();
 
         // ── Report display ────────────────────────────────────────────────────
+        let test_active = self.health_test_active;
+        let test_error = self.health_test_error.clone();
+        let device_id = drive.device_id.clone();
+
         match &report {
             SmartReport::Ata(data) => {
                 let data = data.clone();
@@ -1306,11 +1523,40 @@ impl DiskoriaApp {
                     ui.add_space(16.0);
                 }
 
-                draw_self_test(
+                if let Some((kind,)) = draw_self_test(
                     ui, t, content_x, margin, section_w, &data,
-                    ctx, &drive.device_id,
-                );
+                    test_active, test_error.as_deref(),
+                ) {
+                    let ok = crate::smart_reader::trigger_self_test(&device_id, kind == crate::smart_reader::SelfTestKind::Long);
+                    if ok {
+                        self.health_test_active = true;
+                        self.health_test_kind = Some(kind);
+                        self.health_test_error = None;
+                        // Force an immediate re-poll so the modal sees InProgress quickly
+                        self.health_last_poll = None;
+                    } else {
+                        self.health_test_error = Some("Failed to start self-test. Try running as Administrator.".to_string());
+                    }
+                }
                 ui.add_space(16.0);
+
+                // Self-test progress modal overlay
+                if self.health_test_active {
+                    let test_kind = self.health_test_kind;
+                    let ata_data = data.clone();
+                    let device_id2 = device_id.clone();
+                    if let Some(dismiss) = draw_self_test_modal(ui, ctx, t, test_kind, &ata_data) {
+                        if dismiss == SelfTestModalAction::Abort {
+                            crate::smart_reader::abort_self_test(&device_id2);
+                            self.health_last_poll = None;
+                        }
+                        if dismiss == SelfTestModalAction::Dismiss {
+                            self.health_test_active = false;
+                            self.health_test_kind = None;
+                            self.health_test_error = None;
+                        }
+                    }
+                }
             }
             SmartReport::Nvme(data) => {
                 let data = data.clone();
@@ -1329,7 +1575,12 @@ impl DiskoriaApp {
     // ── Poll lifecycle ────────────────────────────────────────────────────────
 
     fn spawn_health_poll_if_needed(&mut self, ctx: &egui::Context) {
-        const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+        // Poll faster while a self-test is running so progress updates promptly.
+        let poll_interval = if self.health_test_active {
+            std::time::Duration::from_secs(3)
+        } else {
+            std::time::Duration::from_secs(5)
+        };
 
         if self.health_poll_running {
             return;
@@ -1340,9 +1591,9 @@ impl DiskoriaApp {
         // If we already have a report, wait for the interval before re-polling.
         if self.health_report.is_some() {
             if let Some(last) = self.health_last_poll {
-                if last.elapsed() < POLL_INTERVAL {
+                if last.elapsed() < poll_interval {
                     // Wake ourselves up when the interval expires.
-                    let remaining = POLL_INTERVAL.saturating_sub(last.elapsed());
+                    let remaining = poll_interval.saturating_sub(last.elapsed());
                     ctx.request_repaint_after(remaining);
                     return;
                 }
@@ -1393,6 +1644,24 @@ impl DiskoriaApp {
                         target: "diskoria",
                         "health: SMART unavailable — {reason}",
                     ),
+                }
+                // If a self-test was active, check whether it has finished so
+                // the modal can switch to its "result" view automatically.
+                if self.health_test_active {
+                    use crate::smart_reader::{SmartReport, SelfTestStatus};
+                    if let SmartReport::Ata(ref d) = report {
+                        let finished = matches!(
+                            d.self_test.as_ref().map(|r| &r.status),
+                            Some(SelfTestStatus::Passed)
+                            | Some(SelfTestStatus::Failed { .. })
+                            | Some(SelfTestStatus::Aborted)
+                        );
+                        if finished {
+                            log::info!(target: "diskoria", "health: self-test finished");
+                        }
+                        // Keep health_test_active = true so the modal stays open
+                        // showing the result; the user dismisses it manually.
+                    }
                 }
                 self.health_report = Some(report);
                 self.health_poll_running = false;
