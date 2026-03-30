@@ -555,6 +555,13 @@ fn query_ata(device_path: &str) -> SmartReport {
         };
     }
 
+    log::info!(
+        target: "diskoria",
+        "query_ata: OK path={device_path} attrs={n} temp={temp:?}°C poh={poh:?}h",
+        n    = attributes.len(),
+        temp = temperature_c,
+        poh  = power_on_hours,
+    );
     SmartReport::Ata(AtaSmartData {
         attributes,
         self_test: self_test_result,
@@ -676,7 +683,15 @@ fn query_nvme(device_path: &str) -> SmartReport {
         };
     }
 
-    parse_nvme_health_log(&buf[48..48 + LOG_DATA_SZ as usize])
+    let report = parse_nvme_health_log(&buf[48..48 + LOG_DATA_SZ as usize]);
+    if let SmartReport::Nvme(ref d) = report {
+        log::info!(
+            target: "diskoria",
+            "query_nvme: OK path={device_path} temp={}°C wear={}% spare={}% poh={}h",
+            d.temperature_c, d.percentage_used, d.available_spare_pct, d.power_on_hours,
+        );
+    }
+    report
 }
 
 #[cfg(windows)]

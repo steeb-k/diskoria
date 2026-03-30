@@ -1358,6 +1358,8 @@ impl DiskoriaApp {
         let (tx, rx) = std::sync::mpsc::channel();
         self.health_poll_rx = Some(rx);
 
+        log::info!(target: "diskoria", "health: polling SMART data for {device_path}");
+
         std::thread::spawn(move || {
             let report = crate::smart_reader::query_smart_detail(&device_path, bus);
             let _ = tx.send(report);
@@ -1373,6 +1375,25 @@ impl DiskoriaApp {
         };
         match rx.try_recv() {
             Ok(report) => {
+                use crate::smart_reader::SmartReport;
+                match &report {
+                    SmartReport::Ata(d) => log::info!(
+                        target: "diskoria",
+                        "health: ATA report received — temp={temp}°C poh={poh}h attrs={n}",
+                        temp = d.temperature_c.map(|c| c.to_string()).unwrap_or_else(|| "N/A".into()),
+                        poh  = d.power_on_hours.unwrap_or(0),
+                        n    = d.attributes.len(),
+                    ),
+                    SmartReport::Nvme(d) => log::info!(
+                        target: "diskoria",
+                        "health: NVMe report received — temp={}°C wear={}% spare={}%",
+                        d.temperature_c, d.percentage_used, d.available_spare_pct,
+                    ),
+                    SmartReport::Unavailable { reason } => log::warn!(
+                        target: "diskoria",
+                        "health: SMART unavailable — {reason}",
+                    ),
+                }
                 self.health_report = Some(report);
                 self.health_poll_running = false;
                 self.health_last_poll = Some(std::time::Instant::now());
