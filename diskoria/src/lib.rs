@@ -408,7 +408,7 @@ impl ApplicationHandler<UserEvent> for App {
 
     fn window_event(
         &mut self,
-        _event_loop: &ActiveEventLoop,
+        event_loop: &ActiveEventLoop,
         window_id: WindowId,
         event: WindowEvent,
     ) {
@@ -472,17 +472,25 @@ impl ApplicationHandler<UserEvent> for App {
 
         match event {
             WindowEvent::CloseRequested => {
-                // Minimize to tray instead of exiting.
-                // The app only exits via the tray context menu "Quit" → QuitRequested.
-                if let Some(r) = &self.renderer {
-                    r.window.set_visible(false);
+                if self.pro_edition {
+                    // Pro: minimize to tray — exit only via tray "Quit".
+                    if let Some(r) = &self.renderer {
+                        r.window.set_visible(false);
+                    }
+                } else {
+                    // Free: close button exits normally.
+                    event_loop.exit();
                 }
             }
             WindowEvent::RedrawRequested => {
                 renderer.paint();
                 if renderer.close_requested {
                     renderer.close_requested = false;
-                    renderer.window.set_visible(false);
+                    if self.pro_edition {
+                        renderer.window.set_visible(false);
+                    } else {
+                        event_loop.exit();
+                    }
                 }
             }
             WindowEvent::Resized(size) => {
