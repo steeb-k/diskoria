@@ -8,6 +8,8 @@ use egui::{
     Align2, Color32, FontId, Id, Pos2, Rect, RichText, Sense, Stroke,
     StrokeKind, UiBuilder, Vec2,
 };
+#[cfg(windows)]
+use egui_plot::{Line, Plot, PlotPoints};
 
 use crate::detected_drive::{BusKind, DetectedDrive, MediaKind};
 use crate::smart_reader::{AtaAttribute, AtaSmartData, AttrStatus, NvmeHealthData, SmartReport};
@@ -1227,6 +1229,20 @@ impl DiskoriaApp {
             }
         }
 
+        // ── Pro-Monitoring: temperature history chart ─────────────────────────
+        #[cfg(windows)]
+        if self.pro_edition {
+            let sel = self.health_selected_drive.min(self.drives.len().saturating_sub(1));
+            if !self.drives.is_empty() {
+                let serial = self.drives[sel].serial.clone();
+                draw_temperature_history(
+                    ui, t, ctx, content_x, margin, section_w,
+                    &serial,
+                    &self.temp_history,
+                    &mut self.health_chart_range,
+                );
+            }
+        }
     }
 
     // â”€â”€ Poll lifecycle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1311,4 +1327,167 @@ impl DiskoriaApp {
             }
         }
     }
+}
+
+// ── Pro-Monitoring: temperature history chart ─────────────────────────────────
+
+#[cfg(windows)]
+#[allow(clippy::too_many_arguments)]
+fn draw_temperature_history(
+    ui: &mut egui::Ui,
+    t: &Theme,
+    _ctx: &egui::Context,
+    content_x: f32,
+    margin: f32,
+    section_w: f32,
+    serial: &str,
+    history: &std::collections::HashMap<String, Vec<[f64; 2]>>,
+    range: &mut usize,
+) {
+    // range: 0=1h 1=6h 2=12h 3=24h 4=7d
+    const WINDOWS: [f64; 5] = [3_600.0, 21_600.0, 43_200.0, 86_400.0, 604_800.0];
+    const TAB_LABELS: [&str; 5] = ["1 h", "6 h", "12 h", "24 h", "7 d"];
+    *range = (*range).min(4);
+
+    let left = content_x + margin;
+    let now_unix = chrono::Utc::now().timestamp() as f64;
+    let window_secs = WINDOWS[*range];
+    let cutoff = now_unix - window_secs;
+
+    // Section heading
+    ui.painter().text(
+        Pos2::new(left, ui.cursor().min.y),
+        Align2::LEFT_TOP,
+        "Temperature History",
+        FontId::new(13.0, egui::FontFamily::Proportional),
+        t.txt_sec,
+    );
+    ui.add_space(20.0);
+
+    // Range tab buttons
+    ui.horizontal(|ui| {
+        let pad = left - ui.min_rect().left();
+        if pad > 0.0 { ui.add_space(pad); }
+        for (i, label) in TAB_LABELS.iter().enumerate() {
+            let selected = *range == i;
+            let (bg, fg) = if selected { (t.accent, t.bg_pri) } else { (t.bg_sec, t.txt_sec) };
+            let btn_resp = ui.add(
+                egui::Button::new(RichText::new(*label).color(fg).size(12.0))
+                    .fill(bg)
+                    .stroke(Stroke::new(1.0, if selected { t.accent } else { t.border }))
+                    .min_size(Vec2::new(52.0, 24.0)),
+            );
+            if btn_resp.clicked() { *range = i; }
+        }
+    });
+    ui.add_space(8.0);
+
+    // Filter master map to the selected window.
+    let all_pts = history.get(serial);
+    let filtered: Vec<[f64; 2]> = all_pts
+        .map(|v| v.iter().filter(|p| p[0] >= cutoff).cloned().collect())
+        .unwrap_or_default();
+
+    let chart_h = 140.0;
+    let chart_rect = Rect::from_min_size(
+        Pos2::new(left, ui.cursor().min.y),
+        Vec2::new(section_w, chart_h),
+    );
+    ui.allocate_rect(chart_rect, Sense::hover());
+
+    if filtered.is_empty() {
+        let msg = if all_pts.map(|v| !v.is_empty()).unwrap_or(false) {
+            "No data in this time window"
+        } else {
+            "No history data yet — collecting on next monitor cycle"
+        };
+        ui.painter().text(
+            chart_rect.center(),
+            Align2::CENTER_CENTER,
+            msg,
+            FontId::new(12.0, egui::FontFamily::Proportional),
+            t.txt_sec,
+        );
+        ui.add_space(16.0);
+        return;
+    }
+
+    let temps: Vec<f64> = filtered.iter().map(|p| p[1]).collect();
+    let y_min = temps.iter().cloned().fold(f64::INFINITY, f64::min).max(0.0) - 5.0;
+    let y_max = temps.iter().cloned().fold(f64::NEG_INFINITY, f64::max) + 10.0;
+
+    // Split into continuous segments: a gap of >15 min means the app was closed.
+    // Each segment is rendered as a separate Line so closed-periods appear as
+    // blank space rather than a flatline connecting the last and first points.
+    const GAP_SECS: f64 = 900.0;
+    let mut segments: Vec<Vec<[f64; 2]>> = Vec::new();
+    let mut seg: Vec<[f64; 2]> = Vec::new();
+    for &pt in &filtered {
+        if let Some(&last) = seg.last() {
+            if pt[0] - last[0] > GAP_SECS {
+                segments.push(std::mem::take(&mut seg));
+            }
+        }
+        seg.push(pt);
+    }
+    if !seg.is_empty() { segments.push(seg); }
+
+    let accent = t.accent;
+    let now = now_unix;
+    let range_idx = *range;
+
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(chart_rect), |ui| {
+        Plot::new(format!("temp_history_{serial}_{range_idx}"))
+            .allow_drag(false)
+            .allow_zoom(false)
+            .allow_scroll(false)
+            .allow_boxed_zoom(false)
+            .include_x(cutoff)
+            .include_x(now_unix)
+            .include_y(y_min)
+            .include_y(y_max)
+            .y_axis_label("°C")
+            .x_axis_formatter(move |mark, _range| {
+                let diff = (now - mark.value).max(0.0);
+                if range_idx <= 3 {
+                    let mins = (diff / 60.0).round() as i64;
+                    let hrs = mins / 60;
+                    let m = mins % 60;
+                    if hrs == 0 && m == 0 { "now".into() }
+                    else if hrs == 0 { format!("{}m", m) }
+                    else if m == 0 { format!("{}h", hrs) }
+                    else { format!("{}h{}m", hrs, m) }
+                } else {
+                    let d = (diff / 86400.0).round() as i64;
+                    if d == 0 { "now".into() } else { format!("{}d", d) }
+                }
+            })
+            .label_formatter(move |_name, point| {
+                let diff = (now - point.x).max(0.0);
+                let time_str = if range_idx <= 3 {
+                    let mins = diff as i64 / 60;
+                    let hrs = mins / 60;
+                    let m = mins % 60;
+                    if mins == 0 { "just now".into() }
+                    else if hrs == 0 { format!("{}m ago", m) }
+                    else if m == 0 { format!("{}h ago", hrs) }
+                    else { format!("{}h {}m ago", hrs, m) }
+                } else {
+                    let d = diff as i64 / 86400;
+                    if d == 0 { "today".into() } else { format!("{}d ago", d) }
+                };
+                format!("{}°C — {}", point.y as i32, time_str)
+            })
+            .show(ui, |plot_ui| {
+                for seg in segments {
+                    plot_ui.line(
+                        Line::new(PlotPoints::from(seg))
+                            .color(accent)
+                            .width(2.0),
+                    );
+                }
+            });
+    });
+
+    ui.add_space(16.0);
 }

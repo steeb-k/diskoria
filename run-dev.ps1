@@ -17,7 +17,8 @@ try {
     }
     Write-Host "[run-dev] RUST_LOG=$($env:RUST_LOG)" -ForegroundColor Cyan
     Write-Host "[run-dev] $CargoDir -> cargo run (rebuilds when Rust sources change)" -ForegroundColor DarkGray
-    cargo run
+    # Forward any flags (e.g. --Pro-Edition) through to the binary via `cargo run -- <args>`.
+    cargo run -- @args
 } finally {
     Pop-Location
 }

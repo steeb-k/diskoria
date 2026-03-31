@@ -310,10 +310,50 @@ pub struct DiskoriaApp {
     update_download_confirm_focus: Option<usize>,
     #[cfg(windows)]
     update_alert_focus: Option<usize>,
+
+    // ── Pro Edition ───────────────────────────────────────────────────────────
+    /// Set when `--Pro-Edition` is passed at launch.  Gates all Pro features.
+    pub(crate) pro_edition: bool,
+
+    // ── Pro-Monitoring ────────────────────────────────────────────────────────
+    #[cfg(windows)]
+    pub(crate) monitor_cancel: Option<Arc<AtomicBool>>,
+    #[cfg(windows)]
+    monitor_rx: Option<mpsc::Receiver<crate::monitor::MonitorMsg>>,
+    #[cfg(windows)]
+    pub(crate) last_snapshots: std::collections::HashMap<String, crate::monitor::HealthSnapshot>,
+    #[cfg(windows)]
+    pub(crate) pending_alerts: Vec<crate::alert_engine::AlertEvent>,
+    /// Per-drive alert suppression: serial → Instant until which alerts are silenced.
+    #[cfg(windows)]
+    alert_suppressions: std::collections::HashMap<String, std::time::Instant>,
+    /// Temperature history master map (up to 7 days); chart filters per selected range.
+    #[cfg(windows)]
+    pub(crate) temp_history: std::collections::HashMap<String, Vec<[f64; 2]>>,
+    /// Active history range tab: 0=1h 1=6h 2=12h 3=24h 4=7d.
+    #[cfg(windows)]
+    pub(crate) health_chart_range: usize,
+    /// Proxy for sending tray icon update events back to the event loop.
+    #[cfg(windows)]
+    pub(crate) event_proxy: Option<winit::event_loop::EventLoopProxy<crate::UserEvent>>,
+    /// Flag set after drive icons have been rebuilt for the current drive list.
+    #[cfg(windows)]
+    pub(crate) drive_icons_built: bool,
+    // Pro-Monitoring settings (mirrored from app_settings for live UI editing)
+    #[cfg(windows)]
+    pub(crate) monitoring_enabled: bool,
+    #[cfg(windows)]
+    pub(crate) poll_interval_mins: u8,
+    #[cfg(windows)]
+    pub(crate) alert_temp_warn: i32,
+    #[cfg(windows)]
+    pub(crate) alert_temp_critical: i32,
+    #[cfg(windows)]
+    pub(crate) alert_wear_threshold: u8,
 }
 
 impl DiskoriaApp {
-    pub fn new(ctx: &egui::Context, system_dark: bool, hwnd: isize) -> Self {
+    pub fn new(ctx: &egui::Context, system_dark: bool, hwnd: isize, pro_edition: bool) -> Self {
         setup_fonts(ctx);
         apply_win11_rounded_corners(hwnd);
         #[cfg(windows)]
@@ -504,6 +544,37 @@ impl DiskoriaApp {
             update_download_confirm_focus: None,
             #[cfg(windows)]
             update_alert_focus: None,
+            // Pro Edition
+            pro_edition,
+            // Pro-Monitoring
+            #[cfg(windows)]
+            monitor_cancel: None,
+            #[cfg(windows)]
+            monitor_rx: None,
+            #[cfg(windows)]
+            last_snapshots: std::collections::HashMap::new(),
+            #[cfg(windows)]
+            pending_alerts: Vec::new(),
+            #[cfg(windows)]
+            alert_suppressions: std::collections::HashMap::new(),
+            #[cfg(windows)]
+            temp_history: std::collections::HashMap::new(),
+            #[cfg(windows)]
+            health_chart_range: 3, // default to 24h tab
+            #[cfg(windows)]
+            event_proxy: None,
+            #[cfg(windows)]
+            drive_icons_built: false,
+            #[cfg(windows)]
+            monitoring_enabled: s.monitoring_enabled,
+            #[cfg(windows)]
+            poll_interval_mins: s.poll_interval_mins,
+            #[cfg(windows)]
+            alert_temp_warn: s.alert_temp_warn,
+            #[cfg(windows)]
+            alert_temp_critical: s.alert_temp_critical,
+            #[cfg(windows)]
+            alert_wear_threshold: s.alert_wear_threshold,
         }
     }
 
@@ -944,6 +1015,195 @@ impl DiskoriaApp {
         #[cfg(not(windows))]
         {
             self.speed_focus = Some(1);
+        }
+    }
+
+    // ── Pro-Monitoring ────────────────────────────────────────────────────────
+
+    #[cfg(windows)]
+    fn start_monitor_if_not_running(&mut self, ctx: &egui::Context) {
+        if !self.pro_edition {
+            return;
+        }
+        if self.monitor_cancel.is_some() {
+            return;
+        }
+        if self.drives.is_empty() {
+            return;
+        }
+        if !self.monitoring_enabled {
+            return;
+        }
+        // Load historical temperature data from the SQLite DB before starting the thread.
+        self.load_history_from_db();
+
+        let poll_secs = (self.poll_interval_mins as u64) * 60;
+        let (tx, rx) = mpsc::channel();
+        let cancel = crate::monitor::spawn_monitor_thread(
+            self.drives.clone(),
+            tx,
+            ctx.clone(),
+            std::time::Duration::from_secs(poll_secs),
+            self.alert_temp_warn,
+            self.alert_temp_critical,
+            self.alert_wear_threshold,
+        );
+        self.monitor_rx = Some(rx);
+        self.monitor_cancel = Some(cancel);
+        log::info!(
+            target: "diskoria::monitor",
+            "Monitor thread started for {} drive(s), poll interval {}min",
+            self.drives.len(),
+            self.poll_interval_mins
+        );
+    }
+
+    /// Load up to 7 days of temperature history from SQLite into `temp_history`.
+    #[cfg(windows)]
+    fn load_history_from_db(&mut self) {
+        match crate::history_db::open_or_create() {
+            Ok(conn) => {
+                for drive in &self.drives {
+                    match crate::history_db::query_temperature_history(&conn, &drive.serial, 7 * 24) {
+                        Ok(rows) => {
+                            let points: Vec<[f64; 2]> = rows
+                                .into_iter()
+                                .map(|(ts, t)| [ts as f64, t as f64])
+                                .collect();
+                            log::info!(
+                                target: "diskoria::monitor",
+                                "Loaded {} history points from DB for {}",
+                                points.len(),
+                                drive.serial
+                            );
+                            if !points.is_empty() {
+                                self.temp_history
+                                    .entry(drive.serial.clone())
+                                    .or_default()
+                                    .extend(points);
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                target: "diskoria::monitor",
+                                "Failed to query history for {}: {e}",
+                                drive.serial
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                log::warn!(target: "diskoria::monitor", "Failed to open history DB for load: {e}");
+            }
+        }
+    }
+
+    /// Suppress all alerts for `serial` for the given duration.
+    /// Also clears any stale entries for other serials while we're here.
+    #[cfg(windows)]
+    pub fn suppress_drive_alerts(&mut self, serial: &str, secs: u64) {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+        self.alert_suppressions.insert(serial.to_string(), until);
+    }
+
+    #[cfg(windows)]
+    fn is_alert_suppressed(&self, serial: &str) -> bool {
+        self.alert_suppressions
+            .get(serial)
+            .map(|&until| std::time::Instant::now() < until)
+            .unwrap_or(false)
+    }
+
+    #[cfg(windows)]
+    fn poll_monitor(&mut self, _ctx: &egui::Context) {
+        let Some(rx) = &self.monitor_rx else { return };
+        let now_f64 = chrono::Utc::now().timestamp() as f64;
+
+        loop {
+            match rx.try_recv() {
+                Ok(crate::monitor::MonitorMsg::Snapshots(snaps)) => {
+                    for snap in snaps {
+                        log::info!(
+                            target: "diskoria::monitor",
+                            "poll_monitor: received snapshot serial={:?} temp={:?}",
+                            snap.serial,
+                            snap.temp_c
+                        );
+                        // Send tray icon temperature update.
+                        if let Some(proxy) = &self.event_proxy {
+                            let _ = proxy.send_event(crate::UserEvent::TrayIconUpdate {
+                                serial: snap.serial.clone(),
+                                temp_c: snap.temp_c,
+                            });
+                        }
+                        // Append temperature history point to master map.
+                        if let Some(t) = snap.temp_c {
+                            let point = [snap.timestamp_unix as f64, t as f64];
+                            self.temp_history
+                                .entry(snap.serial.clone())
+                                .or_default()
+                                .push(point);
+                        }
+                        self.last_snapshots.insert(snap.serial.clone(), snap);
+                    }
+                    // Trim to 7-day window (keeps memory bounded).
+                    for pts in self.temp_history.values_mut() {
+                        pts.retain(|p| p[0] >= now_f64 - 604_800.0);
+                    }
+                }
+                Ok(crate::monitor::MonitorMsg::AlertFired(alert)) => {
+                    log::warn!(
+                        target: "diskoria::monitor",
+                        "Alert [{:?}] on {}: {}",
+                        alert.level,
+                        alert.model,
+                        alert.detail
+                    );
+                    if self.is_alert_suppressed(&alert.serial) {
+                        log::info!(
+                            target: "diskoria::monitor",
+                            "Alert suppressed for drive {}", alert.serial
+                        );
+                    } else {
+                        // Flash the drive's tray icon to signal the alert.
+                        if let Some(proxy) = &self.event_proxy {
+                            let is_critical = matches!(
+                                alert.level,
+                                crate::alert_engine::AlertLevel::Critical
+                            );
+                            let _ = proxy.send_event(crate::UserEvent::DriveAlert {
+                                serial: alert.serial.clone(),
+                                is_critical,
+                            });
+                        }
+                        self.pending_alerts.push(alert);
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    log::warn!(target: "diskoria::monitor", "Monitor channel disconnected");
+                    self.monitor_rx = None;
+                    self.monitor_cancel = None;
+                    break;
+                }
+            }
+        }
+
+        // Fire toasts for pending alerts (must run on a separate thread — WinRT is MTA).
+        let alerts = std::mem::take(&mut self.pending_alerts);
+        for alert in alerts {
+            std::thread::spawn(move || {
+                let title = format!(
+                    "Diskoria — Drive {} ({})",
+                    alert.model,
+                    match alert.level {
+                        crate::alert_engine::AlertLevel::Critical => "Critical",
+                        crate::alert_engine::AlertLevel::Warning => "Warning",
+                    }
+                );
+                crate::toast::send_toast(&title, &alert.detail);
+            });
         }
     }
 
@@ -1638,6 +1898,12 @@ impl DiskoriaApp {
                 self.drives_loading = false;
                 self.drive_poll_rx = None;
                 self.smart_health_disk = None;
+                #[cfg(windows)]
+                {
+                    self.start_monitor_if_not_running(ctx);
+                    // Signal the event loop to rebuild per-drive tray icons.
+                    self.drive_icons_built = false;
+                }
                 ctx.request_repaint();
             }
             Ok(Err(e)) => {
@@ -2449,6 +2715,27 @@ impl DiskoriaApp {
             accent_palette_idx: self.accent_palette_idx,
             accent_use_custom: self.accent_use_custom,
             accent_custom_hex: self.accent_custom_hex.clone(),
+            #[cfg(windows)]
+            monitoring_enabled: self.monitoring_enabled,
+            #[cfg(not(windows))]
+            monitoring_enabled: true,
+            minimize_to_tray: true,
+            #[cfg(windows)]
+            poll_interval_mins: self.poll_interval_mins,
+            #[cfg(not(windows))]
+            poll_interval_mins: 3,
+            #[cfg(windows)]
+            alert_temp_warn: self.alert_temp_warn,
+            #[cfg(not(windows))]
+            alert_temp_warn: 60,
+            #[cfg(windows)]
+            alert_temp_critical: self.alert_temp_critical,
+            #[cfg(not(windows))]
+            alert_temp_critical: 70,
+            #[cfg(windows)]
+            alert_wear_threshold: self.alert_wear_threshold,
+            #[cfg(not(windows))]
+            alert_wear_threshold: 90,
         });
     }
 
@@ -2720,7 +3007,13 @@ impl DiskoriaApp {
                             2 => self.draw_speed_page(ui, ctx, &t, dark, margin, content_x, content_w),
                             3 => self.draw_health_status_page(ui, ctx, &t, dark, margin, content_x, content_w),
                             4 => self.draw_about_page(ui, ctx, &t, margin, content_x, content_w),
-                            5 => self.draw_settings_theme(ui, ctx, &t, margin, content_x, content_w),
+                            5 => {
+                                self.draw_settings_theme(ui, ctx, &t, margin, content_x, content_w);
+                                #[cfg(windows)]
+                                if self.pro_edition {
+                                    self.draw_settings_monitoring(ui, ctx, &t, margin, content_x, content_w);
+                                }
+                            }
                             _ => {}
                         }
                     });
@@ -5307,6 +5600,7 @@ impl DiskoriaApp {
         {
             self.poll_update_check(ctx);
             self.poll_update_download(ctx);
+            self.poll_monitor(ctx);
         }
         self.update_modal_confirm_tab_focus(ctx);
         self.prepare_sector_page_focus(ctx);
@@ -5423,6 +5717,326 @@ impl DiskoriaApp {
                 self.draw_update_alert(ctx, dark);
             }
             self.draw_update_busy_overlay(ctx, dark);
+        }
+    }
+
+    // ── Pro-Monitoring settings section ───────────────────────────────────────
+
+    #[cfg(windows)]
+    fn draw_settings_monitoring(
+        &mut self,
+        ui: &mut egui::Ui,
+        _ctx: &egui::Context,
+        t: &Theme,
+        margin: f32,
+        content_x: f32,
+        content_w: f32,
+    ) {
+        let section_w = content_w - margin * 2.0;
+        let pad = 16.0_f32;
+        let row_h = 34.0_f32;
+
+        // card height: title + toggle + poll interval + temp warn + temp crit + wear threshold + test buttons
+        let card_h = pad + 22.0 + 12.0 + row_h + row_h + row_h + row_h + row_h + row_h + pad;
+        let (_, section_rect) = ui.allocate_space(Vec2::new(ui.available_width(), card_h + 24.0));
+        let card = Rect::from_min_size(
+            Pos2::new(content_x + margin, section_rect.top() + 12.0),
+            Vec2::new(section_w, card_h),
+        );
+
+        ui.painter().rect_filled(card, 8.0, t.bg_pri);
+        ui.painter().rect_stroke(card, 8.0, Stroke::new(1.5, t.border), StrokeKind::Middle);
+
+        let inner_x = card.min.x + pad;
+        let mut y = card.min.y + pad;
+
+        // Section title
+        let title_rect = ui.painter().text(
+            Pos2::new(inner_x, y + 11.0),
+            Align2::LEFT_CENTER,
+            "Monitoring",
+            FontId::new(14.0, FontFamily::Name("InterBold".into())),
+            t.txt_pri,
+        );
+        ui.painter().text(
+            Pos2::new(title_rect.right() + 6.0, y + 11.0),
+            Align2::LEFT_CENTER,
+            "Pro",
+            FontId::new(14.0, FontFamily::Name("InterBold".into())),
+            Color32::from_rgb(39, 174, 96),
+        );
+        y += 22.0 + 12.0;
+
+        // ── Monitoring enabled toggle ───────────────────────────────────────
+        {
+            let label_rect = Rect::from_min_size(Pos2::new(inner_x, y), Vec2::new(section_w - pad * 2.0 - 50.0, row_h));
+            let toggle_rect = Rect::from_min_size(
+                Pos2::new(card.max.x - pad - 44.0, y + (row_h - 24.0) / 2.0),
+                Vec2::new(44.0, 24.0),
+            );
+
+            ui.painter().text(
+                Pos2::new(label_rect.min.x, label_rect.center().y),
+                Align2::LEFT_CENTER,
+                "Enable background monitoring",
+                FontId::new(13.0, egui::FontFamily::Proportional),
+                t.txt_pri,
+            );
+
+            let toggle_resp = ui.interact(toggle_rect, Id::new("mon_enabled_toggle"), Sense::click());
+            let enabled = self.monitoring_enabled;
+            let track_color = if enabled { t.accent } else { t.border };
+            let knob_x = if enabled { toggle_rect.right() - 14.0 } else { toggle_rect.left() + 4.0 };
+            ui.painter().rect_filled(toggle_rect, 12.0, track_color);
+            ui.painter().circle_filled(Pos2::new(knob_x + 8.0, toggle_rect.center().y), 9.0, Color32::WHITE);
+            if toggle_resp.clicked() {
+                self.monitoring_enabled = !self.monitoring_enabled;
+                self.save_app_settings();
+                if !self.monitoring_enabled {
+                    if let Some(c) = self.monitor_cancel.take() {
+                        c.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    self.monitor_rx = None;
+                }
+            }
+            y += row_h;
+        }
+
+        // ── Poll interval ───────────────────────────────────────────────────
+        {
+            // Segmented control: 1m / 3m / 5m / 10m
+            const OPTS: [(&str, u8); 4] = [("1 min", 1), ("3 min", 3), ("5 min", 5), ("10 min", 10)];
+            ui.painter().text(
+                Pos2::new(inner_x, y + row_h / 2.0 - 7.0),
+                Align2::LEFT_TOP,
+                "Poll interval",
+                FontId::new(12.0, egui::FontFamily::Proportional),
+                t.txt_sec,
+            );
+            let seg_total_w = section_w - pad * 2.0 - 130.0;
+            let seg_x = inner_x + 130.0;
+            let seg_h = 24.0_f32;
+            let seg_w = seg_total_w / OPTS.len() as f32;
+            let seg_top = y + (row_h - seg_h) / 2.0;
+            let seg_rect = Rect::from_min_size(Pos2::new(seg_x, seg_top), Vec2::new(seg_total_w, seg_h));
+            ui.painter().rect_filled(seg_rect, 6.0, t.bg_sec);
+            ui.painter().rect_stroke(seg_rect, 6.0, Stroke::new(1.0, t.border), StrokeKind::Middle);
+            for (i, (label, mins)) in OPTS.iter().enumerate() {
+                let seg = Rect::from_min_size(
+                    Pos2::new(seg_x + i as f32 * seg_w, seg_top),
+                    Vec2::new(seg_w, seg_h),
+                );
+                let selected = self.poll_interval_mins == *mins;
+                let resp = ui.interact(seg, Id::new(("poll_interval_seg", i)), Sense::click());
+                if selected {
+                    ui.painter().rect_filled(seg, 6.0, t.accent);
+                } else if resp.hovered() {
+                    ui.painter().rect_filled(seg, 6.0, t.hover);
+                }
+                let txt_col = if selected { Color32::WHITE } else { t.txt_pri };
+                ui.painter().text(
+                    seg.center(),
+                    Align2::CENTER_CENTER,
+                    *label,
+                    FontId::proportional(12.0),
+                    txt_col,
+                );
+                if resp.clicked() {
+                    self.poll_interval_mins = *mins;
+                    self.save_app_settings();
+                    // Restart the monitor thread with the new interval if currently running.
+                    if self.monitor_cancel.is_some() {
+                        if let Some(c) = self.monitor_cancel.take() {
+                            c.store(true, std::sync::atomic::Ordering::SeqCst);
+                        }
+                        self.monitor_rx = None;
+                    }
+                }
+            }
+            y += row_h;
+        }
+
+        if !self.monitoring_enabled {
+            return;
+        }
+
+        // ── Temp warn threshold ─────────────────────────────────────────────
+        {
+            let label = format!("Temperature warning  ({}°C)", self.alert_temp_warn);
+            ui.painter().text(
+                Pos2::new(inner_x, y + row_h / 2.0 - 7.0),
+                Align2::LEFT_TOP,
+                label,
+                FontId::new(12.0, egui::FontFamily::Proportional),
+                t.txt_sec,
+            );
+            let slider_rect = Rect::from_min_size(
+                Pos2::new(inner_x + 240.0, y + (row_h - 20.0) / 2.0),
+                Vec2::new(section_w - pad * 2.0 - 250.0, 20.0),
+            );
+            let resp = ui.allocate_rect(slider_rect, Sense::click_and_drag());
+            if resp.dragged() || resp.clicked() {
+                if let Some(pos) = resp.interact_pointer_pos() {
+                    let frac = ((pos.x - slider_rect.left()) / slider_rect.width()).clamp(0.0, 1.0);
+                    self.alert_temp_warn = (30.0 + frac * 50.0) as i32; // range 30–80°C
+                    self.alert_temp_warn = self.alert_temp_warn.min(self.alert_temp_critical - 1);
+                    self.save_app_settings();
+                }
+            }
+            // Draw track
+            let frac = ((self.alert_temp_warn - 30) as f32 / 50.0).clamp(0.0, 1.0);
+            ui.painter().rect_filled(slider_rect, 2.0, t.border);
+            ui.painter().rect_filled(
+                Rect::from_min_size(slider_rect.min, Vec2::new(slider_rect.width() * frac, slider_rect.height())),
+                2.0, t.accent,
+            );
+            ui.painter().circle_filled(
+                Pos2::new(slider_rect.left() + slider_rect.width() * frac, slider_rect.center().y),
+                6.0, t.accent,
+            );
+            y += row_h;
+        }
+
+        // ── Temp critical threshold ─────────────────────────────────────────
+        {
+            let label = format!("Temperature critical  ({}°C)", self.alert_temp_critical);
+            ui.painter().text(
+                Pos2::new(inner_x, y + row_h / 2.0 - 7.0),
+                Align2::LEFT_TOP,
+                label,
+                FontId::new(12.0, egui::FontFamily::Proportional),
+                t.txt_sec,
+            );
+            let slider_rect = Rect::from_min_size(
+                Pos2::new(inner_x + 240.0, y + (row_h - 20.0) / 2.0),
+                Vec2::new(section_w - pad * 2.0 - 250.0, 20.0),
+            );
+            let resp = ui.allocate_rect(slider_rect, Sense::click_and_drag());
+            if resp.dragged() || resp.clicked() {
+                if let Some(pos) = resp.interact_pointer_pos() {
+                    let frac = ((pos.x - slider_rect.left()) / slider_rect.width()).clamp(0.0, 1.0);
+                    self.alert_temp_critical = (40.0 + frac * 55.0) as i32; // range 40–95°C
+                    self.alert_temp_critical = self.alert_temp_critical.max(self.alert_temp_warn + 1);
+                    self.save_app_settings();
+                }
+            }
+            let frac = ((self.alert_temp_critical - 40) as f32 / 55.0).clamp(0.0, 1.0);
+            ui.painter().rect_filled(slider_rect, 2.0, t.border);
+            ui.painter().rect_filled(
+                Rect::from_min_size(slider_rect.min, Vec2::new(slider_rect.width() * frac, slider_rect.height())),
+                2.0, Color32::from_rgb(231, 76, 60),
+            );
+            ui.painter().circle_filled(
+                Pos2::new(slider_rect.left() + slider_rect.width() * frac, slider_rect.center().y),
+                6.0, Color32::from_rgb(231, 76, 60),
+            );
+            y += row_h;
+        }
+
+        // ── Wear threshold ──────────────────────────────────────────────────
+        {
+            let label = format!("Wear level alert  ({}%)", self.alert_wear_threshold);
+            ui.painter().text(
+                Pos2::new(inner_x, y + row_h / 2.0 - 7.0),
+                Align2::LEFT_TOP,
+                label,
+                FontId::new(12.0, egui::FontFamily::Proportional),
+                t.txt_sec,
+            );
+            let slider_rect = Rect::from_min_size(
+                Pos2::new(inner_x + 240.0, y + (row_h - 20.0) / 2.0),
+                Vec2::new(section_w - pad * 2.0 - 250.0, 20.0),
+            );
+            let resp = ui.allocate_rect(slider_rect, Sense::click_and_drag());
+            if resp.dragged() || resp.clicked() {
+                if let Some(pos) = resp.interact_pointer_pos() {
+                    let frac = ((pos.x - slider_rect.left()) / slider_rect.width()).clamp(0.0, 1.0);
+                    self.alert_wear_threshold = (50.0 + frac * 50.0) as u8; // range 50–100%
+                    self.save_app_settings();
+                }
+            }
+            let frac = ((self.alert_wear_threshold.saturating_sub(50)) as f32 / 50.0).clamp(0.0, 1.0);
+            ui.painter().rect_filled(slider_rect, 2.0, t.border);
+            ui.painter().rect_filled(
+                Rect::from_min_size(slider_rect.min, Vec2::new(slider_rect.width() * frac, slider_rect.height())),
+                2.0, t.accent,
+            );
+            ui.painter().circle_filled(
+                Pos2::new(slider_rect.left() + slider_rect.width() * frac, slider_rect.center().y),
+                6.0, t.accent,
+            );
+            y += row_h;
+        }
+
+        // ── Test notifications ──────────────────────────────────────────────
+        {
+            ui.painter().text(
+                Pos2::new(inner_x, y + row_h / 2.0 - 7.0),
+                Align2::LEFT_TOP,
+                "Test notifications",
+                FontId::new(12.0, egui::FontFamily::Proportional),
+                t.txt_sec,
+            );
+
+            let btn_w = 90.0_f32;
+            let btn_h = 24.0_f32;
+            let btn_y = y + (row_h - btn_h) / 2.0;
+            let btn_gap = 8.0_f32;
+            let warn_rect = Rect::from_min_size(
+                Pos2::new(inner_x + 160.0, btn_y),
+                Vec2::new(btn_w, btn_h),
+            );
+            let crit_rect = Rect::from_min_size(
+                Pos2::new(warn_rect.right() + btn_gap, btn_y),
+                Vec2::new(btn_w, btn_h),
+            );
+
+            let warn_resp = ui.interact(warn_rect, Id::new("test_warn_btn"), Sense::click());
+            let crit_resp = ui.interact(crit_rect, Id::new("test_crit_btn"), Sense::click());
+
+            let warn_col = Color32::from_rgb(241, 196, 15);
+            let crit_col = Color32::from_rgb(231, 76, 60);
+
+            ui.painter().rect_filled(warn_rect, 4.0, if warn_resp.hovered() { warn_col.gamma_multiply(1.15) } else { warn_col.gamma_multiply(0.85) });
+            ui.painter().text(warn_rect.center(), Align2::CENTER_CENTER, "Warning", FontId::new(12.0, egui::FontFamily::Proportional), Color32::BLACK);
+
+            ui.painter().rect_filled(crit_rect, 4.0, if crit_resp.hovered() { crit_col.gamma_multiply(1.15) } else { crit_col });
+            ui.painter().text(crit_rect.center(), Align2::CENTER_CENTER, "Critical", FontId::new(12.0, egui::FontFamily::Proportional), Color32::WHITE);
+
+            let (drive_serial, drive_model) = self.drives.first()
+                .map(|d| (d.serial.clone(), d.model.clone()))
+                .unwrap_or_else(|| ("TEST-0001".to_string(), "Test Drive".to_string()));
+
+            if warn_resp.clicked() && !self.is_alert_suppressed(&drive_serial) {
+                if let Some(proxy) = &self.event_proxy {
+                    let _ = proxy.send_event(crate::UserEvent::DriveAlert {
+                        serial: drive_serial.clone(),
+                        is_critical: false,
+                    });
+                }
+                self.pending_alerts.push(crate::alert_engine::AlertEvent {
+                    serial: drive_serial.clone(),
+                    model: drive_model.clone(),
+                    condition: crate::alert_engine::AlertCondition::TemperatureWarning,
+                    level: crate::alert_engine::AlertLevel::Warning,
+                    detail: format!("{} — temperature reached 62°C (threshold: {}°C)", drive_model, self.alert_temp_warn),
+                });
+            }
+            if crit_resp.clicked() && !self.is_alert_suppressed(&drive_serial) {
+                if let Some(proxy) = &self.event_proxy {
+                    let _ = proxy.send_event(crate::UserEvent::DriveAlert {
+                        serial: drive_serial.clone(),
+                        is_critical: true,
+                    });
+                }
+                self.pending_alerts.push(crate::alert_engine::AlertEvent {
+                    serial: drive_serial,
+                    model: drive_model.clone(),
+                    condition: crate::alert_engine::AlertCondition::NewUncorrectableSectors,
+                    level: crate::alert_engine::AlertLevel::Critical,
+                    detail: format!("{} — uncorrectable sector count increased (now 3)", drive_model),
+                });
+            }
         }
     }
 }

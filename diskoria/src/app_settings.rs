@@ -47,6 +47,13 @@ pub struct Settings {
     pub accent_palette_idx: usize,
     pub accent_use_custom: bool,
     pub accent_custom_hex: String,
+    // Monitoring settings
+    pub monitoring_enabled: bool,
+    pub minimize_to_tray: bool,
+    pub poll_interval_mins: u8,
+    pub alert_temp_warn: i32,
+    pub alert_temp_critical: i32,
+    pub alert_wear_threshold: u8,
 }
 
 impl Default for Settings {
@@ -57,6 +64,12 @@ impl Default for Settings {
             accent_palette_idx: 0,
             accent_use_custom: false,
             accent_custom_hex: "#8E44AD".to_string(),
+            monitoring_enabled: true,
+            minimize_to_tray: true,
+            poll_interval_mins: 3,
+            alert_temp_warn: 60,
+            alert_temp_critical: 70,
+            alert_wear_threshold: 90,
         }
     }
 }
@@ -91,6 +104,18 @@ pub fn load_settings() -> Settings {
                 s.accent_use_custom = v.trim() == "true";
             } else if let Some(v) = line.strip_prefix("accent_custom_hex=") {
                 s.accent_custom_hex = v.trim().to_string();
+            } else if let Some(v) = line.strip_prefix("monitoring_enabled=") {
+                s.monitoring_enabled = v.trim() != "false";
+            } else if let Some(v) = line.strip_prefix("minimize_to_tray=") {
+                s.minimize_to_tray = v.trim() != "false";
+            } else if let Some(v) = line.strip_prefix("poll_interval_mins=") {
+                if let Ok(n) = v.trim().parse::<u8>() { s.poll_interval_mins = n.clamp(1, 60); }
+            } else if let Some(v) = line.strip_prefix("alert_temp_warn=") {
+                if let Ok(n) = v.trim().parse::<i32>() { s.alert_temp_warn = n; }
+            } else if let Some(v) = line.strip_prefix("alert_temp_critical=") {
+                if let Ok(n) = v.trim().parse::<i32>() { s.alert_temp_critical = n; }
+            } else if let Some(v) = line.strip_prefix("alert_wear_threshold=") {
+                if let Ok(n) = v.trim().parse::<u8>() { s.alert_wear_threshold = n; }
             }
         }
     }
@@ -112,12 +137,18 @@ pub fn save_settings(s: &Settings) {
         AccentSourcePref::Palette => "palette",
     };
     let text = format!(
-        "theme={}\naccent_source={}\naccent_palette_idx={}\naccent_use_custom={}\naccent_custom_hex={}\n",
+        "theme={}\naccent_source={}\naccent_palette_idx={}\naccent_use_custom={}\naccent_custom_hex={}\nmonitoring_enabled={}\nminimize_to_tray={}\npoll_interval_mins={}\nalert_temp_warn={}\nalert_temp_critical={}\nalert_wear_threshold={}\n",
         theme_s,
         accent_src,
         s.accent_palette_idx,
         s.accent_use_custom,
         s.accent_custom_hex,
+        s.monitoring_enabled,
+        s.minimize_to_tray,
+        s.poll_interval_mins,
+        s.alert_temp_warn,
+        s.alert_temp_critical,
+        s.alert_wear_threshold,
     );
     let _ = std::fs::write(path, text);
 }

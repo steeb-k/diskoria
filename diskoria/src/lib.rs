@@ -24,147 +24,50 @@ mod theme;
 mod update;
 mod widgets;
 
+// Pro-Monitoring modules
+pub mod alert_engine;
+#[cfg(windows)]
+pub mod flyout;
+pub mod history_db;
+pub mod monitor;
+pub mod toast;
+#[cfg(windows)]
+pub mod tray;
+
+pub(crate) mod tex_mgr;
+
 pub use app::DiskoriaApp;
 
-use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use winit::application::ApplicationHandler;
 use winit::event::{StartCause, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::{Window, WindowId};
 
 use crate::theme::Theme;
 
-// ── Texture manager (CPU rasterizer atlas) ────────────────────────────────────
+// ── User event type (tray + monitoring callbacks) ─────────────────────────────
 
-struct TexEntry {
-    width: usize,
-    height: usize,
-    rgba: Vec<u8>,
+/// Events that can be injected into the winit event loop from background threads
+/// or the tray-icon callbacks.
+#[derive(Debug)]
+pub enum UserEvent {
+    /// A tray icon was clicked / interacted with.
+    #[cfg(windows)]
+    TrayIconEvent(tray_icon::TrayIconEvent),
+    /// Update a drive's tray icon to reflect a new temperature.
+    #[cfg(windows)]
+    TrayIconUpdate { serial: String, temp_c: Option<i32> },
+    /// Flash a drive's tray icon to signal an alert condition.
+    #[cfg(windows)]
+    DriveAlert { serial: String, is_critical: bool },
+    /// Graceful shutdown requested (from tray context menu "Quit").
+    QuitRequested,
 }
 
-impl TexEntry {
-    fn sample(&self, uv_x: f32, uv_y: f32) -> [f32; 4] {
-        let px = (uv_x * self.width as f32).floor().clamp(0.0, self.width as f32 - 1.0) as usize;
-        let py = (uv_y * self.height as f32).floor().clamp(0.0, self.height as f32 - 1.0) as usize;
-        let idx = (py * self.width + px) * 4;
-        if idx + 3 >= self.rgba.len() {
-            return [1.0, 0.0, 1.0, 1.0];
-        }
-        [
-            self.rgba[idx] as f32 / 255.0,
-            self.rgba[idx + 1] as f32 / 255.0,
-            self.rgba[idx + 2] as f32 / 255.0,
-            self.rgba[idx + 3] as f32 / 255.0,
-        ]
-    }
-}
-
-struct TextureManager {
-    font_atlas: Option<TexEntry>,
-    textures: HashMap<egui::TextureId, TexEntry>,
-}
-
-impl TextureManager {
-    fn new() -> Self {
-        Self {
-            font_atlas: None,
-            textures: HashMap::new(),
-        }
-    }
-
-    fn update(&mut self, delta: &egui::TexturesDelta) {
-        for (id, image_delta) in &delta.set {
-            let (w, h, rgba) = match &image_delta.image {
-                egui::ImageData::Font(font_img) => {
-                    let w = font_img.width();
-                    let h = font_img.height();
-                    let rgba: Vec<u8> = font_img
-                        .pixels
-                        .iter()
-                        .flat_map(|&cov| {
-                            let v = (cov * 255.0 + 0.5) as u8;
-                            [v, v, v, v]
-                        })
-                        .collect();
-                    (w, h, rgba)
-                }
-                egui::ImageData::Color(color_img) => {
-                    let w = color_img.width();
-                    let h = color_img.height();
-                    let rgba: Vec<u8> = color_img
-                        .pixels
-                        .iter()
-                        .flat_map(|p| [p.r(), p.g(), p.b(), p.a()])
-                        .collect();
-                    (w, h, rgba)
-                }
-            };
-
-            let entry = if let Some([ox, oy]) = image_delta.pos {
-                // Partial update
-                if *id == egui::TextureId::default() {
-                    if let Some(atlas) = &mut self.font_atlas {
-                        for row in 0..h {
-                            for col in 0..w {
-                                let src = (row * w + col) * 4;
-                                let dst = ((oy + row) * atlas.width + (ox + col)) * 4;
-                                if dst + 3 < atlas.rgba.len() && src + 3 < rgba.len() {
-                                    atlas.rgba[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
-                                }
-                            }
-                        }
-                    }
-                    continue;
-                } else if let Some(entry) = self.textures.get_mut(id) {
-                    for row in 0..h {
-                        for col in 0..w {
-                            let src = (row * w + col) * 4;
-                            let dst = ((oy + row) * entry.width + (ox + col)) * 4;
-                            if dst + 3 < entry.rgba.len() && src + 3 < rgba.len() {
-                                entry.rgba[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
-                            }
-                        }
-                    }
-                    continue;
-                } else {
-                    TexEntry { width: w, height: h, rgba }
-                }
-            } else {
-                TexEntry { width: w, height: h, rgba }
-            };
-
-            if *id == egui::TextureId::default() {
-                self.font_atlas = Some(entry);
-            } else {
-                self.textures.insert(*id, entry);
-            }
-        }
-
-        for id in &delta.free {
-            self.textures.remove(id);
-        }
-    }
-
-    // Alpha coverage for font atlas — returns [0, 1].
-    fn sample_alpha_f(&self, uv_x: f32, uv_y: f32) -> f32 {
-        let Some(atlas) = &self.font_atlas else { return 1.0 };
-        let px = (uv_x * atlas.width as f32).floor().clamp(0.0, atlas.width as f32 - 1.0) as usize;
-        let py = (uv_y * atlas.height as f32).floor().clamp(0.0, atlas.height as f32 - 1.0) as usize;
-        let idx = (py * atlas.width + px) * 4 + 3;
-        atlas.rgba.get(idx).copied().unwrap_or(0) as f32 / 255.0
-    }
-
-    // RGBA sample for image textures — bilinear, returns [r, g, b, a] in [0, 1].
-    fn sample_rgba(&self, id: egui::TextureId, uv_x: f32, uv_y: f32) -> [f32; 4] {
-        self.textures
-            .get(&id)
-            .map(|e| e.sample(uv_x, uv_y))
-            .unwrap_or([1.0, 0.0, 1.0, 1.0])
-    }
-}
+use crate::tex_mgr::TextureManager;
 
 // ── Renderer ──────────────────────────────────────────────────────────────────
 
@@ -179,7 +82,7 @@ struct Renderer {
 }
 
 impl Renderer {
-    fn new(event_loop: &ActiveEventLoop) -> Self {
+    fn new(event_loop: &ActiveEventLoop, pro_edition: bool) -> Self {
         use winit::dpi::LogicalSize;
         use winit::window::Icon;
 
@@ -239,7 +142,7 @@ impl Renderer {
             None,
         );
 
-        let app = DiskoriaApp::new(&egui_ctx, system_dark, hwnd);
+        let app = DiskoriaApp::new(&egui_ctx, system_dark, hwnd, pro_edition);
 
         Renderer {
             window,
@@ -423,20 +326,75 @@ impl Renderer {
 }
 
 #[inline]
-fn to_bgra(r: u8, g: u8, b: u8, a: u8) -> u32 {
+pub(crate) fn to_bgra(r: u8, g: u8, b: u8, a: u8) -> u32 {
     (a as u32) << 24 | (r as u32) << 16 | (g as u32) << 8 | (b as u32)
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Show and forcefully bring a window to the foreground.
+///
+/// `set_visible(true)` alone leaves the window behind the current active window
+/// on Windows because of focus-stealing prevention.  Pairing it with
+/// `SetForegroundWindow` + `BringWindowToTop` (safe to call from the tray-icon
+/// callback thread since we still hold foreground permission at that point)
+/// makes the window actually appear on top.
+#[cfg(windows)]
+fn raise_window(window: &winit::window::Window) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        BringWindowToTop, SetForegroundWindow, ShowWindow, SW_RESTORE,
+    };
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    window.set_visible(true);
+    if let Ok(handle) = window.window_handle() {
+        if let RawWindowHandle::Win32(h) = handle.as_raw() {
+            let hwnd = h.hwnd.get() as windows_sys::Win32::Foundation::HWND;
+            unsafe {
+                ShowWindow(hwnd, SW_RESTORE);
+                SetForegroundWindow(hwnd);
+                BringWindowToTop(hwnd);
+            }
+        }
+    }
 }
 
 // ── winit ApplicationHandler ──────────────────────────────────────────────────
 
 struct App {
     renderer: Option<Renderer>,
+    proxy: EventLoopProxy<UserEvent>,
+    /// Whether the `--Pro-Edition` flag was passed at launch.
+    pro_edition: bool,
+    #[cfg(windows)]
+    tray: Option<crate::tray::TrayManager>,
+    #[cfg(windows)]
+    flyout: Option<crate::flyout::FlyoutRenderer>,
+    /// Physical-pixel rect of the icon that opened the current flyout.
+    /// Polled every 50 ms to close the flyout when cursor leaves.
+    #[cfg(windows)]
+    flyout_icon_rect: Option<tray_icon::Rect>,
+    /// Serial of the drive whose flyout is currently open.
+    #[cfg(windows)]
+    flyout_drive_serial: Option<String>,
+    /// Custom themed context menu (shown on right-click of the app tray icon).
+    #[cfg(windows)]
+    context_menu: Option<crate::flyout::ContextMenuWindow>,
+    /// Context menu shown on right-click of a drive icon that is currently flashing an alert.
+    #[cfg(windows)]
+    drive_context_menu: Option<crate::flyout::DriveContextMenuWindow>,
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.renderer.is_none() {
-            self.renderer = Some(Renderer::new(event_loop));
+            let mut renderer = Renderer::new(event_loop, self.pro_edition);
+            #[cfg(windows)]
+            if self.pro_edition {
+                renderer.app.event_proxy = Some(self.proxy.clone());
+                self.tray = crate::tray::TrayManager::new(self.proxy.clone());
+            }
+            self.renderer = Some(renderer);
         }
     }
 
@@ -450,10 +408,61 @@ impl ApplicationHandler for App {
 
     fn window_event(
         &mut self,
-        event_loop: &ActiveEventLoop,
-        _window_id: WindowId,
+        _event_loop: &ActiveEventLoop,
+        window_id: WindowId,
         event: WindowEvent,
     ) {
+        // Dispatch to flyout first if the event belongs to it.
+        #[cfg(windows)]
+        if let Some(flyout) = &mut self.flyout {
+            if flyout.window.id() == window_id {
+                let should_close = flyout.handle_event(&event);
+                if should_close {
+                    self.flyout = None;
+                }
+                return;
+            }
+        }
+
+        // Dispatch to context menu if the event belongs to it.
+        #[cfg(windows)]
+        if let Some(cm) = &mut self.context_menu {
+            if cm.window.id() == window_id {
+                if let Some(action) = cm.handle_event(&event) {
+                    match action {
+                        crate::flyout::ContextMenuAction::Open => {
+                            if let Some(r) = &self.renderer {
+                                raise_window(&r.window);
+                            }
+                        }
+                        crate::flyout::ContextMenuAction::Quit => {
+                            let _ = self.proxy.send_event(UserEvent::QuitRequested);
+                        }
+                    }
+                    self.context_menu = None;
+                }
+                return;
+            }
+        }
+
+        // Dispatch to drive context menu if the event belongs to it.
+        #[cfg(windows)]
+        if let Some(dcm) = &mut self.drive_context_menu {
+            if dcm.window.id() == window_id {
+                if let Some(action) = dcm.handle_event(&event) {
+                    // Stop flashing and set suppression.
+                    if let Some(tray) = &mut self.tray {
+                        tray.clear_drive_flash(&action.serial);
+                    }
+                    if let Some(r) = &mut self.renderer {
+                        r.app.suppress_drive_alerts(&action.serial, action.suppress_secs);
+                    }
+                    self.drive_context_menu = None;
+                }
+                return;
+            }
+        }
+
         let Some(renderer) = &mut self.renderer else { return };
 
         let resp = renderer.egui_state.on_window_event(&renderer.window, &event);
@@ -463,12 +472,17 @@ impl ApplicationHandler for App {
 
         match event {
             WindowEvent::CloseRequested => {
-                event_loop.exit();
+                // Minimize to tray instead of exiting.
+                // The app only exits via the tray context menu "Quit" → QuitRequested.
+                if let Some(r) = &self.renderer {
+                    r.window.set_visible(false);
+                }
             }
             WindowEvent::RedrawRequested => {
                 renderer.paint();
                 if renderer.close_requested {
-                    event_loop.exit();
+                    renderer.close_requested = false;
+                    renderer.window.set_visible(false);
                 }
             }
             WindowEvent::Resized(size) => {
@@ -480,9 +494,214 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
+        match event {
+            UserEvent::QuitRequested => {
+                // Cancel the monitor thread before exiting.
+                #[cfg(windows)]
+                if let Some(renderer) = &self.renderer {
+                    if let Some(cancel) = &renderer.app.monitor_cancel {
+                        cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                }
+                // Drop flyout, context menu, and tray icons cleanly.
+                #[cfg(windows)]
+                {
+                    self.flyout = None;
+                    self.context_menu = None;
+                    self.drive_context_menu = None;
+                    self.tray = None;
+                }
+                event_loop.exit();
+            }
+            #[cfg(windows)]
+            UserEvent::TrayIconUpdate { serial, temp_c } => {
+                if let Some(tray) = &mut self.tray {
+                    tray.update_drive_icon(&serial, temp_c);
+                }
+            }
+            #[cfg(windows)]
+            UserEvent::DriveAlert { serial, is_critical } => {
+                if let Some(tray) = &mut self.tray {
+                    tray.set_drive_alert(&serial, is_critical);
+                }
+            }
+            #[cfg(windows)]
+            UserEvent::TrayIconEvent(e) => {
+                log::debug!(target: "diskoria::tray", "TrayIconEvent: {:?}", e);
+                let tray_ref = self.tray.as_ref();
+                if let Some(tray) = tray_ref {
+                    if let Some((serial, rect)) = tray.drive_serial_for_hover_event(&e) {
+                        // Always update the rect so polling uses the freshest position.
+                        self.flyout_icon_rect = Some(rect.clone());
+
+                        // Only (re)create the flyout if it isn't already open for this drive.
+                        let already_open = self.flyout.is_some()
+                            && self.flyout_drive_serial.as_deref() == Some(serial.as_str());
+                        if !already_open {
+                            let snapshot = self.renderer
+                                .as_ref()
+                                .and_then(|r| r.app.last_snapshots.get(&serial))
+                                .map(crate::monitor::DriveSnapshot::from_snapshot)
+                                .unwrap_or_else(|| {
+                                    let mut s = crate::monitor::DriveSnapshot::default();
+                                    s.serial = serial.clone();
+                                    s.model = serial.clone();
+                                    s
+                                });
+                            self.flyout = None;
+                            self.flyout_drive_serial = Some(serial.clone());
+                            let accent = self.renderer.as_ref()
+                                .map(|r| r.app.accent_color)
+                                .unwrap_or(egui::Color32::from_rgb(61, 90, 128));
+                            if let Some(flyout) = crate::flyout::FlyoutRenderer::new(event_loop, snapshot, Some(rect), accent) {
+                                unsafe {
+                                    use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
+                                    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                                    if let Ok(handle) = flyout.window.window_handle() {
+                                        if let RawWindowHandle::Win32(h) = handle.as_raw() {
+                                            let hwnd = h.hwnd.get() as windows_sys::Win32::Foundation::HWND;
+                                            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                                        }
+                                    }
+                                }
+                                flyout.window.request_redraw();
+                                self.flyout = Some(flyout);
+                            }
+                        }
+                    } else if tray.is_drive_leave_event(&e) {
+                        // Fast path when Leave does fire correctly.
+                        self.flyout = None;
+                        self.flyout_icon_rect = None;
+                        self.flyout_drive_serial = None;
+                    } else if let Some((serial, pos)) = tray.alert_drive_right_click(&e) {
+                        // Right-click on a flashing drive icon → show suppression menu.
+                        let accent = self.renderer.as_ref()
+                            .map(|r| r.app.accent_color)
+                            .unwrap_or(egui::Color32::from_rgb(61, 90, 128));
+                        self.drive_context_menu = None;
+                        if let Some(dcm) = crate::flyout::DriveContextMenuWindow::new(
+                            event_loop, pos, accent, serial,
+                        ) {
+                            unsafe {
+                                use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
+                                use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                                if let Ok(handle) = dcm.window.window_handle() {
+                                    if let RawWindowHandle::Win32(h) = handle.as_raw() {
+                                        let hwnd = h.hwnd.get() as windows_sys::Win32::Foundation::HWND;
+                                        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                                    }
+                                }
+                            }
+                            dcm.window.request_redraw();
+                            self.drive_context_menu = Some(dcm);
+                        }
+                    } else if tray.is_app_icon_left_click(&e) {
+                        // Left-click on the app icon → restore and raise main window.
+                        if let Some(r) = &self.renderer {
+                            raise_window(&r.window);
+                        }
+                    } else if let Some(pos) = tray.app_icon_right_click_pos(&e) {
+                        log::info!(target: "diskoria::tray", "App icon right-clicked at {:?}", pos);
+                        // Right-click on the app icon → custom themed context menu.
+                        let accent = self.renderer.as_ref()
+                            .map(|r| r.app.accent_color)
+                            .unwrap_or(egui::Color32::from_rgb(61, 90, 128));
+                        self.context_menu = None;
+                        if let Some(cm) = crate::flyout::ContextMenuWindow::new(event_loop, pos, accent) {
+                            log::info!(target: "diskoria::tray", "Context menu window created");
+
+                            unsafe {
+                                use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
+                                use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                                if let Ok(handle) = cm.window.window_handle() {
+                                    if let RawWindowHandle::Win32(h) = handle.as_raw() {
+                                        let hwnd = h.hwnd.get() as windows_sys::Win32::Foundation::HWND;
+                                        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                                    }
+                                }
+                            }
+                            cm.window.request_redraw();
+                            self.context_menu = Some(cm);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(r) = &self.renderer {
             r.window.request_redraw();
+        }
+
+        // Rebuild per-drive tray icons if the drive list changed.
+        #[cfg(windows)]
+        {
+            let needs_rebuild = self.renderer
+                .as_ref()
+                .map(|r| !r.app.drive_icons_built && !r.app.drives.is_empty())
+                .unwrap_or(false);
+
+            if needs_rebuild {
+                if let (Some(tray), Some(renderer)) = (&mut self.tray, &mut self.renderer) {
+                    tray.rebuild_drive_icons(&renderer.app.drives);
+                    renderer.app.drive_icons_built = true;
+                }
+            }
+        }
+
+        // While a flyout or context menu is open, poll the cursor position every 50 ms.
+        #[cfg(windows)]
+        {
+            // Advance tray icon flash animations; collect the desired poll interval.
+            let flash_wait = self.tray.as_mut().and_then(|t| t.tick_flash());
+
+            let poll_needed = self.flyout.is_some() || self.context_menu.is_some() || self.drive_context_menu.is_some() || flash_wait.is_some();
+
+            if self.flyout.is_some() {
+                if let Some(ref rect) = self.flyout_icon_rect {
+                    unsafe {
+                        use windows_sys::Win32::Foundation::POINT;
+                        use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+                        let mut pt = POINT { x: 0, y: 0 };
+                        GetCursorPos(&mut pt);
+                        let left   = rect.position.x as i32;
+                        let top    = rect.position.y as i32;
+                        let right  = (rect.position.x + rect.size.width  as f64) as i32;
+                        let bottom = (rect.position.y + rect.size.height as f64) as i32;
+                        if pt.x < left || pt.x >= right || pt.y < top || pt.y >= bottom {
+                            self.flyout = None;
+                            self.flyout_icon_rect = None;
+                            self.flyout_drive_serial = None;
+                        }
+                    }
+                }
+            }
+
+            if self.context_menu.is_some() || self.drive_context_menu.is_some() {
+                let (close_cm, close_dcm) = unsafe {
+                    use windows_sys::Win32::Foundation::POINT;
+                    use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+                    let mut pt = POINT { x: 0, y: 0 };
+                    GetCursorPos(&mut pt);
+                    (
+                        self.context_menu.as_mut().map(|cm| cm.poll_cursor(pt.x, pt.y)).unwrap_or(false),
+                        self.drive_context_menu.as_mut().map(|dcm| dcm.poll_cursor(pt.x, pt.y)).unwrap_or(false),
+                    )
+                };
+                if close_cm  { self.context_menu = None; }
+                if close_dcm { self.drive_context_menu = None; }
+            }
+
+            if poll_needed {
+                // Use the flash interval if it's shorter than the 50ms cursor-poll cadence.
+                let base = std::time::Duration::from_millis(50);
+                let wait = flash_wait.map_or(base, |fw| fw.min(base));
+                event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
+                    std::time::Instant::now() + wait,
+                ));
+            }
         }
     }
 }
@@ -502,10 +721,32 @@ pub fn run() {
         env!("CARGO_PKG_VERSION")
     );
 
-    let event_loop = EventLoop::new().expect("create event loop");
+    let pro_edition = std::env::args().any(|a| a == "--Pro-Edition");
+    log::info!(target: "diskoria", "Pro Edition: {pro_edition}");
+
+    let event_loop = EventLoop::<UserEvent>::with_user_event()
+        .build()
+        .expect("create event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
 
-    let mut app = App { renderer: None };
+    let proxy = event_loop.create_proxy();
+    let mut app = App {
+        renderer: None,
+        proxy,
+        pro_edition,
+        #[cfg(windows)]
+        tray: None,
+        #[cfg(windows)]
+        flyout: None,
+        #[cfg(windows)]
+        flyout_icon_rect: None,
+        #[cfg(windows)]
+        flyout_drive_serial: None,
+        #[cfg(windows)]
+        context_menu: None,
+        #[cfg(windows)]
+        drive_context_menu: None,
+    };
     if let Err(e) = event_loop.run_app(&mut app) {
         log::error!(target: "diskoria", "event loop error: {e}");
     }
