@@ -1,0 +1,18 @@
+# Build outputs
+[Bb]in/
+[Oo]bj/
+target/
+portable-build/
+releases/
+*.user
+*.suo
+
+# Logs (e.g. diskoria-redraw.log from run-dev.ps1)
+*.log
+
+# Local scratch / completed-feature notes kept out of the repo
+unused/
+
+# Editor / local tooling (not part of the project)
+.claude/
+.cursor/

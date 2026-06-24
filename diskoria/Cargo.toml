@@ -1,0 +1,56 @@
+[package]
+name = "diskoria"
+version = "1.5.0"
+edition = "2021"
+description = "Diskoria - Windows storage scanning and benchmarking"
+
+[dependencies]
+chrono = "0.4"
+egui = "0.31"
+egui-winit = { version = "0.31", default-features = false, features = ["clipboard"] }
+egui_plot = "0.31"
+env_logger = "0.11"
+log = "0.4"
+image = { version = "0.25", default-features = false, features = ["ico", "png", "bmp"] }
+png = "0.17"
+plotters = { version = "0.3", default-features = false, features = ["bitmap_backend", "line_series", "full_palette", "ttf"] }
+plotters-bitmap = "0.3"
+rfd = "0.15"
+pollster = "0.3"
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+softbuffer = { version = "0.4", default-features = false }
+ureq = { version = "2.9", features = ["json"] }
+winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
+
+[target.'cfg(windows)'.dependencies]
+arboard = "3"
+rand = "0.8"
+rusqlite = { version = "0.31", features = ["bundled"] }
+tray-icon = "0.19"
+windows = { version = "0.58", features = [
+    "Data_Xml_Dom",
+    "Foundation",
+    "UI_Notifications",
+] }
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Memory",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+wmi = "0.18"
+
+[dev-dependencies]
+tempfile = "3"
+
+[build-dependencies]
+winresource = "0.1"
+woff2-patched = "0.4"

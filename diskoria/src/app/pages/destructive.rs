@@ -1,0 +1,430 @@
+//! Destructive (write+verify) Test page. Moved verbatim from `app.rs` in the Phase 3c split;
+//! see `docs/refactor-roadmap.md`. No behavior change.
+
+use egui::{
+    Align2, Color32, FontFamily, FontId, Id, Key, Modifiers, Pos2, Rect, Sense, Stroke,
+    StrokeKind, Vec2,
+};
+
+use crate::chrome::INTERACT_MANUAL_FOCUS;
+use crate::detected_drive::DetectedDrive;
+use crate::drive_selector::{self, ChipSpec, DriveEntry};
+use crate::theme::{Theme, CLOSE_HOVER_BG};
+
+impl crate::app::DiskoriaApp {
+    /// Destructive Test page — gate blocker (first visit) then write+verify UI.
+    pub(crate) fn draw_destructive_page(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        t: &Theme,
+        dark: bool,
+        margin: f32,
+        content_x: f32,
+        content_w: f32,
+    ) {
+        // ----------------------------------------------------------------
+        // Title (always shown)
+        // ----------------------------------------------------------------
+        ui.painter().text(
+            Pos2::new(content_x + margin, ui.cursor().min.y + 14.0),
+            Align2::LEFT_CENTER,
+            "Sector Write Test",
+            FontId::new(28.0, FontFamily::Proportional),
+            t.txt_pri,
+        );
+        ui.add_space(32.0);
+
+        // ----------------------------------------------------------------
+        // Gate page — shown until the user explicitly acknowledges the risk.
+        // ----------------------------------------------------------------
+        if !self.destructive_unlocked {
+            let section_w = content_w - margin * 2.0;
+            let left = content_x + margin;
+
+            let warning_lines = [
+                "This test will write data to every sector on the selected drive",
+                "and immediately read it back to verify the write.",
+                "",
+                "ALL EXISTING DATA ON THE DRIVE WILL BE PERMANENTLY DESTROYED.",
+                "This operation cannot be undone.",
+                "",
+                "Only proceed if you intend to wipe this device completely.",
+                "Do not select a drive that contains any data you wish to keep.",
+            ];
+
+            let mut y = ui.cursor().min.y;
+            for line in &warning_lines {
+                if line.is_empty() {
+                    y += 8.0;
+                    continue;
+                }
+                let is_key = line.starts_with("ALL") || line.starts_with("This operation");
+                let col = if is_key {
+                    Color32::from_rgb(231, 76, 60)
+                } else {
+                    t.txt_sec
+                };
+                let font = if is_key {
+                    FontId::new(14.0, FontFamily::Name("InterBold".into()))
+                } else {
+                    FontId::proportional(14.0)
+                };
+                ui.painter().text(
+                    Pos2::new(left, y + 10.0),
+                    Align2::LEFT_CENTER,
+                    *line,
+                    font,
+                    col,
+                );
+                y += 22.0;
+            }
+            // Allocate vertical space for the warning block.
+            let text_h = y - ui.cursor().min.y;
+            ui.add_space(text_h + 16.0);
+
+            // Large unlock button (same pattern as Start button elsewhere).
+            const PRIMARY_BTN_H: f32 = 48.0;
+            let (_, btn_alloc) = ui.allocate_space(Vec2::new(ui.available_width(), PRIMARY_BTN_H));
+            let screen = ctx.screen_rect();
+            let btn_x = left.max(screen.left() + 12.0);
+            let btn_w = section_w.min((screen.right() - 12.0 - btn_x).max(0.0));
+            let btn_rect = Rect::from_min_size(
+                Pos2::new(btn_x, btn_alloc.top()),
+                Vec2::new(btn_w, PRIMARY_BTN_H),
+            );
+            let btn_font = FontId::new(15.0, FontFamily::Name("InterBold".into()));
+            let unlock_focused = self.destructive_focus == Some(0);
+            let btn_r = ui.interact(btn_rect, Self::destructive_unlock_id(), INTERACT_MANUAL_FOCUS);
+            let bg = if btn_r.hovered() || unlock_focused {
+                Color32::from_rgb(
+                    t.accent.r().saturating_add(15),
+                    t.accent.g().saturating_add(15),
+                    t.accent.b().saturating_add(15),
+                )
+            } else {
+                t.accent
+            };
+            ui.painter().rect_filled(btn_rect, 4.0, bg);
+            if unlock_focused {
+                ui.painter().rect_stroke(
+                    btn_rect.expand(3.0),
+                    4.0,
+                    Stroke::new(2.0, Color32::WHITE),
+                    StrokeKind::Outside,
+                );
+            }
+            ui.painter().text(
+                btn_rect.center(),
+                Align2::CENTER_CENTER,
+                "\u{f337}  I Understand, Continue",
+                btn_font,
+                t.txt_on_accent,
+            );
+            let kb = crate::focus::keyboard_activate(ui, unlock_focused);
+            if btn_r.clicked() || kb {
+                self.destructive_unlocked = true;
+                self.destructive_focus = None;
+            }
+            ui.advance_cursor_after_rect(btn_alloc);
+            return;
+        }
+
+        // ----------------------------------------------------------------
+        // Unlocked — full write+verify UI (mirrors draw_sector_page).
+        // ----------------------------------------------------------------
+        let subtitle = "Read + write test — destroys all data on disk";
+        let section_w = content_w - margin * 2.0;
+
+        ui.horizontal(|ui| {
+            let pad = (content_x + margin) - ui.min_rect().left();
+            if pad > 0.0 {
+                ui.add_space(pad);
+            }
+            ui.label(egui::RichText::new(subtitle).size(14.0).color(t.txt_sec));
+        });
+        ui.add_space(20.0);
+
+        if let Some(ref err) = self.drives_error {
+            ui.horizontal(|ui| {
+                let pad = (content_x + margin) - ui.min_rect().left();
+                if pad > 0.0 {
+                    ui.add_space(pad);
+                }
+                ui.label(
+                    egui::RichText::new(format!("Could not enumerate drives: {err}"))
+                        .size(13.0)
+                        .color(Color32::from_rgb(231, 76, 60)),
+                );
+            });
+            ui.add_space(12.0);
+        }
+
+        if !self.drives_loading && self.drives.is_empty() && self.drives_error.is_none() {
+            ui.horizontal(|ui| {
+                let pad = (content_x + margin) - ui.min_rect().left();
+                if pad > 0.0 {
+                    ui.add_space(pad);
+                }
+                ui.label(
+                    egui::RichText::new("No physical disks found.")
+                        .size(14.0)
+                        .color(t.txt_sec),
+                );
+            });
+            ui.add_space(16.0);
+        }
+
+        if let Some(ref msg) = self.destructive_drive_removed_msg {
+            ui.horizontal(|ui| {
+                let pad = (content_x + margin) - ui.min_rect().left();
+                if pad > 0.0 {
+                    ui.add_space(pad);
+                }
+                ui.label(
+                    egui::RichText::new(msg)
+                        .size(13.0)
+                        .color(Color32::from_rgb(241, 196, 15)),
+                );
+            });
+            ui.add_space(8.0);
+        }
+
+        if let Some(ref err) = self.destructive_last_error {
+            ui.horizontal(|ui| {
+                let pad = (content_x + margin) - ui.min_rect().left();
+                if pad > 0.0 {
+                    ui.add_space(pad);
+                }
+                ui.label(
+                    egui::RichText::new(format!("Destructive test error: {err}"))
+                        .size(13.0)
+                        .color(Color32::from_rgb(231, 76, 60)),
+                );
+            });
+            ui.add_space(8.0);
+        }
+
+        // Refresh icon button (left) and the two-row drive card (right) share a row.
+        let left = content_x + margin;
+        let y_row = ui.cursor().min.y;
+        let btn_rect = Rect::from_min_size(
+            Pos2::new(left, y_row + (drive_selector::ROW_H - drive_selector::REFRESH_W) * 0.5),
+            Vec2::splat(drive_selector::REFRESH_W),
+        );
+        let refresh = drive_selector::refresh_button(
+            ui,
+            ctx,
+            t,
+            Id::new("diskoria_destructive_refresh"),
+            btn_rect,
+            !self.any_test_running(),
+            self.refresh_busy(),
+            self.destructive_focus == Some(0),
+        );
+        if refresh.clicked() {
+            self.destructive_focus = Some(0);
+            self.spawn_drive_enumeration(ctx);
+        }
+        self.destructive_refresh_id = Some(refresh.id);
+
+        let card_left = left + drive_selector::REFRESH_W + drive_selector::REFRESH_GAP;
+        let card_w = section_w - drive_selector::REFRESH_W - drive_selector::REFRESH_GAP;
+        let row_rect = Rect::from_min_size(
+            Pos2::new(left, y_row),
+            Vec2::new(section_w, drive_selector::ROW_H),
+        );
+
+        if self.drives_loading && self.drives.is_empty() {
+            ui.advance_cursor_after_rect(row_rect);
+            return;
+        }
+
+        let busy = self.drives_busy_elsewhere();
+        let entries: Vec<DriveEntry> = self
+            .drives
+            .iter()
+            .map(|d| DriveEntry {
+                title: format!("Drive {} — {}", d.disk_number, d.model.trim()),
+                chips: vec![
+                    ChipSpec::neutral(t, DetectedDrive::format_size(d.size_bytes)),
+                    ChipSpec::media(d.media),
+                    ChipSpec::bus(d.bus),
+                ],
+                disabled: busy.contains(&d.lock_key()),
+            })
+            .collect();
+        let sel = self.selected_drive.min(entries.len().saturating_sub(1));
+
+        ui.add_enabled_ui(!self.any_test_running(), |ui| {
+            let out = drive_selector::two_row_combo(
+                ui,
+                t,
+                Id::new("diskoria_destructive_drive_combo"),
+                &entries,
+                sel,
+                !self.any_test_running() && self.destructive_focus == Some(1),
+                !self.refresh_busy(),
+                card_left,
+                card_w,
+                y_row,
+            );
+            self.destructive_combo_id = Some(out.id);
+            if out.clicked {
+                self.destructive_focus = Some(1);
+            }
+            self.selected_drive = out.selected;
+            ui.advance_cursor_after_rect(row_rect);
+        });
+
+        if self.selected_drive_busy_elsewhere() {
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let pad = (content_x + margin) - ui.min_rect().left();
+                if pad > 0.0 { ui.add_space(pad); }
+                ui.label(
+                    egui::RichText::new("This drive is being tested in another window.")
+                        .size(13.0)
+                        .color(Color32::from_rgb(241, 196, 15)),
+                );
+            });
+        }
+
+        self.draw_smart_health_card(ui, t, dark, content_x, margin, section_w);
+
+        // Primary Start / Stop button
+        #[cfg(windows)]
+        {
+            ui.add_space(12.0);
+            const PRIMARY_BTN_H: f32 = 48.0;
+            let (_, btn_alloc) = ui.allocate_space(Vec2::new(ui.available_width(), PRIMARY_BTN_H));
+            let screen = ctx.screen_rect();
+            let btn_x = (content_x + margin).max(screen.left() + 12.0);
+            let btn_w = section_w.min((screen.right() - 12.0 - btn_x).max(0.0));
+            let btn_rect = Rect::from_min_size(
+                Pos2::new(btn_x, btn_alloc.top()),
+                Vec2::new(btn_w, PRIMARY_BTN_H),
+            );
+            let btn_font = FontId::new(15.0, FontFamily::Name("InterBold".into()));
+
+            if self.destructive_test_running {
+                let stop_focused = self.destructive_focus == Some(0);
+                let btn_r =
+                    ui.interact(btn_rect, Self::destructive_primary_id(), Sense::click());
+                let bg = if btn_r.hovered() || stop_focused {
+                    Color32::from_rgb(
+                        CLOSE_HOVER_BG.r().saturating_add(12),
+                        CLOSE_HOVER_BG.g().saturating_add(8),
+                        CLOSE_HOVER_BG.b().saturating_add(8),
+                    )
+                } else {
+                    CLOSE_HOVER_BG
+                };
+                ui.painter().rect_filled(btn_rect, 4.0, bg);
+                if stop_focused {
+                    ui.painter().rect_stroke(
+                        btn_rect.expand(3.0),
+                        4.0,
+                        Stroke::new(2.0, Color32::WHITE),
+                        StrokeKind::Outside,
+                    );
+                }
+                ui.painter().text(
+                    btn_rect.center(),
+                    Align2::CENTER_CENTER,
+                    "Stop Test",
+                    btn_font,
+                    Color32::WHITE,
+                );
+                let kb = btn_r.has_focus()
+                    && ui.input_mut(|inp| {
+                        inp.consume_key(Modifiers::NONE, Key::Enter)
+                            || inp.consume_key(Modifiers::NONE, Key::Space)
+                    });
+                if btn_r.clicked() || kb {
+                    self.show_destructive_stop_confirm = true;
+                }
+            } else {
+                let can_start = !self.drives.is_empty()
+                    && !self.drives_loading
+                    && !self.surface_test_running
+                    && !self.speed_test_running
+                    && !self.selected_drive_busy_elsewhere();
+                let start_focused = can_start && self.destructive_focus == Some(2);
+                let btn_sense = if can_start {
+                    Sense::click()
+                } else {
+                    Sense::hover()
+                };
+                let btn_r = ui.interact(btn_rect, Self::destructive_primary_id(), btn_sense);
+                let bg = if !can_start {
+                    Color32::from_rgba_premultiplied(
+                        t.accent.r() / 2,
+                        t.accent.g() / 2,
+                        t.accent.b() / 2,
+                        180,
+                    )
+                } else if btn_r.hovered() || start_focused {
+                    Color32::from_rgb(
+                        t.accent.r().saturating_add(15),
+                        t.accent.g().saturating_add(15),
+                        t.accent.b().saturating_add(15),
+                    )
+                } else {
+                    t.accent
+                };
+                let fg = if can_start {
+                    t.txt_on_accent
+                } else {
+                    Color32::from_rgba_premultiplied(255, 255, 255, 120)
+                };
+                ui.painter().rect_filled(btn_rect, 4.0, bg);
+                if start_focused && can_start {
+                    ui.painter().rect_stroke(
+                        btn_rect.expand(3.0),
+                        4.0,
+                        Stroke::new(2.0, Color32::WHITE),
+                        StrokeKind::Outside,
+                    );
+                }
+                ui.painter().text(
+                    btn_rect.center(),
+                    Align2::CENTER_CENTER,
+                    "Start Test",
+                    btn_font,
+                    fg,
+                );
+                let kb = can_start
+                    && btn_r.has_focus()
+                    && ui.input_mut(|inp| {
+                        inp.consume_key(Modifiers::NONE, Key::Enter)
+                            || inp.consume_key(Modifiers::NONE, Key::Space)
+                    });
+                if (btn_r.clicked() || kb) && can_start {
+                    self.show_destructive_start_confirm = true;
+                }
+            }
+            ui.advance_cursor_after_rect(btn_alloc);
+        }
+
+        ui.add_space(16.0);
+
+        if cfg!(not(windows)) {
+            ui.horizontal(|ui| {
+                let pad = (content_x + margin) - ui.min_rect().left();
+                if pad > 0.0 {
+                    ui.add_space(pad);
+                }
+                ui.label(
+                    egui::RichText::new("Destructive testing requires Windows.")
+                        .size(14.0)
+                        .color(t.txt_sec),
+                );
+            });
+            return;
+        }
+
+        #[cfg(windows)]
+        self.draw_destructive_test_panel(ui, t, content_x, margin, section_w);
+    }
+}

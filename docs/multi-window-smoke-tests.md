@@ -1,0 +1,206 @@
+# Multi-window refactor — smoke test plan
+
+Companion to the multi-window refactor plan. One block per plan step; run the
+checks at the end of each before moving on. The
+refactor is long and mechanical, so the goal is to catch regressions *early* —
+ideally in the step that introduced them — rather than during a single
+end-of-project sweep.
+
+All tests assume the `multi-window` branch, a clean `cargo build`, and
+`.\run-dev.ps1` for launch unless noted. Treat any panic, crash, or hang as
+a stop-the-line; do not advance to the next step until green.
+
+---
+
+## Per-step smoke tests
+
+### Step 1 — SharedAppState scaffold (done)
+
+Gate: one window renders as before; no behavioral change expected.
+
+- [ ] `cargo build` → clean, no new warnings beyond the 2 pre-existing.
+- [ ] App launches, drives enumerate, main window is usable.
+- [ ] Theme toggle (Settings → Dark/Light/Auto) still works.
+- [ ] Accent palette swatch click still recolors the UI.
+- [ ] Close window → tray-minimize (Pro) behavior unchanged.
+
+### Step 2 — Delete migrated fields (done)
+
+Gate: every old field now read/written via `shared`. Single-window
+behavior identical.
+
+- [ ] `cargo build` → clean.
+- [ ] Change theme from each UI path (Settings radio, Ctrl-click on swatch
+      etc.) — every write actually persists. Restart app, confirm theme
+      survives.
+- [ ] Change accent to custom hex → hex edit commits on blur/enter; the
+      next draw shows the new color.
+- [ ] Settings file at `%PROGRAMDATA%\Diskoria\settings.txt` reflects each
+      change within one frame.
+
+### Step 3 — Monitor + drive-enum receivers on SharedAppState (done)
+
+Gate: background-thread plumbing routes through `shared`; no dangling
+receivers; monitor lifecycle unchanged.
+
+- [ ] `cargo build` → clean.
+- [ ] On launch: drive list populates within ~1 s.
+- [ ] Pro-Monitoring ticks: `history.db` gets a new row at the configured
+      poll interval (run with `poll_interval_mins = 1` to shorten the
+      loop). Verify via:
+      `sqlite3 %PROGRAMDATA%\Diskoria\history.db "select datetime(ts,'unixepoch'), serial from snapshots order by ts desc limit 5;"`
+- [ ] Toggle "Enable monitoring" off → no new rows land within 2 ×
+      poll interval. Toggle back on → rows resume.
+- [ ] Change `poll_interval_mins` → monitor restarts with new cadence
+      (watch `history.db` insert spacing).
+- [ ] Tray "Quit" → process exits cleanly, no stderr panic from the
+      monitor thread about a closed proxy.
+
+### Step 4 — HashMap<WindowId, Renderer>
+
+Gate: still creates exactly one window; routing by window id.
+
+- [ ] `cargo build` → clean.
+- [ ] Single window still opens on launch.
+- [ ] Window events (resize, close, redraw) route correctly — manually
+      resize the window, confirm the render follows.
+- [ ] Close window → expected behavior (tray-minimize).
+- [ ] Quick stress: resize the window rapidly for 10 s, no panic.
+
+### Step 5 — UserEvent::OpenNewWindow + Ctrl+N
+
+Gate: two windows open simultaneously; each is independently
+interactive.
+
+- [ ] `cargo build` → clean.
+- [ ] Launch. Press Ctrl+N → second window appears.
+- [ ] Both windows show the same drive list.
+- [ ] Focus each window in turn; the keyboard focus follows.
+- [ ] Navigate to different pages in each window (e.g. A on
+      "Surface Test", B on "SMART Health"). Each retains its page.
+- [ ] Resize window A independently of window B.
+- [ ] Close window A (not last) → window B stays alive, tray intact.
+- [ ] Close window B (last) → tray-minimize as expected.
+
+### Step 6 — SettingsChanged broadcast + live sync
+
+Gate: changes in one window appear in every other window on next frame.
+
+- [ ] `cargo build` → clean.
+- [ ] Open two windows (Ctrl+N).
+- [ ] In window A, switch theme Dark → Light. Window B flips within one
+      frame (observe without needing to click it).
+- [ ] Change accent palette swatch in A → B's accent updates.
+- [ ] Toggle a Pro-Monitoring threshold (e.g. temp warn) in A → next
+      monitor cycle uses new threshold; verify via a deliberately low
+      warn threshold + alert toast fires.
+- [ ] `settings.txt` on disk shows the final value exactly once (not
+      double-written). Open from both windows simultaneously (race):
+      change theme in A and accent in B within the same half-second →
+      last write wins cleanly, no corruption.
+
+### Step 7 — Close/Quit with multiple windows
+
+Gate: per-window tests cancel on their own window's close; last-window
+falls back to tray-minimize; tray "Quit" tears everything down.
+
+- [ ] `cargo build` → clean.
+- [ ] Open 2 windows. Start a Sector Read test in window A. Window B's
+      Sector Read page shows "Idle".
+- [ ] Start an independent Sector Read test in window B on a different
+      drive. Both run in parallel. History rows arrive from both.
+- [ ] Close window A mid-test → A's test thread exits within ~2 s
+      (monitor via `RUST_LOG=diskoria=debug`). Window B's test
+      continues.
+- [ ] Close window B (last remaining) → hides to tray; test in B is
+      either finished or cancelled cleanly.
+- [ ] Relaunch visible from tray. Start a test. Right-click tray → Quit.
+      Process exits within 3 s; no background-thread panic.
+
+### Step 8 — Single-instance watcher: raise vs. new window
+
+Gate: second exe launch raises when hidden, opens new window when
+visible.
+
+- [ ] `cargo build` → clean.
+- [ ] Launch diskoria.exe. Window visible. Launch diskoria.exe again →
+      **second window appears** in the same process (check Task
+      Manager: still only one `diskoria.exe` PID).
+- [ ] Close both windows to tray (tray-minimize). Launch diskoria.exe
+      again → **one** existing window raises; no new window.
+- [ ] Rapid double-launch stress: kick off 5 launches inside 2 s. Result
+      is deterministic (either all raise, all spawn new, or some mix)
+      but: no process leak (still exactly 1 `diskoria.exe`), no crash.
+
+### Step 9 — Tray "New Window" menu item
+
+Gate: tray right-click opens a new window identical to Ctrl+N.
+
+- [ ] `cargo build` → clean.
+- [ ] Right-click the app tray icon → context menu includes "New
+      Window". Click → new window appears.
+- [ ] New window is fully usable, shares shared state, closes
+      independently.
+- [ ] "Quit" still closes everything.
+
+### Step 10 — End-to-end verification (plan's checklist)
+
+Run the full 12-step list from `remove-the-flag-fancy-seal.md` §
+"Verification" before closing the branch. In particular:
+
+- [ ] 10.1 Start Sector Read in A. Close A mid-scan. Verify A's test
+      thread exits within a couple of seconds via `RUST_LOG=diskoria=debug`.
+- [ ] 10.2 Right-click drive tray icon → "Suppress alerts 10 min". No
+      alert toast in *either* window during the suppression window.
+      Suppression map is global.
+- [ ] 10.3 Launch.exe a third/fourth time while running → each either
+      raises hidden windows or opens new ones per rule. No proliferating
+      processes.
+- [ ] 10.4 Tray Quit → clean exit. Check Task Manager: no lingering
+      `diskoria.exe`.
+
+---
+
+## Cross-cutting invariants (check after any step)
+
+These should always be true. If any fails mid-refactor, pause and
+diagnose before moving forward.
+
+- **Single process.** Task Manager never shows two `diskoria.exe`, no
+  matter how the user launched (double-click, tray, Ctrl+N, second
+  `.\run-dev.ps1`).
+- **Tray singletons.** Exactly one app tray icon; drive tray icons
+  match the enumerated drive list (no duplicates from reopened
+  windows).
+- **`history.db` singleton.** Only the primary process writes rows.
+  Verify via `lsof`/Handle that only one process holds the file open.
+- **No `poisoned` panic.** If a `RwLock`/`Mutex` in `SharedAppState`
+  panics, a later `expect("... poisoned")` will crash the app. Never
+  acceptable.
+- **No stale reads across windows.** If window B shows old theme/accent
+  one second after A changed it, the broadcast is broken. File a bug
+  before moving on.
+- **Guards never cross `draw()`.** Enforced by inspection: every
+  `settings.read()` / `drives.read()` inside `DiskoriaApp::draw` must
+  drop its guard before the egui rendering calls begin. If we ever see
+  mysterious frame hitches when another window mutates settings,
+  inspect for a leaked guard.
+
+## Tools / telemetry
+
+- `RUST_LOG=diskoria=debug .\run-dev.ps1` — see monitor cadence, test
+  lifecycle, proxy sends.
+- `sqlite3 %PROGRAMDATA%\Diskoria\history.db` — confirm monitor writes.
+- Task Manager → Details → `diskoria.exe` — confirm single-process
+  invariant on every spawn path.
+- `Get-Process diskoria | Select Id,HandleCount,Threads` — watch for
+  thread/handle leaks across window open/close cycles.
+
+## Known non-regressions
+
+- `drive_enumeration.rs`: 2 pre-existing warnings (`releases_repo_page_url`
+  dead code, `DriveType` unread field). These are OK; do not "fix" them
+  in this branch.
+- Windows with the same title: intentional — the "any visible" shared
+  flag is the source of truth for the launch-#2 decision, not
+  `FindWindowW`.
