@@ -17,7 +17,7 @@ Windows utility for **storage health visibility**, **non-destructive sector scan
 **Development build** (from repository root):
 
 ```powershell
-.\run-dev.ps1
+.\scripts\run-dev.ps1
 ```
 
 This runs `cargo run` inside the `diskoria` crate. If elevation is required and `cargo run` cannot obtain it, build then start the binary with elevation:
@@ -28,7 +28,7 @@ cargo build
 Start-Process .\target\debug\diskoria.exe -Verb RunAs
 ```
 
-**Release builds:** see `build-portable.ps1` and `build-release.ps1` at the repo root.
+**Release builds:** see `scripts\build-portable.ps1` and `scripts\build-release.ps1`.
 
 ## Usage by page
 

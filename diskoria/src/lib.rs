@@ -125,7 +125,7 @@ impl Renderer {
         use winit::dpi::LogicalSize;
         use winit::window::Icon;
 
-        const APPICON_ICO: &[u8] = include_bytes!("../../appicon2.ico");
+        const APPICON_ICO: &[u8] = include_bytes!("../../assets/appicon2.ico");
 
         let window_icon = image::load_from_memory(APPICON_ICO)
             .ok()

@@ -73,7 +73,7 @@ covered by the manual checklist in `docs/`:
 
 - `docs/multi-window-smoke-tests.md` — per-feature window/tray/monitor matrix.
 
-Run these by hand (with `RUST_LOG=diskoria=debug .\run-dev.ps1`) before shipping
+Run these by hand (with `RUST_LOG=diskoria=debug .\scripts\run-dev.ps1`) before shipping
 changes that touch windowing, the tray, the monitor thread, or the disk-test
 workers.
 

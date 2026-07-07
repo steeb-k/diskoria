@@ -16,7 +16,7 @@ configurable interval (default 3 minutes).
 
 ### System Tray Icons
 One icon per internally-installed drive (NVMe and SATA only — USB and UFS
-excluded), plus one app-level icon using `trayicon.ico`. Each drive icon is a
+excluded), plus one app-level icon using `assets/trayicon.ico`. Each drive icon is a
 32×32 RGBA thermometer that re-colors based on the last measured temperature:
 
 | Color  | Range  |
@@ -170,7 +170,7 @@ All settings are persisted to `%ProgramData%\Diskoria\settings.txt`.
 | `src/alert_engine.rs` | Alert condition logic, cooldown tracking (pure, no I/O) |
 | `src/history_db.rs` | SQLite persistence: open, insert, query, prune |
 | `src/toast.rs` | WinRT toast + balloon tip fallback, AUMID registration |
-| `src/tray.rs` | TrayManager: app icon (from `trayicon.ico`), per-drive thermometer icons |
+| `src/tray.rs` | TrayManager: app icon (from `assets/trayicon.ico`), per-drive thermometer icons |
 | `src/flyout.rs` | Drive health flyout window; custom themed context menu window |
 | `src/tex_mgr.rs` | Shared texture manager for egui softbuffer rasterizer (flyout + context menu) |
 
@@ -187,7 +187,7 @@ All settings are persisted to `%ProgramData%\Diskoria\settings.txt`.
 ### 2. Tray Icon Appearance
 - [ ] On launch, tray icons appear in the notification area: one per internal
   NVMe/SATA drive, plus the app icon
-- [ ] The app icon matches `trayicon.ico`
+- [ ] The app icon matches `assets/trayicon.ico`
 - [ ] USB drives do **not** get a tray icon
 - [ ] Each drive icon shows a colored thermometer shape
 - [ ] Drive icons have no tooltip (tooltip is suppressed)

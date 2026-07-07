@@ -9,7 +9,7 @@
 #>
 $ErrorActionPreference = 'Stop'
 
-$repoRoot = $PSScriptRoot
+$repoRoot = Split-Path $PSScriptRoot -Parent
 $cargoDir = Join-Path $repoRoot 'diskoria'
 $cargoToml = Join-Path $cargoDir 'Cargo.toml'
 

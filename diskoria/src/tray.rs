@@ -146,9 +146,9 @@ pub fn render_thermometer_icon(temp_c: Option<i32>) -> Icon {
         .expect("thermometer icon RGBA valid")
 }
 
-/// Load the bundled trayicon.ico as the app tray icon, falling back to a solid rectangle.
+/// Load the bundled assets/trayicon.ico as the app tray icon, falling back to a solid rectangle.
 fn app_icon() -> Icon {
-    static TRAY_ICO: &[u8] = include_bytes!("../../trayicon.ico");
+    static TRAY_ICO: &[u8] = include_bytes!("../../assets/trayicon.ico");
 
     if let Ok(img) = image::load_from_memory(TRAY_ICO) {
         let rgba = img.resize(ICON_SIZE, ICON_SIZE, image::imageops::FilterType::Lanczos3)

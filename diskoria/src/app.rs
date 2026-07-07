@@ -400,10 +400,10 @@ impl DiskoriaApp {
         #[cfg(windows)]
         crate::chrome::install_win32_resize(hwnd);
 
-        static LOGO_PNG: &[u8] = include_bytes!("../../applogo.png");
+        static LOGO_PNG: &[u8] = include_bytes!("../../assets/applogo.png");
         let (logo, logo_light, logo_size) = load_logo_textures(ctx, LOGO_PNG);
 
-        static ABOUT_ICO: &[u8] = include_bytes!("../../appicon2.ico");
+        static ABOUT_ICO: &[u8] = include_bytes!("../../assets/appicon2.ico");
         let about_appicon = crate::chrome::load_appicon_texture(ctx, ABOUT_ICO);
 
         let s = shared.settings_snapshot();

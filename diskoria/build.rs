@@ -29,14 +29,14 @@ fn main() {
         println!("cargo:rerun-if-env-changed=DISKORIA_SKIP_RESOURCE");
         if std::env::var_os("DISKORIA_SKIP_RESOURCE").is_none() {
             let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-            let icon_path = std::path::Path::new(&manifest_dir).parent().unwrap().join("appicon2.ico");
+            let icon_path = std::path::Path::new(&manifest_dir).parent().unwrap().join("assets").join("appicon2.ico");
             let app_manifest = std::path::Path::new(&manifest_dir).join("app.manifest");
             let mut res = winresource::WindowsResource::new();
             res.set_icon(icon_path.to_string_lossy().as_ref());
             res.set_manifest_file(app_manifest.to_string_lossy().as_ref());
             res.compile().expect("failed to compile Windows resources");
             println!("cargo:rerun-if-changed={}", icon_path.display());
-            println!("cargo:rerun-if-changed=../appicon2.ico");
+            println!("cargo:rerun-if-changed=../assets/appicon2.ico");
             println!("cargo:rerun-if-changed={}", app_manifest.display());
         }
     }

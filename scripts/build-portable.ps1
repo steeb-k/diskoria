@@ -2,7 +2,7 @@
 
 $ErrorActionPreference = "Continue"
 
-$ProjectRoot = $PSScriptRoot
+$ProjectRoot = Split-Path $PSScriptRoot -Parent
 $CargoDir    = Join-Path $ProjectRoot "diskoria"
 $ReleaseDir  = Join-Path $CargoDir "target\release"
 $OutputDir   = Join-Path $ProjectRoot "portable-build"

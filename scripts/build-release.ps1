@@ -10,12 +10,12 @@
 
     Output: releases\<version>\diskoria.exe (release profile, single portable exe).
 
-    Optional: if artifact-signing-metadata.json exists at the repo root (or ARTIFACT_SIGNING_METADATA
-    points to it), the script can sign diskoria.exe with Azure Artifact Signing.
+    Optional: if artifact-signing-metadata.json exists next to this script (in scripts\, or
+    ARTIFACT_SIGNING_METADATA points to it), the script can sign diskoria.exe with Azure Artifact Signing.
 #>
 $ErrorActionPreference = 'Stop'
 
-$repoRoot = $PSScriptRoot
+$repoRoot = Split-Path $PSScriptRoot -Parent
 $cargoDir = Join-Path $repoRoot 'diskoria'
 $releasesDir = Join-Path $repoRoot 'releases'
 $exeName = 'diskoria.exe'
@@ -61,7 +61,7 @@ $destExe = Join-Path $versionDir $exeName
 Copy-Item -Path $built -Destination $destExe -Force
 
 # ── Sign with Azure Artifact Signing (optional) ─────────────────────────────
-$MetadataPath = if ($env:ARTIFACT_SIGNING_METADATA) { $env:ARTIFACT_SIGNING_METADATA } else { Join-Path $repoRoot 'artifact-signing-metadata.json' }
+$MetadataPath = if ($env:ARTIFACT_SIGNING_METADATA) { $env:ARTIFACT_SIGNING_METADATA } else { Join-Path $PSScriptRoot 'artifact-signing-metadata.json' }
 $ExeToSign = $destExe
 
 $SkipSigning = $false

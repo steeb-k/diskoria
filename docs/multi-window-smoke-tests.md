@@ -7,7 +7,7 @@ ideally in the step that introduced them — rather than during a single
 end-of-project sweep.
 
 All tests assume the `multi-window` branch, a clean `cargo build`, and
-`.\run-dev.ps1` for launch unless noted. Treat any panic, crash, or hang as
+`.\scripts\run-dev.ps1` for launch unless noted. Treat any panic, crash, or hang as
 a stop-the-line; do not advance to the next step until green.
 
 ---
@@ -168,7 +168,7 @@ diagnose before moving forward.
 
 - **Single process.** Task Manager never shows two `diskoria.exe`, no
   matter how the user launched (double-click, tray, Ctrl+N, second
-  `.\run-dev.ps1`).
+  `.\scripts\run-dev.ps1`).
 - **Tray singletons.** Exactly one app tray icon; drive tray icons
   match the enumerated drive list (no duplicates from reopened
   windows).
@@ -188,7 +188,7 @@ diagnose before moving forward.
 
 ## Tools / telemetry
 
-- `RUST_LOG=diskoria=debug .\run-dev.ps1` — see monitor cadence, test
+- `RUST_LOG=diskoria=debug .\scripts\run-dev.ps1` — see monitor cadence, test
   lifecycle, proxy sends.
 - `sqlite3 %PROGRAMDATA%\Diskoria\history.db` — confirm monitor writes.
 - Task Manager → Details → `diskoria.exe` — confirm single-process

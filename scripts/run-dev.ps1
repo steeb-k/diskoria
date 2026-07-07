@@ -2,7 +2,8 @@
 # Cargo.toml) change, then executes the fresh binary. It does not rebuild for unrelated file edits.
 # Optional: $env:DISKORIA_FORCE_CLEAN = "1" to `cargo clean -p diskoria` before run (slow).
 $ErrorActionPreference = "Stop"
-$CargoDir = Join-Path $PSScriptRoot "diskoria"
+$RepoRoot = Split-Path $PSScriptRoot -Parent
+$CargoDir = Join-Path $RepoRoot "diskoria"
 if (-not (Test-Path (Join-Path $CargoDir "Cargo.toml"))) {
     Write-Error "Expected Cargo.toml at $CargoDir"
 }

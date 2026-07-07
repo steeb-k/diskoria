@@ -26,8 +26,10 @@ diskoria/              Rust crate
   Cargo.toml, build.rs, app.manifest, .cargo/config.toml (crt-static)
   src/                 Application code (see "Code structure")
   tests/boot_smoke.rs  Ignored integration smoke (launches the real exe)
-*.ps1 (repo root)      run-dev / build-release / build-portable / set-version
-appicon*.png/.ico, applogo.png   Branding embedded at compile time
+scripts/               run-dev / build-release / build-portable / set-version
+                       + artifact-signing-metadata.json (Azure signing config)
+assets/                appicon2.ico, trayicon.ico, applogo.png (embedded at compile time)
+  source/              Editable/alternate originals (.xcf, alt png/ico) — not embedded
 ```
 
 ## Docs (read before changing the relevant area)
@@ -79,9 +81,9 @@ appicon*.png/.ico, applogo.png   Branding embedded at compile time
 ## Build / run / test
 
 ```
-.\run-dev.ps1                          # cargo run (needs elevation for disk I/O)
-.\build-release.ps1 / build-portable.ps1
-.\set-version.ps1                      # interactive version bump
+.\scripts\run-dev.ps1                  # cargo run (needs elevation for disk I/O)
+.\scripts\build-release.ps1 / .\scripts\build-portable.ps1
+.\scripts\set-version.ps1              # interactive version bump
 
 cargo build                            # zero warnings is the bar — keep it there
 cargo clippy --all-targets             # also zero warnings
