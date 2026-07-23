@@ -12,6 +12,8 @@
 mod about;
 mod app;
 mod app_settings;
+#[cfg(windows)]
+mod autostart;
 mod chrome;
 mod github_config;
 mod focus;
@@ -474,6 +476,10 @@ struct App {
     /// first time the last window is closed (hidden to tray) in a session.
     #[cfg(windows)]
     tray_toast_shown: bool,
+    /// `--minimized` was passed (the scheduled logon task launches Diskoria this
+    /// way): create the first window hidden so the app comes up tray-only.
+    #[cfg(windows)]
+    start_minimized: bool,
 }
 
 impl App {
@@ -527,6 +533,16 @@ impl ApplicationHandler<UserEvent> for App {
             if self.shared.pro_edition {
                 renderer.app.event_proxy = Some(self.proxy.clone());
                 self.tray = crate::tray::TrayManager::new(self.proxy.clone());
+            }
+            // Auto-start (`--minimized`): come up tray-only. The window is
+            // created visible by default; hide it before it maps. We still
+            // request a redraw so the first `draw()` runs — that kicks drive
+            // enumeration and, in turn, the background monitor thread — even
+            // though no window is ever shown.
+            #[cfg(windows)]
+            if self.start_minimized {
+                renderer.window.set_visible(false);
+                renderer.window.request_redraw();
             }
             let id = renderer.window.id();
             self.renderers.insert(id, renderer);
@@ -1146,7 +1162,7 @@ fn read_any_visible_flag() -> Option<bool> {
 }
 
 #[cfg(windows)]
-fn acquire_single_instance_mutex() -> windows_sys::Win32::Foundation::HANDLE {
+fn acquire_single_instance_mutex(start_minimized: bool) -> windows_sys::Win32::Foundation::HANDLE {
     use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS};
     use windows_sys::Win32::System::Threading::{CreateMutexW, OpenEventW, SetEvent, EVENT_MODIFY_STATE};
 
@@ -1157,6 +1173,13 @@ fn acquire_single_instance_mutex() -> windows_sys::Win32::Foundation::HANDLE {
     let handle = unsafe { CreateMutexW(std::ptr::null(), 1, mutex_name.as_ptr()) };
 
     if unsafe { windows_sys::Win32::Foundation::GetLastError() } == ERROR_ALREADY_EXISTS {
+        // Auto-start (`--minimized`) racing an already-running instance: the
+        // user is already covered, so just exit quietly. Never raise the
+        // existing (possibly hidden) instance — that would defeat "stay in the
+        // tray".
+        if start_minimized {
+            std::process::exit(0);
+        }
         // Another instance is running — signal it via a named event so its
         // own winit thread reacts (bypassing winit's state tracker causes
         // caption-button desync).  Which event we pulse depends on whether
@@ -1271,12 +1294,17 @@ pub fn run() {
         log::info!(target: "diskoria", "DISKORIA_SMOKE active: rendering {n} frame(s) then exiting");
     }
 
+    // Auto-start launches Diskoria with `--minimized` (via the logon scheduled
+    // task) so it comes up tray-only.
+    #[cfg(windows)]
+    let start_minimized = std::env::args().skip(1).any(|a| a == "--minimized");
+
     // Skip the single-instance guard under smoke so the test run is independent
     // of any already-running Diskoria instance.
     #[cfg(windows)]
     let _single_instance_mutex = smoke_remaining
         .is_none()
-        .then(acquire_single_instance_mutex);
+        .then(|| acquire_single_instance_mutex(start_minimized));
 
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
@@ -1315,6 +1343,8 @@ pub fn run() {
         device_change_deadline: None,
         #[cfg(windows)]
         tray_toast_shown: false,
+        #[cfg(windows)]
+        start_minimized,
     };
     if let Err(e) = event_loop.run_app(&mut app) {
         log::error!(target: "diskoria", "event loop error: {e}");

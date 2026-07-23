@@ -28,6 +28,8 @@ diskoria/              Rust crate
   tests/boot_smoke.rs  Ignored integration smoke (launches the real exe)
 scripts/               run-dev / build-release / build-portable / set-version
                        + artifact-signing-metadata.json (Azure signing config)
+installer/             diskoria.iss — Inno Setup script (built by build-release.ps1
+                       via ISCC; produces releases/<ver>/diskoria-<ver>-setup.exe)
 assets/                appicon2.ico, trayicon.ico, applogo.png (embedded at compile time)
   source/              Editable/alternate originals (.xcf, alt png/ico) — not embedded
 ```
@@ -77,6 +79,12 @@ assets/                appicon2.ico, trayicon.ico, applogo.png (embedded at comp
 - Support: `app_settings.rs`, `detected_drive.rs`, `partition_info.rs`,
   `widgets.rs`, `modal_confirm.rs`, `tex_mgr.rs`, `about.rs`, `update.rs`,
   `github_config.rs`.
+- **`autostart.rs`** (`#[cfg(windows)]`) — launch-at-startup via a Scheduled Task
+  (`schtasks /RL HIGHEST`, no UAC prompt since the app is `requireAdministrator`).
+  The task's existence *is* the state (no persisted setting): the installer creates
+  it (installed default ON), the portable exe doesn't (OFF). The Settings toggle
+  reads/writes it; the task launches Diskoria with `--minimized` → starts tray-only
+  (parsed in `run()`, applied in `resumed()` in `lib.rs`).
 
 ## Build / run / test
 

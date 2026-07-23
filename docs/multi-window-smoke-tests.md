@@ -161,6 +161,28 @@ Run the full 12-step list from `remove-the-flag-fancy-seal.md` §
 
 ---
 
+### Launch at startup (`autostart.rs` + `installer/diskoria.iss`)
+
+Run elevated (the app is `requireAdministrator`).
+
+- **`--minimized` flag.** Launch `diskoria.exe --minimized`. Expect: **no window**,
+  tray icon present, monitoring runs (temperature icons appear; `history.db` grows).
+  Left-click the tray icon / "Open" → the window appears. This is the exact state
+  the logon task produces.
+- **Options toggle → task create.** Settings page → "Launch at startup" ON. Confirm
+  `schtasks /Query /TN "Diskoria Startup"` succeeds (task exists, Run Level = Highest,
+  Trigger = At log on). Toggle OFF → the query fails (task deleted).
+- **No UAC at logon.** With the task present, log off and back on: Diskoria auto-starts
+  minimized to the tray with **no UAC consent prompt**.
+- **Single-instance + `--minimized`.** With Diskoria already running (window hidden),
+  run `diskoria.exe --minimized` again: the second process exits silently and does
+  **not** raise the hidden window. (A plain second launch still raises it, as before.)
+- **Installer.** Install with the "Launch Diskoria at startup" box checked → task
+  created, in-app toggle reads ON. Uninstall → task removed
+  (`schtasks /Query /TN "Diskoria Startup"` fails).
+
+---
+
 ## Cross-cutting invariants (check after any step)
 
 These should always be true. If any fails mid-refactor, pause and

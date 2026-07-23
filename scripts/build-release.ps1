@@ -3,16 +3,28 @@
 .SYNOPSIS
     Release build: produces releases\<version>\diskoria.exe (version from Cargo.toml).
 
+.PARAMETER Sign
+    Force code-signing without the interactive prompt (for automated releases).
+    Fails the build if signing cannot be performed (metadata/SignTool/dlib missing
+    or signtool errors) so a release never silently ships unsigned.
+.PARAMETER NoSign
+    Skip code-signing without the interactive prompt.
 .NOTES
     Versioning: bump the `version` field in diskoria\Cargo.toml (or use set-version.ps1).
-    Git tags: on the diskoria-binaries GitHub repo, tag releases as `v1.0.5` so GitHub's
-    `tag_name` matches what the in-app updater parses.
+    Git tags: on the diskoria-binaries GitHub repo, tag releases as `1.6.0` (bare, no `v`)
+    to match existing releases; the in-app updater strips an optional leading `v` either way.
 
-    Output: releases\<version>\diskoria.exe (release profile, single portable exe).
+    Output: releases\<version>\diskoria.exe + diskoria-<version>-setup.exe (if Inno Setup present).
 
     Optional: if artifact-signing-metadata.json exists next to this script (in scripts\, or
-    ARTIFACT_SIGNING_METADATA points to it), the script can sign diskoria.exe with Azure Artifact Signing.
+    ARTIFACT_SIGNING_METADATA points to it), the script can sign the exe + installer with
+    Azure Artifact Signing. With neither -Sign nor -NoSign, it prompts interactively.
 #>
+[CmdletBinding()]
+param(
+    [switch]$Sign,
+    [switch]$NoSign
+)
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path $PSScriptRoot -Parent
@@ -64,13 +76,25 @@ Copy-Item -Path $built -Destination $destExe -Force
 $MetadataPath = if ($env:ARTIFACT_SIGNING_METADATA) { $env:ARTIFACT_SIGNING_METADATA } else { Join-Path $PSScriptRoot 'artifact-signing-metadata.json' }
 $ExeToSign = $destExe
 
+if ($Sign -and $NoSign) { throw "Specify only one of -Sign / -NoSign." }
+
 $SkipSigning = $false
-if (Test-Path $MetadataPath) {
+if ($NoSign) {
+    $SkipSigning = $true
+    Write-Host "Signing disabled (-NoSign)." -ForegroundColor Yellow
+} elseif ($Sign) {
+    if (-not (Test-Path $MetadataPath)) {
+        throw "-Sign requested but signing metadata not found: $MetadataPath"
+    }
+    Write-Host "Signing enabled (-Sign)." -ForegroundColor Cyan
+} elseif (Test-Path $MetadataPath) {
     $answer = Read-Host "Sign $exeName with Azure Artifact Signing? [Y/n]"
     if ($answer -match '^[Nn]') {
         $SkipSigning = $true
         Write-Host "Signing skipped by user." -ForegroundColor Yellow
     }
+} else {
+    $SkipSigning = $true
 }
 
 if (-not $SkipSigning -and (Test-Path $MetadataPath)) {
@@ -120,17 +144,69 @@ if (-not $SkipSigning -and (Test-Path $MetadataPath)) {
         )
         & $SignToolExe $SignToolArgs
         if ($LASTEXITCODE -ne 0) {
+            if ($Sign) { throw "Signing failed (exit code $LASTEXITCODE) and -Sign was requested." }
             Write-Warning "Signing failed (exit code $LASTEXITCODE). Output exe is still present but unsigned."
         } else {
             Write-Host "  Signed $exeName" -ForegroundColor Green
         }
     } else {
+        if ($Sign) { throw "-Sign requested but SignTool or Artifact Signing dlib not found." }
         Write-Host ""
         Write-Host "Signing skipped: SignTool or Artifact Signing dlib not found. Install Artifact Signing Client Tools and Windows SDK." -ForegroundColor Yellow
     }
 } elseif (-not (Test-Path $MetadataPath)) {
     Write-Host ""
     Write-Host "Signing skipped: no artifact-signing-metadata.json (optional)." -ForegroundColor Gray
+}
+
+# ── Compile installer with Inno Setup (optional) ────────────────────────────
+$IssPath = Join-Path $repoRoot 'installer\diskoria.iss'
+$IconFile = Join-Path $repoRoot 'assets\appicon2.ico'
+
+$Iscc = $env:ISCC_PATH
+if (-not $Iscc -or -not (Test-Path $Iscc)) {
+    $cmd = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+    if ($cmd) {
+        $Iscc = $cmd.Source
+    } else {
+        foreach ($c in @(
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+        )) {
+            if ($c -and (Test-Path $c)) { $Iscc = $c; break }
+        }
+    }
+}
+
+if ($Iscc -and (Test-Path $Iscc) -and (Test-Path $IssPath)) {
+    Write-Host ""
+    Write-Host "=== Building installer with Inno Setup ===" -ForegroundColor Cyan
+    & $Iscc "/DMyAppVersion=$version" "/DMySourceExe=$destExe" "/DMyOutputDir=$versionDir" "/DMyIconFile=$IconFile" $IssPath
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Installer build failed (exit code $LASTEXITCODE)."
+    } else {
+        $setupExe = Join-Path $versionDir "diskoria-$version-setup.exe"
+        Write-Host "  Installer: $setupExe" -ForegroundColor Green
+        # Sign the setup exe too, reusing the signtool + dlib resolved above.
+        if (-not $SkipSigning) {
+            if ($SignToolExe -and (Test-Path $SignToolExe) -and $DlibPath -and (Test-Path $DlibPath) -and (Test-Path $setupExe)) {
+                Write-Host "=== Signing installer ===" -ForegroundColor Cyan
+                & $SignToolExe sign /v /fd SHA256 /tr http://timestamp.acs.microsoft.com /td SHA256 /dlib $DlibPath /dmdf $MetadataPath $setupExe
+                if ($LASTEXITCODE -ne 0) {
+                    if ($Sign) { throw "Installer signing failed (exit code $LASTEXITCODE) and -Sign was requested." }
+                    Write-Warning "Installer signing failed (exit code $LASTEXITCODE). Unsigned installer is still present."
+                } else {
+                    Write-Host "  Signed installer" -ForegroundColor Green
+                }
+            } elseif ($Sign) {
+                throw "-Sign requested but the installer could not be signed (SignTool/dlib/setup exe missing)."
+            }
+        }
+    }
+} else {
+    Write-Host ""
+    Write-Host "Installer build skipped: ISCC.exe not found (install Inno Setup 6) or installer\diskoria.iss missing." -ForegroundColor Gray
 }
 
 Write-Host "OK: $destExe" -ForegroundColor Green

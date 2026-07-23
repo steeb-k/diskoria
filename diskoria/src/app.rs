@@ -150,6 +150,11 @@ pub struct DiskoriaApp {
     accent_custom_te_id: Option<Id>,
     /// Settings page (`active_nav == 4`): manual keyboard focus slots (see example app).
     settings_focus: Option<usize>,
+    /// Cached "Launch at startup" state for the Settings toggle. `None` until the
+    /// Settings page is first drawn, then filled from `autostart::is_enabled()`
+    /// (the scheduled task is the source of truth). Set eagerly on toggle.
+    #[cfg(windows)]
+    startup_enabled: Option<bool>,
     pub(crate) scroll_focus_frames: u8,
     pub(crate) pending_scroll_rect: Option<Rect>,
     active_nav: usize,
@@ -437,6 +442,8 @@ impl DiskoriaApp {
             accent_custom_hex: s.accent_custom_hex.clone(),
             accent_custom_te_id: None,
             settings_focus: None,
+            #[cfg(windows)]
+            startup_enabled: None,
             scroll_focus_frames: 0,
             pending_scroll_rect: None,
             active_nav: 0,
@@ -3046,8 +3053,25 @@ impl DiskoriaApp {
         self.settings_theme_slot_count() + self.settings_monitoring_slot_count()
     }
 
-    fn settings_tab_slot_count(&self) -> usize {
+    /// Slot of the single "Launch at startup" toggle — appended after the four
+    /// Test Results slots. Windows-only card, but the slot index math is shared.
+    fn settings_startup_slot(&self) -> usize {
         self.settings_test_overlay_slot() + 4
+    }
+
+    fn settings_startup_slot_count(&self) -> usize {
+        #[cfg(windows)]
+        {
+            1
+        }
+        #[cfg(not(windows))]
+        {
+            0
+        }
+    }
+
+    fn settings_tab_slot_count(&self) -> usize {
+        self.settings_startup_slot() + self.settings_startup_slot_count()
     }
 
     fn settings_hex_slot(&self) -> usize {
@@ -3375,6 +3399,8 @@ impl DiskoriaApp {
                                     self.draw_settings_monitoring(ui, ctx, &t, margin, content_x, content_w);
                                 }
                                 self.draw_settings_test_overlay(ui, &t, margin, content_x, content_w);
+                                #[cfg(windows)]
+                                self.draw_settings_startup(ui, &t, margin, content_x, content_w);
                             }
                             _ => {}
                         }
@@ -5000,6 +5026,108 @@ impl DiskoriaApp {
                 scroll_to_focused(&mut self.pending_scroll_rect, row_rect, focused, self.scroll_focus_frames > 0);
             }
         }
+    }
+
+    // ── Launch-at-startup settings section ────────────────────────────────────
+
+    /// Single-row "Launch at startup" card. State is the Windows scheduled task
+    /// (`crate::autostart`), not a persisted setting — so an installed build
+    /// (installer created the task) reads ON and a portable exe reads OFF with no
+    /// mode-detection. The queried state is cached in `self.startup_enabled`.
+    #[cfg(windows)]
+    fn draw_settings_startup(
+        &mut self,
+        ui: &mut egui::Ui,
+        t: &Theme,
+        margin: f32,
+        content_x: f32,
+        content_w: f32,
+    ) {
+        use crate::focus::{keyboard_activate, scroll_to_focused};
+
+        let page_keys = !self.blocks_content_interaction();
+        let section_w = content_w - margin * 2.0;
+        let pad = 16.0_f32;
+        let row_h = 40.0_f32;
+        let card_h = pad + 22.0 + 12.0 + row_h + pad;
+
+        let (_, section_rect) = ui.allocate_space(Vec2::new(ui.available_width(), card_h + 12.0));
+        let card = Rect::from_min_size(
+            Pos2::new(content_x + margin, section_rect.top() + 12.0),
+            Vec2::new(section_w, card_h),
+        );
+        ui.painter().rect_filled(card, 8.0, t.bg_pri);
+        ui.painter()
+            .rect_stroke(card, 8.0, Stroke::new(1.5, t.border), StrokeKind::Middle);
+
+        let inner_x = card.min.x + pad;
+        let mut y = card.min.y + pad;
+        let slot = self.settings_startup_slot();
+
+        ui.painter().text(
+            Pos2::new(inner_x, y + 11.0),
+            Align2::LEFT_CENTER,
+            "Startup",
+            FontId::new(14.0, FontFamily::Name("InterBold".into())),
+            t.txt_pri,
+        );
+        y += 22.0 + 12.0;
+
+        // Query the scheduled task once (subprocess), then reuse the cache.
+        let enabled = *self
+            .startup_enabled
+            .get_or_insert_with(crate::autostart::is_enabled);
+
+        let row_rect = Rect::from_min_size(Pos2::new(inner_x, y), Vec2::new(section_w - pad * 2.0, row_h));
+        let toggle_rect = Rect::from_min_size(
+            Pos2::new(card.max.x - pad - 44.0, y + (row_h - 24.0) / 2.0),
+            Vec2::new(44.0, 24.0),
+        );
+        let focused = self.settings_focus == Some(slot);
+
+        ui.painter().text(
+            Pos2::new(inner_x, row_rect.center().y - 8.0),
+            Align2::LEFT_CENTER,
+            "Launch at startup",
+            FontId::new(13.0, egui::FontFamily::Proportional),
+            t.txt_pri,
+        );
+        ui.painter().text(
+            Pos2::new(inner_x, row_rect.center().y + 9.0),
+            Align2::LEFT_CENTER,
+            "Start minimized to the system tray at logon",
+            FontId::new(11.0, egui::FontFamily::Proportional),
+            t.txt_sec,
+        );
+
+        let toggle_resp = ui.interact(toggle_rect, Id::new("startup_toggle"), Sense::click());
+        let track_color = if enabled { t.accent } else { t.border };
+        let knob_x = if enabled { toggle_rect.right() - 14.0 } else { toggle_rect.left() + 4.0 };
+        ui.painter().rect_filled(toggle_rect, 12.0, track_color);
+        ui.painter()
+            .circle_filled(Pos2::new(knob_x + 8.0, toggle_rect.center().y), 9.0, Color32::WHITE);
+
+        let kb = page_keys && keyboard_activate(ui, focused);
+        if toggle_resp.clicked() || kb {
+            let want = !enabled;
+            match crate::autostart::set_enabled(want) {
+                Ok(()) => self.startup_enabled = Some(want),
+                Err(e) => {
+                    log::warn!(target: "diskoria", "failed to update launch-at-startup task: {e}");
+                    // Re-sync from the OS so the toggle reflects reality.
+                    self.startup_enabled = Some(crate::autostart::is_enabled());
+                }
+            }
+        }
+        if focused {
+            ui.painter().rect_stroke(
+                toggle_rect.expand(3.0),
+                14.0,
+                Stroke::new(2.0, t.accent),
+                StrokeKind::Outside,
+            );
+        }
+        scroll_to_focused(&mut self.pending_scroll_rect, row_rect, focused, self.scroll_focus_frames > 0);
     }
 
     // ── Pro-Monitoring settings section ───────────────────────────────────────
