@@ -58,6 +58,12 @@ pub struct Settings {
     /// a fresh profile — the default comes from [`crate::install_mode`]: ON for
     /// installed builds, OFF for the portable exe. See [`load_settings`].
     pub close_to_tray: bool,
+    /// Check GitHub for a newer release once per launch, the first time a
+    /// window is actually shown. Only ever acts on **installed** builds — the
+    /// updater applies the Inno installer, so a portable exe has no update path
+    /// (`DiskoriaApp::updates_supported`). Silent when already up to date; only
+    /// an available update surfaces a prompt.
+    pub auto_check_updates: bool,
     pub poll_interval_mins: u8,
     pub alert_temp_warn: i32,
     pub alert_temp_critical: i32,
@@ -77,6 +83,7 @@ impl Default for Settings {
             // Deliberately OS-independent so `Default` stays pure; the real
             // per-install default is applied in `load_settings`.
             close_to_tray: true,
+            auto_check_updates: true,
             poll_interval_mins: 3,
             alert_temp_warn: 60,
             alert_temp_critical: 70,
@@ -125,6 +132,8 @@ pub fn load_settings() -> Settings {
                 s.monitoring_enabled = v.trim() != "false";
             } else if let Some(v) = line.strip_prefix("close_to_tray=") {
                 s.close_to_tray = v.trim() != "false";
+            } else if let Some(v) = line.strip_prefix("auto_check_updates=") {
+                s.auto_check_updates = v.trim() != "false";
             } else if let Some(v) = line.strip_prefix("poll_interval_mins=") {
                 if let Ok(n) = v.trim().parse::<u8>() { s.poll_interval_mins = n.clamp(1, 60); }
             } else if let Some(v) = line.strip_prefix("alert_temp_warn=") {
@@ -154,7 +163,7 @@ pub fn save_settings(s: &Settings) {
         AccentSourcePref::Palette => "palette",
     };
     let text = format!(
-        "theme={}\naccent_source={}\naccent_palette_idx={}\naccent_use_custom={}\naccent_custom_hex={}\nshow_test_result_overlays={}\nmonitoring_enabled={}\nclose_to_tray={}\npoll_interval_mins={}\nalert_temp_warn={}\nalert_temp_critical={}\nalert_wear_threshold={}\n",
+        "theme={}\naccent_source={}\naccent_palette_idx={}\naccent_use_custom={}\naccent_custom_hex={}\nshow_test_result_overlays={}\nmonitoring_enabled={}\nclose_to_tray={}\nauto_check_updates={}\npoll_interval_mins={}\nalert_temp_warn={}\nalert_temp_critical={}\nalert_wear_threshold={}\n",
         theme_s,
         accent_src,
         s.accent_palette_idx,
@@ -163,6 +172,7 @@ pub fn save_settings(s: &Settings) {
         s.show_test_result_overlays,
         s.monitoring_enabled,
         s.close_to_tray,
+        s.auto_check_updates,
         s.poll_interval_mins,
         s.alert_temp_warn,
         s.alert_temp_critical,
@@ -251,6 +261,7 @@ mod tests {
             monitoring_enabled: false,
             show_test_result_overlays: false,
             close_to_tray: false,
+            auto_check_updates: false,
             ..Settings::default()
         };
         save_settings(&s);
@@ -264,11 +275,13 @@ mod tests {
         assert!(!loaded.monitoring_enabled);
         assert!(!loaded.show_test_result_overlays);
         assert!(!loaded.close_to_tray);
-        // Default must round-trip as enabled.
+        assert!(!loaded.auto_check_updates);
+        // Defaults must round-trip as enabled.
         save_settings(&Settings::default());
         let loaded = load_settings();
         assert!(loaded.show_test_result_overlays);
         assert!(loaded.close_to_tray);
+        assert!(loaded.auto_check_updates);
 
         // A settings file predating `close_to_tray` (or hand-edited to drop it)
         // must re-derive the default from the install mode rather than inheriting

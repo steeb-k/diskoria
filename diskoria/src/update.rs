@@ -205,10 +205,23 @@ exit /b 1
 #[cfg(not(windows))]
 pub fn spawn_apply_update_and_exit(_new_exe: &std::path::Path, _target_exe: &std::path::Path) {}
 
+/// Launch a downloaded installer without exiting. Used from the exit hook,
+/// where the process is already on its way down.
+#[cfg(windows)]
+pub fn spawn_installer(installer: &std::path::Path) {
+    if let Err(e) = std::process::Command::new(installer).spawn() {
+        log::warn!(target: "diskoria", "failed to launch staged installer: {e}");
+    }
+}
+
+#[cfg(not(windows))]
+#[allow(dead_code)]
+pub fn spawn_installer(_installer: &std::path::Path) {}
+
 /// Run a downloaded installer (e.g. Inno `*Setup*.exe`) and exit so the file is unlocked.
 #[cfg(windows)]
 pub fn spawn_run_installer_and_exit(installer: &std::path::Path) {
-    let _ = std::process::Command::new(installer).spawn();
+    spawn_installer(installer);
     std::thread::sleep(std::time::Duration::from_millis(150));
     std::process::exit(0);
 }

@@ -212,6 +212,41 @@ first-run check so the install-mode default is what's actually being observed.
 
 ---
 
+### Automatic updates (`Settings → Updates`)
+
+Needs an **installed** build plus a *newer* release published to
+`diskoria-binaries` — a same-version release exercises nothing. Publish a
+throwaway higher tag (or temporarily lower the local `Cargo.toml` version and
+rebuild) to drive the available-update path.
+
+- **Portable is inert.** In the portable exe the Updates card reads
+  "Unavailable — updates are handled by the installer", its toggle is greyed and
+  skipped by Tab, and the About "Check for updates" button is greyed with a
+  hover tooltip. Nothing hits the network — confirm with Fiddler/Wireshark or by
+  watching for the `startup update check` log line (it must not appear).
+- **Silent when current.** Installed build, latest release == running version →
+  no modal at launch, no "Up to date" box. `RUST_LOG=diskoria=info` shows
+  `startup update check` and nothing further.
+- **Silent when offline.** Disconnect the network and launch → no modal; a
+  `startup update check failed` warning in the log.
+- **Fires once.** With two windows open (Ctrl+N), only one check runs — the log
+  line appears exactly once per process.
+- **Tray-only start defers it.** Launch with `--minimized`: no check while
+  hidden. Open the window from the tray → the check runs then.
+- **Download + stage + prompt.** With a newer release available: no "download?"
+  prompt, the busy overlay appears, then "Update ready" with *Update now* /
+  *Update on close*.
+- **Update on close.** Choose it, keep working, then Quit from the tray → the
+  installer launches as Diskoria exits. Closing to the tray must **not** trigger it.
+- **Update now.** Choose it → installer runs immediately and the app exits; the
+  exit hook must not launch a *second* copy.
+- **Test running.** Start a sector scan, then trigger the update → the modal has
+  only an OK button and says it will apply on close. Quit → installer runs.
+- **Toggle off.** Turn "Check for updates automatically" off, relaunch → no check
+  (no log line). The About button still works.
+
+---
+
 ## Cross-cutting invariants (check after any step)
 
 These should always be true. If any fails mid-refactor, pause and

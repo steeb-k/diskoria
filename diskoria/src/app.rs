@@ -358,6 +358,23 @@ pub struct DiskoriaApp {
     update_download_confirm_focus: Option<usize>,
     #[cfg(windows)]
     update_alert_focus: Option<usize>,
+    /// The in-flight check was started automatically rather than by the About
+    /// button. An automatic check stays silent unless it finds something — a
+    /// "you are up to date" box on every launch would be noise.
+    #[cfg(windows)]
+    update_check_is_auto: bool,
+    /// An installer has been downloaded and is waiting to run; the modal asks
+    /// whether to apply it now or on exit.
+    #[cfg(windows)]
+    show_update_staged_modal: bool,
+    #[cfg(windows)]
+    staged_update_version: String,
+    #[cfg(windows)]
+    update_staged_focus: Option<usize>,
+    /// Whether this window is currently on screen. `--minimized` still draws a
+    /// hidden window (that is what kicks drive enumeration), so anything that
+    /// shows UI to the user has to check this first.
+    pub(crate) window_visible: bool,
 
     // ── Pro-Monitoring ────────────────────────────────────────────────────────
     // Latest per-drive snapshots live on `SharedAppState` (see
@@ -584,6 +601,16 @@ impl DiskoriaApp {
             update_download_confirm_focus: None,
             #[cfg(windows)]
             update_alert_focus: None,
+            #[cfg(windows)]
+            update_check_is_auto: false,
+            #[cfg(windows)]
+            show_update_staged_modal: false,
+            #[cfg(windows)]
+            staged_update_version: String::new(),
+            #[cfg(windows)]
+            update_staged_focus: None,
+            // Corrected by `Renderer::paint` before the first draw that matters.
+            window_visible: true,
             // Pro-Monitoring
             #[cfg(windows)]
             pending_alerts: Vec::new(),
@@ -695,13 +722,66 @@ impl DiskoriaApp {
         if !self.update_check_button_enabled() {
             return;
         }
+        self.start_update_check(ctx, false);
+    }
+
+    /// Kick off the background check. `is_auto` suppresses the "up to date" and
+    /// "check failed" boxes so a startup check only ever interrupts the user
+    /// when there is genuinely something to install.
+    #[cfg(windows)]
+    fn start_update_check(&mut self, ctx: &egui::Context, is_auto: bool) {
         let (tx, rx) = mpsc::channel();
         self.update_check_rx = Some(rx);
         self.update_check_busy = true;
+        self.update_check_is_auto = is_auto;
         let ctx2 = ctx.clone();
         std::thread::spawn(move || {
             let out = crate::update::check_for_update_blocking();
             let _ = tx.send(out);
+            ctx2.request_repaint();
+        });
+    }
+
+    /// Fire the once-per-process startup update check, if everything lines up:
+    /// an installed build, the setting on, nothing already in flight, and a
+    /// window actually on screen (a `--minimized` tray-only start draws a hidden
+    /// window — prompting there would be invisible). When the user later opens
+    /// the window from the tray it becomes visible and the check runs then.
+    #[cfg(windows)]
+    fn maybe_start_auto_update_check(&mut self, ctx: &egui::Context) {
+        if !self.window_visible
+            || !self.updates_supported()
+            || !self.shared.settings_snapshot().auto_check_updates
+            || !self.update_check_button_enabled()
+        {
+            return;
+        }
+        if self.shared.claim_auto_update_check() {
+            log::info!(target: "diskoria", "startup update check");
+            self.start_update_check(ctx, true);
+        }
+    }
+
+    /// Download an installer in the background and stage it. Shared by the
+    /// automatic path (which downloads without asking) and the manual
+    /// "Download" confirm.
+    #[cfg(windows)]
+    fn start_update_download(&mut self, ctx: &egui::Context, url: &str) {
+        // Name must keep the `setup` marker for installer assets — the apply
+        // step tells installer from portable exe by filename alone (KI-22).
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dest = std::env::temp_dir().join(crate::update::update_temp_file_name(url, nonce));
+        let url = url.to_string();
+        let (tx, rx) = mpsc::channel();
+        self.update_download_rx = Some(rx);
+        self.update_download_busy = true;
+        let ctx2 = ctx.clone();
+        std::thread::spawn(move || {
+            let r = crate::update::download_to_path(&url, &dest).map(|_| dest);
+            let _ = tx.send(r);
             ctx2.request_repaint();
         });
     }
@@ -718,10 +798,12 @@ impl DiskoriaApp {
             Ok(Ok(crate::update::UpdateCheckResult::UpToDate)) => {
                 self.update_check_rx = None;
                 self.update_check_busy = false;
-                self.show_update_alert = true;
-                self.update_alert_title = "Up to date".to_string();
-                self.update_alert_body =
-                    "You are running the latest release.".to_string();
+                if !self.update_check_is_auto {
+                    self.show_update_alert = true;
+                    self.update_alert_title = "Up to date".to_string();
+                    self.update_alert_body =
+                        "You are running the latest release.".to_string();
+                }
                 ctx.request_repaint();
             }
             Ok(Ok(crate::update::UpdateCheckResult::UpdateAvailable {
@@ -730,17 +812,29 @@ impl DiskoriaApp {
             })) => {
                 self.update_check_rx = None;
                 self.update_check_busy = false;
-                self.show_update_download_confirm = true;
                 self.pending_update_version = version_display;
-                self.pending_update_url = download_url;
+                if self.update_check_is_auto {
+                    // Automatic path: fetch it straight away and stage it. The
+                    // user is asked once it is ready to install, not before.
+                    self.start_update_download(ctx, &download_url);
+                } else {
+                    self.show_update_download_confirm = true;
+                    self.pending_update_url = download_url;
+                }
                 ctx.request_repaint();
             }
             Ok(Err(e)) => {
                 self.update_check_rx = None;
                 self.update_check_busy = false;
-                self.show_update_alert = true;
-                self.update_alert_title = "Update check failed".to_string();
-                self.update_alert_body = e;
+                if self.update_check_is_auto {
+                    // Offline, rate-limited, DNS down — none of that is worth a
+                    // modal on launch.
+                    log::warn!(target: "diskoria", "startup update check failed: {e}");
+                } else {
+                    self.show_update_alert = true;
+                    self.update_alert_title = "Update check failed".to_string();
+                    self.update_alert_body = e;
+                }
                 ctx.request_repaint();
             }
             Err(mpsc::TryRecvError::Empty) => {}
@@ -769,7 +863,15 @@ impl DiskoriaApp {
                     .unwrap_or("")
                     .to_ascii_lowercase();
                 if name.contains("setup") && name.ends_with(".exe") {
-                    crate::update::spawn_run_installer_and_exit(&path);
+                    // Stage rather than install: the installer runs when the
+                    // process exits, unless the user picks "Update now" in the
+                    // modal below. Applying it under the user mid-session would
+                    // kill running tests without warning.
+                    self.shared.stage_update(path);
+                    self.staged_update_version =
+                        std::mem::take(&mut self.pending_update_version);
+                    self.show_update_staged_modal = true;
+                    ctx.request_repaint();
                 } else if let Ok(exe) = std::env::current_exe() {
                     crate::update::spawn_apply_update_and_exit(&path, &exe);
                 } else {
@@ -801,7 +903,8 @@ impl DiskoriaApp {
     fn draw_update_download_confirm(&mut self, ctx: &egui::Context, dark: bool) {
         let t = Theme::new(dark, self.shared.accent_color());
         let body = format!(
-            "Version {} is available on GitHub. Download and install now?",
+            "Version {} is available on GitHub. Download it now? It will be \
+             installed when you close Diskoria, or sooner if you choose.",
             self.pending_update_version
         );
         match two_button_modal(
@@ -831,26 +934,86 @@ impl DiskoriaApp {
             }
             Some(ModalConfirmResult::Confirm) => {
                 self.show_update_download_confirm = false;
-                let url = self.pending_update_url.clone();
-                self.pending_update_version.clear();
-                self.pending_update_url.clear();
-                // Name must keep the `setup` marker for installer assets — the
-                // apply step tells installer from portable exe by filename alone.
-                let nonce = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0);
-                let dest = std::env::temp_dir()
-                    .join(crate::update::update_temp_file_name(&url, nonce));
-                let (tx, rx) = mpsc::channel();
-                self.update_download_rx = Some(rx);
-                self.update_download_busy = true;
-                let ctx2 = ctx.clone();
-                std::thread::spawn(move || {
-                    let r = crate::update::download_to_path(&url, &dest).map(|_| dest);
-                    let _ = tx.send(r);
-                    ctx2.request_repaint();
-                });
+                let url = std::mem::take(&mut self.pending_update_url);
+                // `pending_update_version` is kept: the staged modal names it.
+                self.start_update_download(ctx, &url);
+            }
+            None => {}
+        }
+    }
+
+    /// "Update ready" modal shown once an installer has been downloaded and
+    /// staged. Applying it now would tear down the process, so while a test is
+    /// running the only option is to let it install on exit — interrupting a
+    /// destructive write+verify mid-pass leaves the drive in an unknown state.
+    #[cfg(windows)]
+    fn draw_update_staged_modal(&mut self, ctx: &egui::Context, dark: bool) {
+        let t = Theme::new(dark, self.shared.accent_color());
+        let version = self.staged_update_version.clone();
+
+        if self.any_test_running() {
+            let body = format!(
+                "Diskoria {version} has been downloaded and will be installed when you \
+                 close the app.\n\nA test is currently running, so the update can't be \
+                 applied right now. Finish or stop the test to install it sooner."
+            );
+            if one_button_modal(
+                ctx,
+                &t,
+                OneButtonModalParams {
+                    overlay_id: Id::new("diskoria_update_staged_overlay"),
+                    dialog_id: Id::new("diskoria_update_staged_dialog"),
+                    width: 420.0,
+                    height: 240.0,
+                    title: "Update ready",
+                    body: &body,
+                    ok_id: Id::new("diskoria_update_staged_ok"),
+                    ok_label: "OK",
+                },
+                &mut self.update_staged_focus,
+            )
+            .is_some()
+            {
+                self.show_update_staged_modal = false;
+            }
+            return;
+        }
+
+        let body = format!(
+            "Diskoria {version} has been downloaded and is ready to install.\n\nInstall \
+             it now, or leave it to install automatically when you close Diskoria."
+        );
+        match two_button_modal(
+            ctx,
+            &t,
+            TwoButtonModalParams {
+                overlay_id: Id::new("diskoria_update_staged_overlay"),
+                dialog_id: Id::new("diskoria_update_staged_dialog"),
+                width: 420.0,
+                height: 220.0,
+                title: "Update ready",
+                body: &body,
+                cancel_id: Id::new("diskoria_update_staged_later"),
+                cancel_label: "Update on close",
+                confirm_id: Id::new("diskoria_update_staged_now"),
+                confirm: ModalConfirmPrimary::AccentIcon {
+                    label: "Update now",
+                    icon: '\u{f295}',
+                },
+            },
+            &mut self.update_staged_focus,
+        ) {
+            Some(ModalConfirmResult::Cancel) => {
+                // Stays staged; `App::exiting` runs it.
+                self.show_update_staged_modal = false;
+            }
+            Some(ModalConfirmResult::Confirm) => {
+                self.show_update_staged_modal = false;
+                // Take it so the exit hook doesn't launch a second installer.
+                if let Some(installer) = self.shared.take_staged_update() {
+                    self.cancel_all_tests();
+                    crate::update::spawn_run_installer_and_exit(&installer);
+                }
             }
             None => {}
         }
@@ -1441,6 +1604,7 @@ impl DiskoriaApp {
             #[cfg(windows)]
             {
                 self.update_download_confirm_focus = None;
+                self.update_staged_focus = None;
                 self.update_alert_focus = None;
             }
             return;
@@ -1456,6 +1620,7 @@ impl DiskoriaApp {
             #[cfg(windows)]
             {
                 self.update_download_confirm_focus = None;
+                self.update_staged_focus = None;
                 self.update_alert_focus = None;
             }
             return;
@@ -1470,6 +1635,7 @@ impl DiskoriaApp {
             #[cfg(windows)]
             {
                 self.update_download_confirm_focus = None;
+                self.update_staged_focus = None;
                 self.update_alert_focus = None;
             }
             return;
@@ -1484,6 +1650,7 @@ impl DiskoriaApp {
                 }
                 tab_cycle_slots(ctx, &mut self.chart_export_focus, 2);
                 self.update_download_confirm_focus = None;
+                self.update_staged_focus = None;
                 self.update_alert_focus = None;
                 return;
             }
@@ -1494,10 +1661,23 @@ impl DiskoriaApp {
                     self.update_download_confirm_focus = Some(0);
                 }
                 tab_cycle_slots(ctx, &mut self.update_download_confirm_focus, 2);
+                self.update_staged_focus = None;
                 self.update_alert_focus = None;
                 return;
             }
             self.update_download_confirm_focus = None;
+
+            if self.show_update_staged_modal {
+                if self.update_staged_focus.is_none() {
+                    self.update_staged_focus = Some(0);
+                }
+                // One button while a test is running, two otherwise.
+                let slots = if self.any_test_running() { 1 } else { 2 };
+                tab_cycle_slots(ctx, &mut self.update_staged_focus, slots);
+                self.update_alert_focus = None;
+                return;
+            }
+            self.update_staged_focus = None;
 
             if self.show_update_alert {
                 if self.update_alert_focus.is_none() {
@@ -3084,10 +3264,33 @@ impl DiskoriaApp {
         }
     }
 
-    /// Slot of the single "Launch at startup" toggle — appended after the Window
-    /// card. Windows-only card, but the slot index math is shared.
-    fn settings_startup_slot(&self) -> usize {
+    /// Slot of the single "Check for updates automatically" toggle.
+    fn settings_updates_slot(&self) -> usize {
         self.settings_window_slot() + self.settings_window_slot_count()
+    }
+
+    fn settings_updates_slot_count(&self) -> usize {
+        #[cfg(windows)]
+        {
+            // Portable builds have no update path, so the row is shown disabled
+            // and skipped in the tab order rather than trapping focus on a
+            // control that cannot do anything.
+            if crate::install_mode::current().is_installed() {
+                1
+            } else {
+                0
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            0
+        }
+    }
+
+    /// Slot of the single "Launch at startup" toggle — appended after the
+    /// Updates card. Windows-only card, but the slot index math is shared.
+    fn settings_startup_slot(&self) -> usize {
+        self.settings_updates_slot() + self.settings_updates_slot_count()
     }
 
     fn settings_startup_slot_count(&self) -> usize {
@@ -3311,6 +3514,7 @@ impl DiskoriaApp {
         #[cfg(windows)]
         let update_nav_block = self.pending_chart_export.is_some()
             || self.show_update_download_confirm
+            || self.show_update_staged_modal
             || self.show_update_alert
             || self.update_check_busy
             || self.update_download_busy;
@@ -3432,6 +3636,8 @@ impl DiskoriaApp {
                                 self.draw_settings_test_overlay(ui, &t, margin, content_x, content_w);
                                 #[cfg(windows)]
                                 self.draw_settings_window(ui, &t, margin, content_x, content_w);
+                                #[cfg(windows)]
+                                self.draw_settings_updates(ui, &t, margin, content_x, content_w);
                                 #[cfg(windows)]
                                 self.draw_settings_startup(ui, &t, margin, content_x, content_w);
                             }
@@ -4757,6 +4963,7 @@ impl DiskoriaApp {
         self.publish_test_lock();
         #[cfg(windows)]
         {
+            self.maybe_start_auto_update_check(ctx);
             self.poll_update_check(ctx);
             self.poll_update_download(ctx);
             self.poll_monitor(ctx);
@@ -4775,6 +4982,7 @@ impl DiskoriaApp {
         #[cfg(windows)]
         let update_blocks_shortcuts = self.pending_chart_export.is_some()
             || self.show_update_download_confirm
+            || self.show_update_staged_modal
             || self.show_update_alert
             || self.update_check_busy
             || self.update_download_busy;
@@ -4909,6 +5117,9 @@ impl DiskoriaApp {
             }
             if self.show_update_download_confirm {
                 self.draw_update_download_confirm(ctx, dark);
+            }
+            if self.show_update_staged_modal {
+                self.draw_update_staged_modal(ctx, dark);
             }
             if self.show_update_alert {
                 self.draw_update_alert(ctx, dark);
@@ -5150,6 +5361,110 @@ impl DiskoriaApp {
             );
         }
         scroll_to_focused(&mut self.pending_scroll_rect, row_rect, focused, self.scroll_focus_frames > 0);
+    }
+
+    // ── Updates settings section ──────────────────────────────────────────────
+
+    /// Single-row "Updates" card. On a portable build the toggle is inert and
+    /// greyed with an explanation — an update applies the Inno installer, which
+    /// a portable exe has no business running (known-issues KI-23).
+    #[cfg(windows)]
+    fn draw_settings_updates(
+        &mut self,
+        ui: &mut egui::Ui,
+        t: &Theme,
+        margin: f32,
+        content_x: f32,
+        content_w: f32,
+    ) {
+        use crate::focus::{keyboard_activate, scroll_to_focused};
+
+        let installed = crate::install_mode::current().is_installed();
+        let page_keys = !self.blocks_content_interaction();
+        let section_w = content_w - margin * 2.0;
+        let pad = 16.0_f32;
+        let row_h = 40.0_f32;
+        let card_h = pad + 22.0 + 12.0 + row_h + pad;
+
+        let (_, section_rect) = ui.allocate_space(Vec2::new(ui.available_width(), card_h + 12.0));
+        let card = Rect::from_min_size(
+            Pos2::new(content_x + margin, section_rect.top() + 12.0),
+            Vec2::new(section_w, card_h),
+        );
+        ui.painter().rect_filled(card, 8.0, t.bg_pri);
+        ui.painter()
+            .rect_stroke(card, 8.0, Stroke::new(1.5, t.border), StrokeKind::Middle);
+
+        let inner_x = card.min.x + pad;
+        let mut y = card.min.y + pad;
+        let slot = self.settings_updates_slot();
+
+        ui.painter().text(
+            Pos2::new(inner_x, y + 11.0),
+            Align2::LEFT_CENTER,
+            "Updates",
+            FontId::new(14.0, FontFamily::Name("InterBold".into())),
+            t.txt_pri,
+        );
+        y += 22.0 + 12.0;
+
+        // Portable builds never check, whatever the stored value says.
+        let enabled = installed && self.shared.settings_snapshot().auto_check_updates;
+        let row_rect = Rect::from_min_size(Pos2::new(inner_x, y), Vec2::new(section_w - pad * 2.0, row_h));
+        let toggle_rect = Rect::from_min_size(
+            Pos2::new(card.max.x - pad - 44.0, y + (row_h - 24.0) / 2.0),
+            Vec2::new(44.0, 24.0),
+        );
+        let focused = installed && self.settings_focus == Some(slot);
+
+        ui.painter().text(
+            Pos2::new(inner_x, row_rect.center().y - 8.0),
+            Align2::LEFT_CENTER,
+            "Check for updates automatically",
+            FontId::new(13.0, egui::FontFamily::Proportional),
+            if installed { t.txt_pri } else { t.txt_sec },
+        );
+        ui.painter().text(
+            Pos2::new(inner_x, row_rect.center().y + 9.0),
+            Align2::LEFT_CENTER,
+            if !installed {
+                "Unavailable — updates are handled by the installer"
+            } else if enabled {
+                "On launch. Updates install when you close Diskoria"
+            } else {
+                "Check manually from the About page"
+            },
+            FontId::new(11.0, egui::FontFamily::Proportional),
+            t.txt_sec,
+        );
+
+        if installed {
+            let toggle_resp =
+                ui.interact(toggle_rect, Id::new("auto_check_updates_toggle"), Sense::click());
+            crate::widgets::paint_toggle(ui, t, toggle_rect, enabled);
+            let kb = page_keys && keyboard_activate(ui, focused);
+            if toggle_resp.clicked() || kb {
+                self.shared
+                    .update_settings(|s| s.auto_check_updates = !s.auto_check_updates);
+            }
+            if focused {
+                ui.painter().rect_stroke(
+                    toggle_rect.expand(3.0),
+                    14.0,
+                    Stroke::new(2.0, t.accent),
+                    StrokeKind::Outside,
+                );
+            }
+            scroll_to_focused(&mut self.pending_scroll_rect, row_rect, focused, self.scroll_focus_frames > 0);
+        } else {
+            // Inert, dimmed track — reads as "off and not yours to change".
+            ui.painter().rect_filled(toggle_rect, 12.0, t.border.gamma_multiply(0.5));
+            ui.painter().circle_filled(
+                Pos2::new(toggle_rect.left() + 12.0, toggle_rect.center().y),
+                9.0,
+                Color32::WHITE.gamma_multiply(0.5),
+            );
+        }
     }
 
     // ── Launch-at-startup settings section ────────────────────────────────────

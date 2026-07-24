@@ -94,6 +94,9 @@ assets/                appicon2.ico, trayicon.ico, applogo.png (embedded at comp
   settings file has no entry), the About page's Installed/Portable chip, and
   `DiskoriaApp::updates_supported()` — **update checks are installed-only**,
   because the asset the updater applies is the installer (known-issues KI-23).
+  The update flow (startup check → silent unless actionable → auto-download →
+  stage → "Update now / on close" → apply in `App::exiting`) is documented in
+  `docs/monitoring.md` § Updates.
   Note `HKLM\Software\Diskoria` is *shared* (an older build left an
   `AutoCheckUpdates` value there), so the installer deletes only its own
   `InstallDir` value on uninstall, never the whole key.

@@ -218,6 +218,11 @@ impl Renderer {
 
         let raw_input = self.egui_state.take_egui_input(&self.window);
 
+        // A `--minimized` start still draws (that is what kicks drive
+        // enumeration), so tell the app whether anyone can actually see it —
+        // the startup update prompt must not fire into a hidden window.
+        self.app.window_visible = self.window.is_visible().unwrap_or(true);
+
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
             self.app.draw(ctx);
         });
@@ -907,6 +912,28 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                 }
             }
+        }
+    }
+
+    /// Last stop before the process ends: if an update was downloaded and left
+    /// staged ("Update on close"), launch the installer now that Diskoria is
+    /// releasing its exe. Reached from every real exit — the tray's Quit, and
+    /// the last window closing when `close_to_tray` is off. Hiding to the tray
+    /// is not an exit, so a staged update simply waits.
+    #[cfg(windows)]
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(installer) = self.shared.take_staged_update() {
+            log::info!(
+                target: "diskoria",
+                "applying staged update on exit: {}",
+                installer.display()
+            );
+            // Stop worker threads first so nothing holds a device handle while
+            // the installer swaps the exe.
+            for r in self.renderers.values_mut() {
+                r.app.cancel_all_tests();
+            }
+            crate::update::spawn_installer(&installer);
         }
     }
 

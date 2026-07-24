@@ -70,6 +70,16 @@ pub struct SharedAppState {
     /// second window opening does not retrigger a rebuild that would wipe
     /// the temperature rendering already filled in by the monitor thread.
     drive_icons_dirty: AtomicBool,
+    /// Set once the startup update check has been kicked off, so it fires a
+    /// single time per process no matter how many windows draw (or how often
+    /// the first one repaints).
+    #[cfg(windows)]
+    auto_update_check_started: AtomicBool,
+    /// A downloaded installer waiting to be run when the process exits. Lives
+    /// here rather than on a window because the window that staged it may be
+    /// closed long before the app quits, and `App::exiting` is what applies it.
+    #[cfg(windows)]
+    staged_update: Mutex<Option<std::path::PathBuf>>,
     /// Physical drives currently under test, keyed by the owning window's token
     /// → that drive's `DetectedDrive::lock_key()`. One test per physical drive
     /// across all windows; dropdowns gray out drives locked by *other* windows.
@@ -102,6 +112,10 @@ impl SharedAppState {
             #[cfg(windows)]
             last_snapshots: Mutex::new(std::collections::HashMap::new()),
             drive_icons_dirty: AtomicBool::new(false),
+            #[cfg(windows)]
+            auto_update_check_started: AtomicBool::new(false),
+            #[cfg(windows)]
+            staged_update: Mutex::new(None),
             test_locks: Mutex::new(std::collections::HashMap::new()),
             pro_edition: true,
             event_proxy,
@@ -246,6 +260,33 @@ impl SharedAppState {
     /// Atomically read-and-clear the drive-icon dirty flag.
     pub fn take_drive_icons_dirty(&self) -> bool {
         self.drive_icons_dirty.swap(false, Ordering::SeqCst)
+    }
+
+    // ── Startup update check (singleton) ─────────────────────────────────────
+
+    /// Claim the once-per-process startup update check. Returns `true` exactly
+    /// once — to the first caller — so only one window fires it.
+    #[cfg(windows)]
+    pub fn claim_auto_update_check(&self) -> bool {
+        !self.auto_update_check_started.swap(true, Ordering::SeqCst)
+    }
+
+    // ── Staged update ────────────────────────────────────────────────────────
+
+    /// Record a downloaded installer to run at process exit.
+    #[cfg(windows)]
+    pub fn stage_update(&self, installer: std::path::PathBuf) {
+        *self.staged_update.lock().expect("staged_update poisoned") = Some(installer);
+    }
+
+    /// Take the staged installer, if any. Called once from `App::exiting`; also
+    /// used by "Update now" so the exit hook doesn't launch a second copy.
+    #[cfg(windows)]
+    pub fn take_staged_update(&self) -> Option<std::path::PathBuf> {
+        self.staged_update
+            .lock()
+            .expect("staged_update poisoned")
+            .take()
     }
 
     // ── Per-drive test locks (cross-window) ──────────────────────────────────

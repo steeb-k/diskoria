@@ -66,9 +66,46 @@ Consumers:
   has no entry for it.
 - `about.rs` — draws an "Installed" / "Portable" chip beside the version, so it
   is always visible which build is running.
+- `DiskoriaApp::updates_supported` — see [Updates](#updates) below.
 
 The launch-at-startup default differs the same way, but is expressed
 independently through the scheduled task (see `autostart.rs`).
+
+### Updates
+
+Updates are an **installed-build feature**. The release asset the updater picks
+is the Inno installer, so applying one on a portable exe would silently convert
+it into an installed copy — `DiskoriaApp::updates_supported()` gates the whole
+subsystem on `install_mode`, and `update_check_button_enabled()` consults it, so
+both the manual button and the automatic check inherit the restriction.
+
+Flow, when **Settings → Updates → "Check for updates automatically"** is on
+(the default):
+
+1. **Check** — once per process, on the first draw of a *visible* window.
+   `SharedAppState::claim_auto_update_check` makes it a singleton across windows;
+   the visibility condition matters because a `--minimized` tray-only start still
+   draws a hidden window, and a prompt there would be invisible. Opening the
+   window from the tray later satisfies the condition and the check runs then.
+2. **Silent unless actionable** — an automatic check that finds nothing, or fails
+   (offline, rate-limited), logs and shows no UI. Only the manual About button
+   reports "Up to date" / "Update check failed".
+3. **Download + stage** — an available update downloads immediately, without
+   asking, into `%TEMP%` (`update::update_temp_file_name` keeps the `setup`
+   marker; see known-issues KI-22). The path is parked in
+   `SharedAppState::staged_update` rather than applied.
+4. **Prompt** — "Update ready": *Update now* runs the installer and exits;
+   *Update on close* dismisses and leaves it staged. While any test is running
+   the modal degrades to a single OK button explaining that it will apply on
+   close — interrupting a destructive write+verify mid-pass would leave the drive
+   in an unknown state.
+5. **Apply on exit** — `App::exiting` takes the staged path, cancels tests, and
+   launches the installer. That hook is reached from every *real* exit (tray Quit,
+   or the last window closing with `close_to_tray` off). Hiding to the tray is not
+   an exit, so a staged update simply keeps waiting.
+
+The manual About-page check keeps its "Download?" confirm, then joins the same
+stage-and-prompt path.
 
 ### Custom Context Menu
 Right-clicking the app tray icon opens a custom themed context menu (not the
