@@ -77,11 +77,12 @@ Source: "{#MySourceExe}"; DestDir: "{app}"; DestName: "{#MyAppExe}"; Flags: igno
 ; defaults ON), anything else — including a copy of the exe carried elsewhere on a
 ; machine that also has Diskoria installed → "Portable" (defaults OFF).
 ;
-; uninstalldeletevalue, NOT uninstalldeletekey: HKLM\Software\Diskoria is shared —
-; older builds already store AutoCheckUpdates there — so uninstall must remove only
-; the value we own, not the whole key. Deleting InstallDir is enough for detection
-; to fall back to "Portable".
-Root: HKLM; Subkey: "Software\{#MyAppName}"; ValueType: string; ValueName: "InstallDir"; ValueData: "{app}"; Flags: uninstalldeletevalue
+; uninsdeletevalue, NOT uninsdeletekey: HKLM\Software\Diskoria is shared — older
+; builds already store AutoCheckUpdates there — so uninstall must remove only the
+; value we own, not the whole key. Deleting InstallDir is enough for detection to
+; fall back to "Portable". (Inno's [Registry] flags use the `unins` prefix; the
+; `uninstall*` spelling is silently *not* a flag and aborts the compile.)
+Root: HKLM; Subkey: "Software\{#MyAppName}"; ValueType: string; ValueName: "InstallDir"; ValueData: "{app}"; Flags: uninsdeletevalue
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"
