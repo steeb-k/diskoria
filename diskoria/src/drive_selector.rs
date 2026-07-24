@@ -282,7 +282,7 @@ pub(crate) fn two_row_combo(
         ui.painter().rect_stroke(
             card_rect.expand(2.0),
             4.0,
-            Stroke::new(2.0, Color32::WHITE),
+            Stroke::new(2.0, t.accent),
             StrokeKind::Outside,
         );
     }
@@ -332,7 +332,7 @@ pub(crate) fn refresh_button(
         ui.painter().rect_stroke(
             rect.expand(2.0),
             4.0,
-            Stroke::new(2.0, Color32::WHITE),
+            Stroke::new(2.0, t.accent),
             StrokeKind::Outside,
         );
     }

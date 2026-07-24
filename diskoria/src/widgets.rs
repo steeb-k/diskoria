@@ -1,8 +1,23 @@
 //! Small egui helpers (from rust-egui-winui-example `ui::widgets`).
 
-use egui::{Align2, FontId, Id, Pos2, Sense, Stroke, StrokeKind, Ui, Vec2};
+use egui::{Align2, Color32, FontId, Id, Pos2, Sense, Stroke, StrokeKind, Ui, Vec2};
 
 use crate::theme::Theme;
+
+/// Paint the Win11-style pill toggle used by every Settings row.
+///
+/// The ON track is the accent, so the knob takes `txt_on_accent` rather than a
+/// hard-coded white — otherwise a pale accent (a white Windows accent, or the
+/// Cha-Cha / Quickstep swatches) swallows the knob entirely. The OFF track is
+/// the neutral border color, where white always reads.
+pub fn paint_toggle(ui: &Ui, t: &Theme, rect: egui::Rect, on: bool) {
+    let track = if on { t.accent } else { t.border };
+    let knob = if on { t.txt_on_accent } else { Color32::WHITE };
+    let knob_x = if on { rect.right() - 14.0 } else { rect.left() + 4.0 };
+    ui.painter().rect_filled(rect, 12.0, track);
+    ui.painter()
+        .circle_filled(Pos2::new(knob_x + 8.0, rect.center().y), 9.0, knob);
+}
 
 /// Compact bordered button (Browse / Check for updates style), from Copynaut `small_browse_style_button`.
 pub fn small_browse_style_button(

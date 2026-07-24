@@ -71,6 +71,18 @@ Name: "startup"; Description: "Launch Diskoria at startup (minimized to the tray
 [Files]
 Source: "{#MySourceExe}"; DestDir: "{app}"; DestName: "{#MyAppExe}"; Flags: ignoreversion
 
+[Registry]
+; Marks this as an *installed* build. crate::install_mode reads InstallDir and
+; compares it to the running exe's directory: matching → "Installed" (tray-on-close
+; defaults ON), anything else — including a copy of the exe carried elsewhere on a
+; machine that also has Diskoria installed → "Portable" (defaults OFF).
+;
+; uninstalldeletevalue, NOT uninstalldeletekey: HKLM\Software\Diskoria is shared —
+; older builds already store AutoCheckUpdates there — so uninstall must remove only
+; the value we own, not the whole key. Deleting InstallDir is enough for detection
+; to fall back to "Portable".
+Root: HKLM; Subkey: "Software\{#MyAppName}"; ValueType: string; ValueName: "InstallDir"; ValueData: "{app}"; Flags: uninstalldeletevalue
+
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"

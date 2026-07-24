@@ -1355,7 +1355,7 @@ impl DiskoriaApp {
                         ui.painter().rect_stroke(
                             btn.rect.expand(2.0),
                             4.0,
-                            Stroke::new(2.0, Color32::WHITE),
+                            Stroke::new(2.0, t.accent),
                             StrokeKind::Outside,
                         );
                     }
@@ -1647,7 +1647,7 @@ fn draw_temperature_history(
                 ui.painter().rect_stroke(
                     btn_resp.rect.expand(2.0),
                     4.0,
-                    Stroke::new(2.0, Color32::WHITE),
+                    Stroke::new(2.0, t.accent),
                     StrokeKind::Outside,
                 );
             }

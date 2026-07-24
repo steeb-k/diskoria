@@ -158,3 +158,60 @@ Condensed; see git history for full detail.
 - **KI-14 — Mojibake-encoded characters in `smart_health_page.rs`** `bug`. Fixed
   by exact codepoint replacement (`â”€`→`─`, `â€¦`→`…`); legitimate `─`/`—`/`°`
   preserved; no other source file affected.
+- **KI-19 — Hard-coded white text on accent fills** `bug`. The title bar's
+  "New Window" button (and the segmented controls, toggle knobs, modal confirm
+  buttons, and the plot export button's hover state) painted `Color32::WHITE`
+  onto an accent-colored fill. With a pale accent — a white Windows accent, or
+  the Cha-Cha / Quickstep palette swatches — that rendered white-on-white and the
+  caption vanished. `theme.rs` already computed a `txt_on_accent` but nothing in
+  the chrome used it, and its luminance formula weighted raw sRGB channels as if
+  they were linear, which misjudged saturated mid-tones. Replaced with WCAG
+  relative luminance + contrast ratio (`theme::text_on`, white unless it drops
+  below 3.0:1), and every accent-fill call site now reads `t.txt_on_accent`. The
+  three duplicated Settings toggles were folded into `widgets::paint_toggle`, so
+  the knob follows the same rule. Covered by `theme::tests`.
+- **KI-20 — `minimize_to_tray` setting was persisted but never read** `bug`.
+  `Settings::minimize_to_tray` was saved to and parsed from `settings.txt` since
+  the monitoring work landed, but no code ever consulted it: `lib.rs`'s close
+  disposition hid the last window to the tray whenever `pro_edition` was set,
+  which is unconditionally true. Renamed to `close_to_tray` (a new key, so every
+  profile re-derives its default once instead of inheriting a value that never
+  meant anything), wired into the close path, and given a Settings → Window
+  toggle. The old `minimize_to_tray=` line is ignored and dropped on next save.
+- **KI-21 — Focus rings were inconsistently white vs. accent** `bug`. Found while
+  fixing KI-19. Most keyboard-focus rings were `Stroke::new(2.0, t.accent)`, but
+  14 were a hard-coded `Color32::WHITE` (`about.rs` ×3, `drive_selector.rs` ×2,
+  `smart_health_page.rs` ×2, `app/pages/{sector,speed}.rs` ×2 each,
+  `destructive.rs` ×3). Every one is drawn at `rect.expand(2..3)` — *outside* the
+  widget, on the card background — and `t.bg_sec` is pure white in the light
+  theme, so keyboard focus was invisible there. Unlike KI-19 this was a *theme*
+  contrast bug, not an accent one, so `txt_on_accent` did not apply. All 14 now
+  use `t.accent`, matching what the segmented controls already did (including on
+  accent-filled buttons, where the ring reads as a halo separated from the fill
+  by the expand gap). A dedicated `Theme::focus_ring` token remains an option if
+  that accent-on-accent case ever needs differentiating.
+- **KI-22 — Self-update copied the installer over `diskoria.exe`** `bug`.
+  `update::pick_exe_url` deliberately prefers the `*setup*.exe` release asset, and
+  `poll_update_download` branches on the downloaded file's *name*: `setup` → run
+  the Inno installer, otherwise → copy the exe over ourselves. But the download
+  was always saved as `Diskoria_update_<nanos>.exe` (`app.rs`), so the marker
+  never survived and the installer branch was unreachable — every update ran
+  `spawn_apply_update_and_exit`, clobbering the running `diskoria.exe` with the
+  Inno setup stub. Fixed with `update::update_temp_file_name`, which keeps a
+  `setup` token when `url_is_installer` says the asset is an installer; covered by
+  `update::tests`. **The bug lives in shipped 1.6.0 as well**, so the 1.6.0 →
+  1.6.1 hop still misbehaves — that upgrade must be done by running the installer
+  manually. 1.6.1 onward self-updates correctly.
+- **KI-23 — Update checks were available to portable builds** `bug`. The updater
+  installs an Inno installer, so letting a portable exe apply one silently
+  converted it into an installed copy (and, pre-KI-22, corrupted it). The check is
+  now gated on `install_mode::current().is_installed()` via
+  `DiskoriaApp::updates_supported()`, which `update_check_button_enabled()` and
+  therefore `on_about_check_updates_clicked` both consult — so any future trigger
+  (startup or periodic auto-check) inherits the restriction. The About button is
+  greyed for portable builds with a hover tooltip explaining why. Note for the
+  record: despite appearances there has never been an *automatic* update check in
+  this repo — the About button is the only entry point (verified across the full
+  git history and the `diskoria.bak` archive). The stale
+  `HKLM\Software\Diskoria\AutoCheckUpdates` value predates this repo and is read
+  by nothing.

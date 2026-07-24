@@ -90,6 +90,21 @@ pub fn draw_about_header_row(
                 "Check for updates",
                 enabled,
             );
+            // A permanently-greyed button reads as broken, so say why. Only for
+            // the portable case — the transient busy/modal states explain
+            // themselves through the spinner and dialog that caused them.
+            #[cfg(windows)]
+            if !app.updates_supported() && check_r.hovered() {
+                if let Some(pos) = ui.ctx().pointer_latest_pos() {
+                    crate::widgets::show_tooltip_text(
+                        ui.ctx(),
+                        egui::Id::new("about_updates_portable_tt"),
+                        pos,
+                        t,
+                        "Updates are handled by the installer — this is a portable build.",
+                    );
+                }
+            }
             let kb = check_focused && enabled && ui.input_mut(|i| {
                 i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
                     || i.consume_key(egui::Modifiers::NONE, egui::Key::Space)
@@ -102,7 +117,7 @@ pub fn draw_about_header_row(
                 ui.painter().rect_stroke(
                     check_r.rect.expand(2.0),
                     4.0,
-                    egui::Stroke::new(2.0, egui::Color32::WHITE),
+                    egui::Stroke::new(2.0, t.accent),
                     egui::StrokeKind::Outside,
                 );
             }
@@ -185,6 +200,33 @@ pub fn draw_about(
     );
 }
 
+/// "Installed" / "Portable" pill next to the version.
+///
+/// The two builds behave differently (tray-on-close and launch-at-startup
+/// default on when installed, off when portable), so which one is running has
+/// to be visible somewhere. Portable takes the accent fill because it's the
+/// state worth noticing; installed is a quiet neutral chip.
+fn draw_install_mode_chip(ui: &mut egui::Ui, t: &Theme) {
+    let mode = crate::install_mode::current();
+    let label = mode.label();
+    let font = FontId::proportional(11.0);
+    let text_w = ui
+        .ctx()
+        .fonts(|f| label.chars().map(|c| f.glyph_width(&font, c)).sum::<f32>());
+
+    let (_, rect) = ui.allocate_space(Vec2::new(text_w + 14.0, 18.0));
+    let (bg, fg) = if mode.is_installed() {
+        (t.bg_sec, t.txt_sec)
+    } else {
+        (t.accent, t.txt_on_accent)
+    };
+    ui.painter().rect_filled(rect, 9.0, bg);
+    ui.painter()
+        .rect_stroke(rect, 9.0, Stroke::new(1.0, t.border), egui::StrokeKind::Middle);
+    ui.painter()
+        .text(rect.center(), Align2::CENTER_CENTER, label, font, fg);
+}
+
 fn about_card_text_column(ui: &mut egui::Ui, t: &Theme, about_focus: Option<usize>) {
     ui.horizontal(|ui| {
         ui.label(
@@ -199,6 +241,8 @@ fn about_card_text_column(ui: &mut egui::Ui, t: &Theme, about_focus: Option<usiz
                 .size(13.0)
                 .color(t.txt_sec),
         );
+        ui.add_space(8.0);
+        draw_install_mode_chip(ui, t);
     });
     ui.add_space(10.0);
     ui.horizontal(|ui| {
@@ -234,7 +278,7 @@ fn about_card_text_column(ui: &mut egui::Ui, t: &Theme, about_focus: Option<usiz
             ui.painter().rect_stroke(
                 link.rect.expand(2.0),
                 3.0,
-                egui::Stroke::new(2.0, egui::Color32::WHITE),
+                egui::Stroke::new(2.0, t.accent),
                 egui::StrokeKind::Outside,
             );
         }
@@ -263,7 +307,7 @@ fn about_card_text_column(ui: &mut egui::Ui, t: &Theme, about_focus: Option<usiz
         ui.painter().rect_stroke(
             kofi_btn.rect.expand(2.0),
             4.0,
-            egui::Stroke::new(2.0, egui::Color32::WHITE),
+            egui::Stroke::new(2.0, t.accent),
             egui::StrokeKind::Outside,
         );
     }

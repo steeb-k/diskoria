@@ -399,8 +399,10 @@ pub fn draw_titlebar(ctx: &egui::Context, t: &Theme, hwnd: isize) -> bool {
             let close_r = ui.interact(close_rect, Id::new("diskoria_tb_close"), INTERACT_MANUAL_FOCUS);
 
             // New-window button: always accent-filled (primary action), lightens on
-            // hover; white "open new window" glyph. Click is reported to the caller
-            // which owns the event proxy that fires `UserEvent::OpenNewWindow`.
+            // hover; the "open new window" glyph and caption take `txt_on_accent`
+            // so they stay legible on a pale accent (a white Windows accent used to
+            // render them white-on-white). Click is reported to the caller which
+            // owns the event proxy that fires `UserEvent::OpenNewWindow`.
             let new_bg = if new_r.hovered() {
                 Color32::from_rgb(
                     t.accent.r().saturating_add(20),
@@ -438,14 +440,14 @@ pub fn draw_titlebar(ctx: &egui::Context, t: &Theme, hwnd: isize) -> bool {
                 egui::Align2::LEFT_CENTER,
                 "\u{f6d0}", // Bootstrap Icons: window-plus
                 icon_font,
-                Color32::WHITE,
+                t.txt_on_accent,
             );
             ui.painter().text(
                 Pos2::new(start_x + icon_w + gap, cy),
                 egui::Align2::LEFT_CENTER,
                 label,
                 label_font,
-                Color32::WHITE,
+                t.txt_on_accent,
             );
 
             if min_r.clicked() {

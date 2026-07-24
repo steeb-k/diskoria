@@ -211,14 +211,14 @@ pub fn two_button_modal(
                         Align2::LEFT_CENTER,
                         icon.to_string(),
                         icon_font,
-                        Color32::WHITE,
+                        t.txt_on_accent,
                     );
                     painter.text(
                         Pos2::new(left + iw + gap, cy),
                         Align2::LEFT_CENTER,
                         *label,
                         text_font,
-                        Color32::WHITE,
+                        t.txt_on_accent,
                     );
                     if confirm_focused {
                         painter.rect_stroke(
@@ -371,7 +371,7 @@ pub fn one_button_modal(
                 Align2::CENTER_CENTER,
                 p.ok_label,
                 FontId::proportional(13.0),
-                Color32::WHITE,
+                t.txt_on_accent,
             );
 
             let kb_ok = ok_focused

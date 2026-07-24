@@ -17,6 +17,7 @@ mod autostart;
 mod chrome;
 mod github_config;
 mod focus;
+mod install_mode;
 mod modal_confirm;
 mod partition_info;
 mod paths;
@@ -638,19 +639,30 @@ impl ApplicationHandler<UserEvent> for App {
         // doesn't double-handle it, but we still want to refresh the
         // any-visible flag for the single-instance watcher).
         let mut did_hide = false;
-        let decide = |shared_pro: bool, window_count: usize| -> CloseDisposition {
-            if !shared_pro {
-                CloseDisposition::Exit
-            } else if window_count > 1 {
+        // Closing the *last* window hides it to the tray only when the user has
+        // opted in — installed builds default to on, the portable exe to off
+        // (see `install_mode`). With it off the process exits, which stops
+        // background monitoring until the next launch; that is the documented
+        // trade-off shown under the Settings toggle.
+        #[cfg(windows)]
+        let can_hide_to_tray =
+            self.shared.pro_edition && self.shared.settings_snapshot().close_to_tray;
+        // No tray outside Windows, so hiding the last window would strand it.
+        #[cfg(not(windows))]
+        let can_hide_to_tray = false;
+        let decide = |can_hide_to_tray: bool, window_count: usize| -> CloseDisposition {
+            if window_count > 1 {
                 CloseDisposition::DropThis
-            } else {
+            } else if can_hide_to_tray {
                 CloseDisposition::HideThis
+            } else {
+                CloseDisposition::Exit
             }
         };
 
         match event {
             WindowEvent::CloseRequested => {
-                disposition = decide(self.shared.pro_edition, window_count);
+                disposition = decide(can_hide_to_tray, window_count);
                 if matches!(disposition, CloseDisposition::DropThis) {
                     renderer.app.cancel_all_tests();
                 } else if matches!(disposition, CloseDisposition::HideThis) {
@@ -663,7 +675,7 @@ impl ApplicationHandler<UserEvent> for App {
                 renderer.paint();
                 if renderer.close_requested {
                     renderer.close_requested = false;
-                    disposition = decide(self.shared.pro_edition, window_count);
+                    disposition = decide(can_hide_to_tray, window_count);
                     if matches!(disposition, CloseDisposition::DropThis) {
                         renderer.app.cancel_all_tests();
                     } else if matches!(disposition, CloseDisposition::HideThis) {

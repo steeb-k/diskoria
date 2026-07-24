@@ -80,7 +80,9 @@ interactive.
       "Surface Test", B on "SMART Health"). Each retains its page.
 - [ ] Resize window A independently of window B.
 - [ ] Close window A (not last) → window B stays alive, tray intact.
-- [ ] Close window B (last) → tray-minimize as expected.
+- [ ] Close window B (last) → tray-minimize as expected (with
+      Settings → Window → "Close to system tray" ON; with it OFF the process
+      exits instead).
 
 ### Step 6 — SettingsChanged broadcast + live sync
 
@@ -180,6 +182,33 @@ Run elevated (the app is `requireAdministrator`).
 - **Installer.** Install with the "Launch Diskoria at startup" box checked → task
   created, in-app toggle reads ON. Uninstall → task removed
   (`schtasks /Query /TN "Diskoria Startup"` fails).
+
+---
+
+### Installed vs. portable + close-to-tray (`install_mode.rs`, Settings → Window)
+
+Run elevated. Delete `%PROGRAMDATA%\Diskoria\settings.txt` before each
+first-run check so the install-mode default is what's actually being observed.
+
+- **Portable default.** Run a standalone `diskoria.exe` from a folder that is not
+  the install dir. About page chip reads **Portable** (accent-filled);
+  Settings → Window → "Close to system tray" defaults **OFF**. Closing the only
+  window exits the process (Task Manager: no `diskoria.exe`, tray icons gone).
+- **Installed default.** Install, then launch from the Start menu. Chip reads
+  **Installed**; the toggle defaults **ON**; closing the last window hides it to
+  the tray and monitoring keeps ticking (`history.db` grows).
+- **Copied-out exe is portable.** Copy `diskoria.exe` out of
+  `C:\Program Files\Diskoria` to e.g. the Desktop and run it *on the same
+  machine*. Chip must still read **Portable** — the registry marker alone is not
+  enough, the exe's directory has to match it.
+- **Uninstall clears the marker.** Uninstall, then run a portable copy → chip
+  reads **Portable** (`HKLM\Software\Diskoria` is gone).
+- **User choice survives reinstall.** Flip the toggle OFF on an installed build,
+  reinstall over the top → the toggle stays OFF (the installer writes only the
+  registry marker, never `settings.txt`).
+- **Non-last window ignores the setting.** With the toggle OFF, open two windows
+  (Ctrl+N) and close one → the other stays alive; only closing the *last* one
+  exits.
 
 ---
 

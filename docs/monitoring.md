@@ -29,14 +29,46 @@ excluded), plus one app-level icon using `assets/trayicon.ico`. Each drive icon 
 
 Drive icons have no tooltip (disabled to avoid conflict with the health flyout).
 
-### Minimize to Tray
-Closing the main window hides it instead of exiting. The process remains alive
-and monitoring continues silently. The main window can be restored by:
+### Close to Tray
+Closing the **last** main window hides it instead of exiting — but only when the
+**Settings → Window → "Close to system tray"** toggle is on. The process then
+remains alive and monitoring continues silently. The main window can be restored
+by:
 - **Left-clicking** the app tray icon
 - Selecting **Open Diskoria** from the right-click context menu
 
 In both cases the window is raised to the foreground via `SetForegroundWindow` +
-`BringWindowToTop`. A true exit is only triggered by **Quit** in the context menu.
+`BringWindowToTop`. With the toggle on, a true exit is only triggered by **Quit**
+in the context menu.
+
+With the toggle **off**, closing the last window exits the process outright and
+background monitoring stops until the next launch. Closing a *non-last* window
+always just drops that window, regardless of the setting.
+
+The toggle's initial value is not a fixed default — it comes from
+`install_mode::default_close_to_tray()`: **on** for a build installed by
+`installer/diskoria.iss`, **off** for the portable `diskoria.exe` (see
+[Installed vs. portable](#installed-vs-portable) below). Once the user flips it,
+the persisted `close_to_tray=` line in `settings.txt` wins and reinstalling does
+not stomp it.
+
+### Installed vs. portable
+`src/install_mode.rs` reports whether this process is an installed build or a
+portable exe. Following the same "OS state is the source of truth" rule as
+`autostart.rs`, there is no persisted flag: the installer writes
+`HKLM\Software\Diskoria\InstallDir` (and removes it on uninstall), and a build
+counts as **Installed** only when that value names the directory the running exe
+actually sits in. Copying `diskoria.exe` out of the install folder therefore
+reports **Portable**, even on a machine that also has Diskoria installed.
+
+Consumers:
+- `app_settings::load_settings` — seeds `close_to_tray` when the settings file
+  has no entry for it.
+- `about.rs` — draws an "Installed" / "Portable" chip beside the version, so it
+  is always visible which build is running.
+
+The launch-at-startup default differs the same way, but is expressed
+independently through the scheduled task (see `autostart.rs`).
 
 ### Custom Context Menu
 Right-clicking the app tray icon opens a custom themed context menu (not the
@@ -173,6 +205,7 @@ All settings are persisted to `%ProgramData%\Diskoria\settings.txt`.
 | `src/tray.rs` | TrayManager: app icon (from `assets/trayicon.ico`), per-drive thermometer icons |
 | `src/flyout.rs` | Drive health flyout window; custom themed context menu window |
 | `src/tex_mgr.rs` | Shared texture manager for egui softbuffer rasterizer (flyout + context menu) |
+| `src/install_mode.rs` | Installed-vs-portable detection; source of the `close_to_tray` default |
 
 ---
 
@@ -199,8 +232,14 @@ All settings are persisted to `%ProgramData%\Diskoria\settings.txt`.
   verify the icon color changes on next poll cycle
 - [ ] A drive with no temperature reading shows a gray icon
 
-### 4. Minimize to Tray
-- [ ] Clicking the window close button hides the window (process remains running)
+### 4. Close to Tray
+- [ ] With **Settings → Window → Close to system tray** ON, clicking the window
+  close button hides the window (process remains running)
+- [ ] With it OFF, clicking close on the *last* window exits the process and the
+  tray icons disappear
+- [ ] With it OFF and two windows open, closing one leaves the other running
+- [ ] A fresh profile (no `%PROGRAMDATA%\Diskoria\settings.txt`) starts with the
+  toggle ON for an installed build and OFF for the portable exe
 - [ ] Left-clicking the app tray icon restores and **raises** the main window
   (appears in front of other windows)
 - [ ] Right-clicking the app tray icon shows the custom dark/light themed

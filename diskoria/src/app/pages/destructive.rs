@@ -110,7 +110,7 @@ impl crate::app::DiskoriaApp {
                 ui.painter().rect_stroke(
                     btn_rect.expand(3.0),
                     4.0,
-                    Stroke::new(2.0, Color32::WHITE),
+                    Stroke::new(2.0, t.accent),
                     StrokeKind::Outside,
                 );
             }
@@ -325,7 +325,7 @@ impl crate::app::DiskoriaApp {
                     ui.painter().rect_stroke(
                         btn_rect.expand(3.0),
                         4.0,
-                        Stroke::new(2.0, Color32::WHITE),
+                        Stroke::new(2.0, t.accent),
                         StrokeKind::Outside,
                     );
                 }
@@ -376,14 +376,17 @@ impl crate::app::DiskoriaApp {
                 let fg = if can_start {
                     t.txt_on_accent
                 } else {
-                    Color32::from_rgba_premultiplied(255, 255, 255, 120)
+                    // Dim the *legible* on-accent color, not a hard-coded white:
+                    // on a pale accent white-on-white was invisible even at full
+                    // opacity.
+                    t.txt_on_accent.gamma_multiply(0.47)
                 };
                 ui.painter().rect_filled(btn_rect, 4.0, bg);
                 if start_focused && can_start {
                     ui.painter().rect_stroke(
                         btn_rect.expand(3.0),
                         4.0,
-                        Stroke::new(2.0, Color32::WHITE),
+                        Stroke::new(2.0, t.accent),
                         StrokeKind::Outside,
                     );
                 }

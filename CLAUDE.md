@@ -29,7 +29,9 @@ diskoria/              Rust crate
 scripts/               run-dev / build-release / build-portable / set-version
                        + artifact-signing-metadata.json (Azure signing config)
 installer/             diskoria.iss — Inno Setup script (built by build-release.ps1
-                       via ISCC; produces releases/<ver>/diskoria-<ver>-setup.exe)
+                       via ISCC; produces releases/<ver>/diskoria-<ver>-setup.exe).
+                       Writes the startup scheduled task and the
+                       HKLM\Software\Diskoria\InstallDir marker read by install_mode.rs
 assets/                appicon2.ico, trayicon.ico, applogo.png (embedded at compile time)
   source/              Editable/alternate originals (.xcf, alt png/ico) — not embedded
 ```
@@ -61,6 +63,11 @@ assets/                appicon2.ico, trayicon.ico, applogo.png (embedded at comp
   fonts, `WM_DEVICECHANGE` flag.
 - **`theme.rs`** — colors + shared layout constants (`TITLEBAR_H`, `BTN_W`,
   `CONTROLS_W`, …). Single source of truth — don't redefine these elsewhere.
+  Anything drawn *on an accent fill* takes `Theme::txt_on_accent` (WCAG-contrast
+  black or white) — never a hard-coded `Color32::WHITE`; the accent can be any
+  color, including white (known-issues KI-19). **Keyboard focus rings are always
+  `Stroke::new(2.0, t.accent)`** at `rect.expand(2..3)` — white rings vanish on
+  the light theme's white cards (KI-21).
 - **`focus.rs`, `shortcuts.rs`** — manual Tab order + Alt mnemonics (egui's
   auto-focus is not used).
 - **`drive_selector.rs`** — the shared two-row drive/volume dropdown + icon
@@ -79,6 +86,17 @@ assets/                appicon2.ico, trayicon.ico, applogo.png (embedded at comp
 - Support: `app_settings.rs`, `detected_drive.rs`, `partition_info.rs`,
   `widgets.rs`, `modal_confirm.rs`, `tex_mgr.rs`, `about.rs`, `update.rs`,
   `github_config.rs`.
+- **`install_mode.rs`** — installed build vs. portable exe. Like `autostart.rs`,
+  OS state is the source of truth (no persisted flag): the installer writes
+  `HKLM\Software\Diskoria\InstallDir`, and a build is "Installed" only when that
+  value names the running exe's own directory. Drives the `close_to_tray` default
+  (installed ON, portable OFF, applied in `app_settings::load_settings` when the
+  settings file has no entry), the About page's Installed/Portable chip, and
+  `DiskoriaApp::updates_supported()` — **update checks are installed-only**,
+  because the asset the updater applies is the installer (known-issues KI-23).
+  Note `HKLM\Software\Diskoria` is *shared* (an older build left an
+  `AutoCheckUpdates` value there), so the installer deletes only its own
+  `InstallDir` value on uninstall, never the whole key.
 - **`autostart.rs`** (`#[cfg(windows)]`) — launch-at-startup via a Scheduled Task
   (`schtasks /RL HIGHEST`, no UAC prompt since the app is `requireAdministrator`).
   The task's existence *is* the state (no persisted setting): the installer creates
@@ -136,6 +154,11 @@ headless GUI test — window/tray/disk paths are verified manually (see
   partition-less drive is selected (known-issues KI-15).
 - Drive list is enumerated at startup, on Refresh, and on `WM_DEVICECHANGE`
   (debounced); a 12 s watchdog recovers a hung WMI scan.
+- Closing the **last** window only hides it to the tray when `close_to_tray` is
+  on; otherwise the process exits and background monitoring stops. Closing a
+  non-last window always just drops that window. Two things gate the installed
+  defaults and they're kept independent: the scheduled task (`autostart.rs`) and
+  the registry marker (`install_mode.rs`).
 - One test per physical drive across all windows: each window publishes its
   drive-under-test to `SharedAppState::test_locks` every frame and clears it on
   close (via `cancel_all_tests`). Test-page dropdowns gray drives locked by

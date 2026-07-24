@@ -33,6 +33,45 @@ const BORDER_D: Color32 = Color32::from_rgb(90, 90, 90);
 
 pub const CLOSE_HOVER_BG: Color32 = Color32::from_rgb(196, 43, 28);
 
+/// WCAG relative luminance of an sRGB color (channels linearized first — the
+/// naive "weight the raw 0..1 channels" version badly overestimates darkness
+/// for saturated mid-tones like orange and teal).
+fn relative_luminance(c: Color32) -> f32 {
+    fn lin(u8v: u8) -> f32 {
+        let c = u8v as f32 / 255.0;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+}
+
+/// WCAG contrast ratio (1.0 … 21.0) between two opaque colors.
+fn contrast_ratio(a: Color32, b: Color32) -> f32 {
+    let (la, lb) = (relative_luminance(a), relative_luminance(b));
+    let (hi, lo) = if la > lb { (la, lb) } else { (lb, la) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// Minimum white-on-accent contrast we'll accept before switching to black.
+/// 3.0 is the WCAG AA bar for large/bold text, which is what actually sits on
+/// accent fills here (button captions, segmented-control labels). Keeping the
+/// bar at 3.0 rather than 4.5 preserves the familiar white-on-purple/blue/red
+/// look while still flipping to black for pale accents (the Windows "white"
+/// accent used to render white-on-white) and for low-contrast oranges/teals.
+const MIN_ON_ACCENT_CONTRAST: f32 = 3.0;
+
+/// Black or white, whichever stays legible on the given accent fill.
+pub fn text_on(accent: Color32) -> Color32 {
+    if contrast_ratio(Color32::WHITE, accent) >= MIN_ON_ACCENT_CONTRAST {
+        Color32::WHITE
+    } else {
+        Color32::BLACK
+    }
+}
+
 pub struct Theme {
     pub bg_pri: Color32,
     pub bg_sec: Color32,
@@ -40,7 +79,10 @@ pub struct Theme {
     pub accent: Color32,
     pub txt_pri: Color32,
     pub txt_sec: Color32,
-    #[allow(dead_code)]
+    /// Foreground for anything drawn *on top of* an accent fill — button
+    /// captions, selected segmented-control labels, toggle knobs. Never use a
+    /// hard-coded `Color32::WHITE` there: the accent can be any color the user
+    /// picks (or Windows reports), including white.
     pub txt_on_accent: Color32,
     pub border: Color32,
     pub hover: Color32,
@@ -48,15 +90,7 @@ pub struct Theme {
 
 impl Theme {
     pub fn new(dark: bool, accent: Color32) -> Self {
-        let acc_r = accent.r() as f32 / 255.0;
-        let acc_g = accent.g() as f32 / 255.0;
-        let acc_b = accent.b() as f32 / 255.0;
-        let lum = 0.2126 * acc_r + 0.7152 * acc_g + 0.0722 * acc_b;
-        let txt_on_accent = if lum > 0.6 {
-            Color32::from_rgb(0, 0, 0)
-        } else {
-            Color32::WHITE
-        };
+        let txt_on_accent = text_on(accent);
 
         if dark {
             Self {
@@ -140,4 +174,51 @@ pub fn apply_visuals(ctx: &egui::Context, dark: bool, accent: Color32) {
         Color32::from_rgba_unmultiplied(t.accent.r(), t.accent.g(), t.accent.b(), 120);
     vis.selection.stroke = Stroke::new(1.5, t.accent);
     ctx.set_visuals(vis);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relative_luminance_spans_black_to_white() {
+        assert!(relative_luminance(Color32::BLACK).abs() < 1e-6);
+        assert!((relative_luminance(Color32::WHITE) - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn contrast_ratio_is_symmetric_and_bounded() {
+        let ratio = contrast_ratio(Color32::BLACK, Color32::WHITE);
+        assert!((ratio - 21.0).abs() < 0.01);
+        assert!((contrast_ratio(Color32::WHITE, Color32::BLACK) - ratio).abs() < 1e-4);
+        assert!((contrast_ratio(Color32::WHITE, Color32::WHITE) - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn pale_accents_get_black_text() {
+        // The reported bug: a white/near-white Windows accent rendered the
+        // "New Window" caption white-on-white.
+        assert_eq!(text_on(Color32::WHITE), Color32::BLACK);
+        assert_eq!(text_on(Color32::from_rgb(240, 240, 240)), Color32::BLACK);
+        // Cha-Cha (yellow) and Quickstep (light gray) from the palette.
+        assert_eq!(text_on(crate::app_settings::ACCENT_PALETTE[4]), Color32::BLACK);
+        assert_eq!(text_on(crate::app_settings::ACCENT_PALETTE[7]), Color32::BLACK);
+    }
+
+    #[test]
+    fn dark_accents_keep_white_text() {
+        assert_eq!(text_on(Color32::BLACK), Color32::WHITE);
+        // Waltz (purple) and Foxtrot (blue) — the default and most common accents.
+        assert_eq!(text_on(crate::app_settings::ACCENT_PALETTE[0]), Color32::WHITE);
+        assert_eq!(text_on(crate::app_settings::ACCENT_PALETTE[1]), Color32::WHITE);
+    }
+
+    #[test]
+    fn theme_exposes_the_same_choice() {
+        for &accent in crate::app_settings::ACCENT_PALETTE.iter() {
+            for dark in [true, false] {
+                assert_eq!(Theme::new(dark, accent).txt_on_accent, text_on(accent));
+            }
+        }
+    }
 }

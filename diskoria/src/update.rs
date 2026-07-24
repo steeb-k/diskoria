@@ -95,6 +95,32 @@ pub fn check_for_update_blocking() -> Result<UpdateCheckResult, String> {
     })
 }
 
+/// Whether a release asset URL points at the Inno installer rather than a bare
+/// portable exe. Decided from the asset name in the URL.
+pub fn url_is_installer(url: &str) -> bool {
+    url.rsplit('/')
+        .next()
+        .unwrap_or(url)
+        .to_ascii_lowercase()
+        .contains("setup")
+}
+
+/// Temp filename for a downloaded update.
+///
+/// The apply step ([`crate::app::DiskoriaApp::poll_update_download`]) decides
+/// between "run this installer" and "copy this exe over ourselves" purely from
+/// the downloaded file's *name*, so the `setup` marker has to survive the
+/// download. It previously did not — every update was saved as
+/// `Diskoria_update_<n>.exe`, so an installer asset took the copy-over branch
+/// and clobbered `diskoria.exe` with the Inno setup stub (known-issues KI-22).
+pub fn update_temp_file_name(url: &str, nonce: u128) -> String {
+    if url_is_installer(url) {
+        format!("Diskoria_update_setup_{nonce}.exe")
+    } else {
+        format!("Diskoria_update_{nonce}.exe")
+    }
+}
+
 pub fn download_to_path(url: &str, dest: &std::path::Path) -> Result<(), String> {
     let resp = ureq::get(url)
         .set(
@@ -189,3 +215,71 @@ pub fn spawn_run_installer_and_exit(installer: &std::path::Path) {
 
 #[cfg(not(windows))]
 pub fn spawn_run_installer_and_exit(_installer: &std::path::Path) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_tags_parse_with_and_without_v() {
+        assert_eq!(parse_version_tag("v1.6.1"), Some(Version::parse("1.6.1").unwrap()));
+        assert_eq!(parse_version_tag("1.6.1"), Some(Version::parse("1.6.1").unwrap()));
+        assert_eq!(parse_version_tag("nightly"), None);
+    }
+
+    #[test]
+    fn installer_urls_are_recognized() {
+        assert!(url_is_installer(
+            "https://github.com/x/y/releases/download/v1.6.1/diskoria-1.6.1-setup.exe"
+        ));
+        assert!(url_is_installer("https://x/DISKORIA-SETUP.EXE"));
+        assert!(!url_is_installer(
+            "https://github.com/x/y/releases/download/v1.6.1/diskoria.exe"
+        ));
+        // "setup" appearing only in the path, not the asset name, must not count.
+        assert!(!url_is_installer("https://x/setup/releases/diskoria.exe"));
+    }
+
+    #[test]
+    fn temp_name_preserves_the_setup_marker() {
+        // The regression behind KI-22: the apply step matches on `contains("setup")`,
+        // so an installer download must still carry the marker after renaming.
+        let installer = update_temp_file_name("https://x/diskoria-1.6.1-setup.exe", 42);
+        assert!(installer.to_ascii_lowercase().contains("setup"));
+        assert!(installer.ends_with(".exe"));
+
+        let portable = update_temp_file_name("https://x/diskoria.exe", 42);
+        assert!(!portable.to_ascii_lowercase().contains("setup"));
+        assert!(portable.ends_with(".exe"));
+
+        // Nonce keeps concurrent downloads from colliding.
+        assert_ne!(
+            update_temp_file_name("https://x/diskoria.exe", 1),
+            update_temp_file_name("https://x/diskoria.exe", 2)
+        );
+    }
+
+    #[test]
+    fn pick_exe_url_prefers_the_installer() {
+        let assets = vec![
+            AssetJson {
+                name: "diskoria.exe".into(),
+                browser_download_url: "https://x/diskoria.exe".into(),
+            },
+            AssetJson {
+                name: "diskoria-1.6.1-setup.exe".into(),
+                browser_download_url: "https://x/diskoria-1.6.1-setup.exe".into(),
+            },
+            AssetJson {
+                name: "diskoria.pdb".into(),
+                browser_download_url: "https://x/diskoria.pdb".into(),
+            },
+        ];
+        assert_eq!(
+            pick_exe_url(&assets).as_deref(),
+            Some("https://x/diskoria-1.6.1-setup.exe")
+        );
+        // The chosen asset must round-trip as an installer through the temp name.
+        assert!(url_is_installer(&pick_exe_url(&assets).unwrap()));
+    }
+}

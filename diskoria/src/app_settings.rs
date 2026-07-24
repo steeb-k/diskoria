@@ -53,7 +53,11 @@ pub struct Settings {
     pub show_test_result_overlays: bool,
     // Monitoring settings
     pub monitoring_enabled: bool,
-    pub minimize_to_tray: bool,
+    /// Closing the last window hides it to the tray (app keeps running and
+    /// monitoring) instead of quitting. When the settings file has no entry —
+    /// a fresh profile — the default comes from [`crate::install_mode`]: ON for
+    /// installed builds, OFF for the portable exe. See [`load_settings`].
+    pub close_to_tray: bool,
     pub poll_interval_mins: u8,
     pub alert_temp_warn: i32,
     pub alert_temp_critical: i32,
@@ -70,7 +74,9 @@ impl Default for Settings {
             accent_custom_hex: "#8E44AD".to_string(),
             show_test_result_overlays: true,
             monitoring_enabled: true,
-            minimize_to_tray: true,
+            // Deliberately OS-independent so `Default` stays pure; the real
+            // per-install default is applied in `load_settings`.
+            close_to_tray: true,
             poll_interval_mins: 3,
             alert_temp_warn: 60,
             alert_temp_critical: 70,
@@ -84,7 +90,14 @@ fn settings_path() -> PathBuf {
 }
 
 pub fn load_settings() -> Settings {
-    let mut s = Settings::default();
+    // Seed the tray behaviour from how this build was distributed. A `close_to_tray=`
+    // line below overrides it, so this only applies until the user first touches the
+    // toggle. (The 1.6.0 `minimize_to_tray=` key was written but never read, so it is
+    // deliberately ignored here — every profile re-derives the default once.)
+    let mut s = Settings {
+        close_to_tray: crate::install_mode::default_close_to_tray(),
+        ..Settings::default()
+    };
     if let Ok(text) = std::fs::read_to_string(settings_path()) {
         for line in text.lines() {
             if let Some(v) = line.strip_prefix("theme=") {
@@ -110,8 +123,8 @@ pub fn load_settings() -> Settings {
                 s.show_test_result_overlays = v.trim() != "false";
             } else if let Some(v) = line.strip_prefix("monitoring_enabled=") {
                 s.monitoring_enabled = v.trim() != "false";
-            } else if let Some(v) = line.strip_prefix("minimize_to_tray=") {
-                s.minimize_to_tray = v.trim() != "false";
+            } else if let Some(v) = line.strip_prefix("close_to_tray=") {
+                s.close_to_tray = v.trim() != "false";
             } else if let Some(v) = line.strip_prefix("poll_interval_mins=") {
                 if let Ok(n) = v.trim().parse::<u8>() { s.poll_interval_mins = n.clamp(1, 60); }
             } else if let Some(v) = line.strip_prefix("alert_temp_warn=") {
@@ -141,7 +154,7 @@ pub fn save_settings(s: &Settings) {
         AccentSourcePref::Palette => "palette",
     };
     let text = format!(
-        "theme={}\naccent_source={}\naccent_palette_idx={}\naccent_use_custom={}\naccent_custom_hex={}\nshow_test_result_overlays={}\nmonitoring_enabled={}\nminimize_to_tray={}\npoll_interval_mins={}\nalert_temp_warn={}\nalert_temp_critical={}\nalert_wear_threshold={}\n",
+        "theme={}\naccent_source={}\naccent_palette_idx={}\naccent_use_custom={}\naccent_custom_hex={}\nshow_test_result_overlays={}\nmonitoring_enabled={}\nclose_to_tray={}\npoll_interval_mins={}\nalert_temp_warn={}\nalert_temp_critical={}\nalert_wear_threshold={}\n",
         theme_s,
         accent_src,
         s.accent_palette_idx,
@@ -149,7 +162,7 @@ pub fn save_settings(s: &Settings) {
         s.accent_custom_hex,
         s.show_test_result_overlays,
         s.monitoring_enabled,
-        s.minimize_to_tray,
+        s.close_to_tray,
         s.poll_interval_mins,
         s.alert_temp_warn,
         s.alert_temp_critical,
@@ -237,6 +250,7 @@ mod tests {
             alert_temp_warn: 55,
             monitoring_enabled: false,
             show_test_result_overlays: false,
+            close_to_tray: false,
             ..Settings::default()
         };
         save_settings(&s);
@@ -249,8 +263,23 @@ mod tests {
         assert_eq!(loaded.alert_temp_warn, 55);
         assert!(!loaded.monitoring_enabled);
         assert!(!loaded.show_test_result_overlays);
+        assert!(!loaded.close_to_tray);
         // Default must round-trip as enabled.
         save_settings(&Settings::default());
-        assert!(load_settings().show_test_result_overlays);
+        let loaded = load_settings();
+        assert!(loaded.show_test_result_overlays);
+        assert!(loaded.close_to_tray);
+
+        // A settings file predating `close_to_tray` (or hand-edited to drop it)
+        // must re-derive the default from the install mode rather than inheriting
+        // `Settings::default()`. Asserted here rather than in its own #[test] so
+        // the process-global PROGRAMDATA write above isn't raced by a parallel test.
+        let path = settings_path();
+        // 1.6.0-shaped file: retired `minimize_to_tray` key, no `close_to_tray`.
+        std::fs::write(&path, "theme=dark\nminimize_to_tray=true\n").unwrap();
+        assert_eq!(
+            load_settings().close_to_tray,
+            crate::install_mode::default_close_to_tray(),
+        );
     }
 }
