@@ -435,10 +435,18 @@ impl DiskoriaApp {
         let about_appicon = crate::chrome::load_appicon_texture(ctx, ABOUT_ICO);
 
         let s = shared.settings_snapshot();
-        let dark = match s.theme {
-            ThemePref::Auto => system_dark,
-            ThemePref::Dark => true,
-            ThemePref::Light => false,
+        // `--demo-accent` pins the accent for reproducible reference captures;
+        // published to shared state so every window and the tray agree.
+        if let Some((r, g, b)) = crate::demo::config().accent {
+            shared.set_accent_color(Color32::from_rgb(r, g, b));
+        }
+        let dark = match crate::demo::config().dark {
+            Some(d) => d,
+            None => match s.theme {
+                ThemePref::Auto => system_dark,
+                ThemePref::Dark => true,
+                ThemePref::Light => false,
+            },
         };
         apply_visuals(ctx, dark, shared.accent_color());
 
@@ -3606,6 +3614,11 @@ impl DiskoriaApp {
     }
 
     fn update_accent_color(&mut self, ctx: &egui::Context) {
+        // `--demo-accent` pins the accent; polling DWM would overwrite it on the
+        // next frame and put the host's colour into the capture.
+        if crate::demo::config().accent.is_some() {
+            return;
+        }
         if self.shared.settings_snapshot().accent_source != AccentSourcePref::Windows {
             return;
         }
@@ -5302,10 +5315,15 @@ impl DiskoriaApp {
             Some(egui::Theme::Light) => false,
             None => false,
         };
-        let dark = match self.shared.settings_snapshot().theme {
-            ThemePref::Auto => system_dark,
-            ThemePref::Dark => true,
-            ThemePref::Light => false,
+        // `--demo-theme` overrides both the OS and the saved preference, so a
+        // reference capture of the light theme does not depend on the host.
+        let dark = match crate::demo::config().dark {
+            Some(d) => d,
+            None => match self.shared.settings_snapshot().theme {
+                ThemePref::Auto => system_dark,
+                ThemePref::Dark => true,
+                ThemePref::Light => false,
+            },
         };
         self.dark = dark;
 

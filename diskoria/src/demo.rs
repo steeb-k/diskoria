@@ -23,7 +23,15 @@
 //! --demo-toast      fire a sample Windows toast
 //! --demo-alert      monitoring having raised an alert
 //! --demo-confirm    the confirmation modal for the current page
+//! --demo-theme <dark|light>   force the theme, ignoring the OS and settings
+//! --demo-accent <RRGGBB>      force the accent, ignoring the live Windows one
 //! ```
+//!
+//! `--demo-theme` and `--demo-accent` exist so a reference capture is
+//! reproducible on a machine other than the author's. By default Diskoria reads
+//! the accent live from DWM and the theme from the OS, which makes two captures
+//! of the same page on two machines differ for reasons that have nothing to do
+//! with the page. Neither flag writes to the settings file.
 //!
 //! Any `--demo-*` flag implies `--demo-drives` and `--demo-health`: a seeded
 //! page needs a drive list to hang off, and once that list is invented its
@@ -65,6 +73,10 @@ pub struct DemoConfig {
     pub toast: bool,
     pub alert: bool,
     pub confirm: bool,
+    /// `Some(true)` = force dark, `Some(false)` = force light.
+    pub dark: Option<bool>,
+    /// Accent as `(r, g, b)`, from `--demo-accent`.
+    pub accent: Option<(u8, u8, u8)>,
 }
 
 impl DemoConfig {
@@ -72,6 +84,8 @@ impl DemoConfig {
     /// picks a starting page and is safe to use against real hardware.
     pub fn seeding(&self) -> bool {
         self.drive.is_some()
+            || self.dark.is_some()
+            || self.accent.is_some()
             || self.drives
             || self.health
             || self.progress
@@ -101,6 +115,19 @@ fn parse_page(name: &str) -> Option<usize> {
         "settings" => Some(PAGE_SETTINGS),
         _ => None,
     }
+}
+
+/// `RRGGBB` or `#RRGGBB`.
+fn parse_hex_rgb(s: &str) -> Option<(u8, u8, u8)> {
+    let s = s.trim().trim_start_matches('#');
+    if s.len() != 6 || !s.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some((
+        u8::from_str_radix(&s[0..2], 16).ok()?,
+        u8::from_str_radix(&s[2..4], 16).ok()?,
+        u8::from_str_radix(&s[4..6], 16).ok()?,
+    ))
 }
 
 fn parse_result(name: &str) -> Option<TestResult> {
@@ -153,6 +180,16 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> DemoConfig {
                 cfg.result = value_at(i, arg)
                     .and_then(|v| parse_result(&v))
                     .or(Some(TestResult::Pass));
+            }
+            "--demo-theme" => {
+                cfg.dark = match value_at(i, arg).as_deref() {
+                    Some("dark") => Some(true),
+                    Some("light") => Some(false),
+                    _ => None,
+                };
+            }
+            "--demo-accent" => {
+                cfg.accent = value_at(i, arg).as_deref().and_then(parse_hex_rgb);
             }
             "--demo-toast" => cfg.toast = true,
             "--demo-alert" => cfg.alert = true,
@@ -559,6 +596,29 @@ mod tests {
             assert_eq!(dr.disk_number as usize, i);
             assert!(!dr.partitions.is_empty());
         }
+    }
+
+    #[test]
+    fn demo_theme_and_accent_pin_the_capture() {
+        assert_eq!(cfg(&["--demo-theme", "light"]).dark, Some(false));
+        assert_eq!(cfg(&["--demo-theme=dark"]).dark, Some(true));
+        assert_eq!(cfg(&["--demo-theme", "sideways"]).dark, None);
+        assert_eq!(cfg(&["--demo-accent", "8E44AD"]).accent, Some((142, 68, 173)));
+        assert_eq!(cfg(&["--demo-accent=#8E44AD"]).accent, Some((142, 68, 173)));
+        // Both put the run in demo mode on their own, so a capture that pins
+        // only the theme still cannot reach real hardware.
+        assert!(cfg(&["--demo-theme", "light"]).seeding());
+        assert!(cfg(&["--demo-accent", "8E44AD"]).drives);
+    }
+
+    #[test]
+    fn hex_rgb_rejects_junk() {
+        assert_eq!(parse_hex_rgb("8E44AD"), Some((142, 68, 173)));
+        assert_eq!(parse_hex_rgb("#8e44ad"), Some((142, 68, 173)));
+        assert_eq!(parse_hex_rgb("8E44A"), None);
+        assert_eq!(parse_hex_rgb("8E44ADD"), None);
+        assert_eq!(parse_hex_rgb("ZZZZZZ"), None);
+        assert_eq!(parse_hex_rgb(""), None);
     }
 
     #[test]

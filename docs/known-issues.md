@@ -228,3 +228,17 @@ Condensed; see git history for full detail.
   (`current - threshold` against `100 - threshold`) rather than to the
   threshold's own magnitude. Not fixed: it only over-warns, never under-warns,
   and changing it silently changes what every real drive reports.
+- **KI-25 — Selected nav row uses `from_rgba_premultiplied` with unmultiplied RGB**
+  `oddity`. `app.rs` fills the active sidebar row with
+  `Color32::from_rgba_premultiplied(t.accent.r(), t.accent.g(), t.accent.b(), 38)`.
+  Premultiplied means the RGB should already be scaled by the alpha; passing
+  full-intensity accent channels with alpha 38 is the unmultiplied form, so the
+  constructor is misnamed for what is being passed. Found while measuring tokens
+  for the wiki mockups: a pixel scan of three pinned accents (#8E44AD, #3498DB,
+  #F1C40F) shows the row composites at an effective alpha of ~0.128 in linear
+  light, not the 38/255 = 0.149 the call reads like. Cosmetic — the result looks
+  fine and is stable across accents — but the number in the source does not
+  describe the wash that lands on screen, so anyone tuning it by editing 38 will
+  be surprised. `from_rgba_unmultiplied` is almost certainly what was meant;
+  changing it now would visibly lighten every selected nav row, so it is left
+  alone and recorded here instead.
