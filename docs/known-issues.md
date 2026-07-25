@@ -215,3 +215,16 @@ Condensed; see git history for full detail.
   git history and the `diskoria.bak` archive). The stale
   `HKLM\Software\Diskoria\AutoCheckUpdates` value predates this repo and is read
   by nothing.
+- **KI-24 — SMART attribute status warns on healthy high-threshold attributes**
+  `oddity`. `smart_reader::compute_status` raises `AttrStatus::Warning` when
+  `current <= threshold + max(threshold / 10, 2)`, meant as a "close to failing"
+  band. For attributes whose threshold is *high* the band swallows healthy
+  values: Spin Retry Count (0x0A) is commonly `current 100 / threshold 97` on a
+  perfectly good drive, and 100 ≤ 97+9 flags it amber. Same shape for any
+  attribute with a threshold above ~91. Found while picking demo values for
+  `--demo-health` (`demo.rs`); worked around there by giving 0x0A a low
+  threshold, so the invented drive warns only about the two things it should.
+  A real fix would make the proximity band relative to the *headroom*
+  (`current - threshold` against `100 - threshold`) rather than to the
+  threshold's own magnitude. Not fixed: it only over-warns, never under-warns,
+  and changing it silently changes what every real drive reports.

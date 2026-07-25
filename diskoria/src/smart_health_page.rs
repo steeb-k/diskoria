@@ -1515,6 +1515,17 @@ impl DiskoriaApp {
             }
         }
 
+        // `--demo-health` (implied by any demo run): canned report rather than
+        // opening a real drive. Resolved synchronously — there is no I/O to
+        // wait for, and the spinner would otherwise never appear to resolve.
+        if crate::demo::config().health {
+            self.health_report = Some(crate::demo::health_report(sel));
+            self.health_report_drive = Some(sel);
+            self.health_poll_running = false;
+            self.health_last_poll = Some(std::time::Instant::now());
+            return;
+        }
+
         let drive = &self.drives[sel];
         let device_path = drive.device_id.clone();
         let bus = drive.bus;

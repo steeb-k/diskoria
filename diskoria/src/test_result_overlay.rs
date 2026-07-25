@@ -7,7 +7,7 @@
 
 use egui::{Align2, Color32, Context, FontFamily, FontId, Pos2, Sense, Vec2};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TestResult {
     Pass,
     Warn,

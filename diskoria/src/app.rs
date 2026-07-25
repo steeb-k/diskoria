@@ -376,6 +376,12 @@ pub struct DiskoriaApp {
     /// shows UI to the user has to check this first.
     pub(crate) window_visible: bool,
 
+    /// `--demo-alert` seeded an alert that still has to be announced. It cannot
+    /// fire from `new()` because `event_proxy` is attached afterwards, so the
+    /// first draw with a proxy consumes this. See `demo.rs`.
+    #[cfg(windows)]
+    demo_alert_pending: bool,
+
     // ── Pro-Monitoring ────────────────────────────────────────────────────────
     // Latest per-drive snapshots live on `SharedAppState` (see
     // `insert_snapshot`/`snapshot_for`) so multiple windows don't split the set.
@@ -452,7 +458,7 @@ impl DiskoriaApp {
                 .unwrap_or(0)
         });
 
-        Self {
+        let mut app = Self {
             dark,
             #[cfg(windows)]
             hwnd,
@@ -611,6 +617,8 @@ impl DiskoriaApp {
             update_staged_focus: None,
             // Corrected by `Renderer::paint` before the first draw that matters.
             window_visible: true,
+            #[cfg(windows)]
+            demo_alert_pending: false,
             // Pro-Monitoring
             #[cfg(windows)]
             pending_alerts: Vec::new(),
@@ -633,7 +641,204 @@ impl DiskoriaApp {
             #[cfg(windows)]
             alert_wear_threshold: s.alert_wear_threshold,
             shared,
+        };
+        app.apply_demo_seed();
+        app
+    }
+
+    /// Seed UI state from the `--page` / `--demo-*` flags (see `demo.rs`).
+    ///
+    /// A "running" test is faked by setting the progress fields and leaving the
+    /// worker channel `None` — every `poll_*` early-returns on a missing
+    /// receiver, so no disk I/O is started and none of the seeded numbers move.
+    fn apply_demo_seed(&mut self) {
+        let cfg = *crate::demo::config();
+        if let Some(page) = cfg.page {
+            self.active_nav = page;
         }
+        if !cfg.seeding() {
+            return;
+        }
+
+        // Which test the test-shaped flags describe. Without `--page` the flags
+        // seed the sector read test, the one that is safe in every sense.
+        let page = cfg.page.unwrap_or(crate::demo::PAGE_SECTOR_READ);
+        let write_test = page == crate::demo::PAGE_SECTOR_WRITE;
+        let benchmark = page == crate::demo::PAGE_BENCHMARK;
+
+        if cfg.unlocks_destructive() {
+            self.destructive_unlocked = true;
+        }
+
+        // Which drive the page opens on. `--demo-drive` wins; otherwise the
+        // write test points at the USB stick, because a wiki screenshot of the
+        // destructive test aimed at the machine's system drive teaches exactly
+        // the wrong reflex.
+        self.selected_drive = cfg.drive.unwrap_or(if write_test { 2 } else { 0 });
+
+        // Roughly two thirds of the way through a scan: far enough in for the
+        // heat map to have a shape and for the rough patch to be visible.
+        const SCANNED: f64 = 0.64;
+        let total_gb = crate::demo::drives()[0].size_bytes as f64 / 1_073_741_824.0;
+
+        if (cfg.progress || cfg.heatmap || cfg.chart) && !benchmark {
+            let blocks = crate::demo::block_latencies(
+                TOTAL_UI_BLOCKS,
+                (TOTAL_UI_BLOCKS as f64 * SCANNED) as usize,
+            );
+            let mut cells: Vec<SectorCell> = Vec::with_capacity(TOTAL_UI_BLOCKS);
+            let (mut lo, mut hi) = (f64::MAX, f64::MIN);
+            let (mut bad, mut slow) = (0i64, 0i64);
+            for ms in &blocks {
+                match ms {
+                    None => {
+                        bad += 1;
+                        cells.push(SectorCell::Bad);
+                    }
+                    Some(ms) if *ms >= surface_test::SLOW_THRESHOLD_MS => {
+                        slow += 1;
+                        cells.push(SectorCell::Slow);
+                    }
+                    Some(ms) => {
+                        lo = lo.min(*ms);
+                        hi = hi.max(*ms);
+                        cells.push(SectorCell::Heat(*ms));
+                    }
+                }
+            }
+            cells.resize(TOTAL_UI_BLOCKS, SectorCell::Pending);
+            let points = crate::demo::chart_samples(total_gb, SCANNED);
+            let max_speed = points.iter().fold(0.0_f64, |m, p| m.max(p[1]));
+            let pct = SCANNED * 100.0;
+            let tab = usize::from(cfg.chart);
+
+            if write_test {
+                self.destructive_cells = cells;
+                self.destructive_heat_min_ms = lo;
+                self.destructive_heat_max_ms = hi;
+                self.destructive_bad_sectors = bad;
+                self.destructive_slow_blocks = slow;
+                self.destructive_progress_pct = pct;
+                self.destructive_avg_speed_mbps = 121.4;
+                self.destructive_elapsed_label = "01:12:40".to_string();
+                self.destructive_remaining_label = "00:40:52".to_string();
+                self.destructive_chart_raw_points = points.clone();
+                self.destructive_chart_points = points;
+                self.destructive_chart_max_speed = max_speed;
+                self.destructive_chart_total_gb = total_gb;
+                self.destructive_chart_tab = tab;
+            } else {
+                self.sector_cells = cells;
+                self.heat_min_ms = lo;
+                self.heat_max_ms = hi;
+                self.surface_bad_sectors = bad;
+                self.surface_slow_blocks = slow;
+                self.surface_progress_pct = pct;
+                self.surface_avg_speed_mbps = 154.8;
+                self.surface_elapsed_label = "00:57:18".to_string();
+                self.surface_remaining_label = "00:32:14".to_string();
+                self.surface_chart_raw_points = points.clone();
+                self.surface_chart_points = points;
+                self.surface_chart_max_speed = max_speed;
+                self.surface_chart_total_gb = total_gb;
+                self.surface_chart_tab = tab;
+            }
+        }
+
+        if cfg.progress {
+            if benchmark {
+                self.speed_test_running = true;
+                self.speed_test_target = Some((0, "C:".to_string()));
+                self.speed_progress_op = "Random 4K read".to_string();
+                self.speed_progress_pct = 62.0;
+                self.speed_current_mbps = 71.3;
+                self.speed_seq_read_mbps = 3_412.7;
+                self.speed_seq_write_mbps = 2_988.1;
+                // -1.0 is the app's "not measured yet" sentinel.
+                self.speed_r4_read_mbps = -1.0;
+                self.speed_r4_write_mbps = -1.0;
+            } else {
+                let sel = self.selected_drive;
+                let target = Some((sel as u32, crate::demo::drives()[sel].device_id.clone()));
+                if write_test {
+                    self.destructive_test_running = true;
+                    self.destructive_test_target = target;
+                } else {
+                    self.surface_test_running = true;
+                    self.surface_test_target = target;
+                }
+            }
+        }
+
+        // A completed benchmark: all four numbers filled in. The PASS/WARN/FAIL
+        // overlay does not exist on this page, so `--demo-result` means "the
+        // finished result" here rather than "the result overlay".
+        if benchmark && cfg.result.is_some() && !cfg.progress {
+            self.speed_progress_op = "Complete".to_string();
+            self.speed_progress_pct = 100.0;
+            self.speed_seq_read_mbps = 3_412.7;
+            self.speed_seq_write_mbps = 2_988.1;
+            self.speed_r4_read_mbps = 74.6;
+            self.speed_r4_write_mbps = 191.2;
+        } else if let Some(r) = cfg.result {
+            self.test_result_overlay = Some(r);
+        }
+
+        if cfg.confirm {
+            if write_test {
+                // Mid-run the meaningful confirmation is "stop?"; before the run
+                // it is the data-destruction warning the flag exists to capture.
+                if cfg.progress {
+                    self.show_destructive_stop_confirm = true;
+                    self.destructive_stop_confirm_focus = Some(0);
+                } else {
+                    self.show_destructive_start_confirm = true;
+                    self.destructive_start_confirm_focus = Some(0);
+                }
+            } else {
+                self.show_stop_test_confirm = true;
+                self.modal_two_button_focus = Some(0);
+            }
+        }
+
+        #[cfg(windows)]
+        if cfg.alert {
+            self.pending_alerts.push(crate::demo::alert_event());
+            self.demo_alert_pending = true;
+            // Monitoring that has raised an alert has been running, so it has
+            // history. The alerting drive runs warm; the others do not.
+            let now = chrono::Utc::now().timestamp();
+            for (i, d) in crate::demo::drives().iter().enumerate() {
+                self.temp_history
+                    .insert(d.serial.clone(), crate::demo::temperature_history(now, i == 1));
+            }
+        }
+    }
+
+    /// Announce the `--demo-alert` alert once a proxy exists, so the tray icon
+    /// enters its alert state and the toast fires exactly as a real alert would
+    /// drive them. `poll_monitor` cannot do this: with no monitor thread running
+    /// it returns before it reaches the drain.
+    #[cfg(windows)]
+    fn poll_demo_alert(&mut self) {
+        if !self.demo_alert_pending {
+            return;
+        }
+        let Some(proxy) = &self.event_proxy else { return };
+        for alert in std::mem::take(&mut self.pending_alerts) {
+            let _ = proxy.send_event(crate::UserEvent::DriveAlert {
+                serial: alert.serial.clone(),
+                is_critical: matches!(alert.level, crate::alert_engine::AlertLevel::Critical),
+            });
+            // WinRT is MTA; the main winit thread is STA.
+            std::thread::spawn(move || {
+                crate::toast::send_toast(
+                    &format!("Diskoria \u{2014} Drive {} (Warning)", alert.model),
+                    &alert.detail,
+                );
+            });
+        }
+        self.demo_alert_pending = false;
     }
 
     fn any_test_running(&self) -> bool {
@@ -749,6 +954,11 @@ impl DiskoriaApp {
     /// the window from the tray it becomes visible and the check runs then.
     #[cfg(windows)]
     fn maybe_start_auto_update_check(&mut self, ctx: &egui::Context) {
+        // A capture run must not reach the network, and an update box appearing
+        // mid-screenshot would land in the wiki.
+        if crate::demo::seeding() {
+            return;
+        }
         if !self.window_visible
             || !self.updates_supported()
             || !self.shared.settings_snapshot().auto_check_updates
@@ -1260,6 +1470,11 @@ impl DiskoriaApp {
 
     #[cfg(windows)]
     fn start_monitor_if_not_running(&mut self, ctx: &egui::Context) {
+        // The demo drives do not exist; polling them would read the host's real
+        // disks under invented serials and write that into the history DB.
+        if crate::demo::seeding() {
+            return;
+        }
         if !self.shared.pro_edition {
             return;
         }
@@ -2364,8 +2579,23 @@ impl DiskoriaApp {
                 return;
             }
 
-            let drive = &self.drives[self.active_page_selected_drive_idx()];
+            let idx = self.active_page_selected_drive_idx();
+            let drive = &self.drives[idx];
             let disk = drive.disk_number;
+
+            // `--demo-health` (implied by any demo run): canned verdict rather
+            // than a WMI query against an invented PNP ID.
+            if crate::demo::config().health {
+                if self.smart_health_disk == Some(disk) {
+                    return;
+                }
+                let (health, pct) = crate::demo::wmi_health(idx);
+                self.smart_health = Some(health);
+                self.smart_health_err = None;
+                self.smart_health_pct = pct;
+                self.smart_health_disk = Some(disk);
+                return;
+            }
 
             if self.smart_health_inflight {
                 return;
@@ -4967,6 +5197,7 @@ impl DiskoriaApp {
             self.poll_update_check(ctx);
             self.poll_update_download(ctx);
             self.poll_monitor(ctx);
+            self.poll_demo_alert();
         }
         self.update_modal_confirm_tab_focus(ctx);
         self.prepare_health_page_focus(ctx);

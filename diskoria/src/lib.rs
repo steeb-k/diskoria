@@ -15,6 +15,7 @@ mod app_settings;
 #[cfg(windows)]
 mod autostart;
 mod chrome;
+mod demo;
 mod github_config;
 mod focus;
 mod install_mode;
@@ -1324,6 +1325,10 @@ pub fn run() {
         env!("CARGO_PKG_VERSION")
     );
 
+    // Parse `--page` / `--demo-*` once, so the log records what a capture run
+    // was seeded with. See `demo.rs` — none of it touches a disk.
+    demo::init();
+
     // Boot-smoke mode: render a few frames then exit. Defaults to 3 frames;
     // `DISKORIA_SMOKE=N` overrides the count.
     let smoke_remaining: Option<u32> = std::env::var("DISKORIA_SMOKE").ok().map(|v| {
@@ -1338,12 +1343,22 @@ pub fn run() {
     #[cfg(windows)]
     let start_minimized = std::env::args().skip(1).any(|a| a == "--minimized");
 
-    // Skip the single-instance guard under smoke so the test run is independent
-    // of any already-running Diskoria instance.
+    // Skip the single-instance guard under smoke — and under demo seeding, so a
+    // capture run does not just hand off to the author's real instance — leaving
+    // the test run independent of any already-running Diskoria.
     #[cfg(windows)]
-    let _single_instance_mutex = smoke_remaining
-        .is_none()
+    let _single_instance_mutex = (smoke_remaining.is_none() && !demo::seeding())
         .then(|| acquire_single_instance_mutex(start_minimized));
+
+    // `--demo-toast`: fire one sample notification so the toast can be
+    // photographed. Backgrounded because WinRT needs a COM MTA context.
+    #[cfg(windows)]
+    if demo::config().toast {
+        std::thread::spawn(|| {
+            let (title, body) = demo::sample_toast();
+            crate::toast::send_toast(&title, &body);
+        });
+    }
 
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()

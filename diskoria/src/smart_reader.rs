@@ -183,6 +183,28 @@ fn compute_status(id: u8, current: u8, worst: u8, threshold: u8, raw: u64) -> At
     AttrStatus::Good
 }
 
+/// Build an [`AtaAttribute`] from the four raw SMART fields, deriving the name,
+/// criticality and status the same way the ATA reader does.  Shared so demo
+/// data (`crate::demo`) cannot drift from what a real drive would produce.
+pub(crate) fn ata_attribute(
+    id: u8,
+    current: u8,
+    worst: u8,
+    threshold: u8,
+    raw: u64,
+) -> AtaAttribute {
+    AtaAttribute {
+        id,
+        name: attr_name(id),
+        current,
+        worst,
+        threshold,
+        raw,
+        is_critical: is_critical(id),
+        status: compute_status(id, current, worst, threshold, raw),
+    }
+}
+
 // ── Non-Windows stub ──────────────────────────────────────────────────────────
 
 #[cfg(not(windows))]
@@ -366,10 +388,6 @@ fn query_ata(device_path: &str) -> SmartReport {
             })
             .unwrap_or(0);
 
-        let crit = is_critical(id);
-        let status = compute_status(id, current, worst, threshold, raw);
-        let name = attr_name(id);
-
         // Extract high-level vitals from well-known attribute IDs
         match id {
             0x09 => power_on_hours = Some(raw & 0xFFFF_FFFF),
@@ -384,16 +402,7 @@ fn query_ata(device_path: &str) -> SmartReport {
             _ => {}
         }
 
-        attributes.push(AtaAttribute {
-            id,
-            name,
-            current,
-            worst,
-            threshold,
-            raw,
-            is_critical: crit,
-            status,
-        });
+        attributes.push(ata_attribute(id, current, worst, threshold, raw));
     }
 
     if attributes.is_empty() {

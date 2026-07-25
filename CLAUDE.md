@@ -86,6 +86,18 @@ assets/                appicon2.ico, trayicon.ico, applogo.png (embedded at comp
 - Support: `app_settings.rs`, `detected_drive.rs`, `partition_info.rs`,
   `widgets.rs`, `modal_confirm.rs`, `tex_mgr.rs`, `about.rs`, `update.rs`,
   `github_config.rs`.
+- **`demo.rs`** — the `--page` / `--demo-*` flags, which seed the UI from one
+  invented machine so the wiki's reference screenshots can be taken without
+  exposing real hardware. **Nothing in it touches a disk**: a "running" test sets
+  the progress fields and leaves the worker channel `None`, so every `poll_*`
+  early-returns. `--demo-confirm` exists so the destructive-test confirmation
+  dialog can be captured without arming a write. Any `--demo-*` implies
+  `--demo-drives` *and* `--demo-health` — once the drive list is invented its
+  device paths (`\\.\PhysicalDrive0`) name the *host's* real disks, so the health
+  readers must never be let near them. Demo mode also skips the single-instance
+  guard, the monitor thread and the startup update check. Seams live in
+  `shared_state::start_drive_enumeration`, `app::poll_smart_health`,
+  `smart_health_page::spawn_health_poll_if_needed` and `app::apply_demo_seed`.
 - **`install_mode.rs`** — installed build vs. portable exe. Like `autostart.rs`,
   OS state is the source of truth (no persisted flag): the installer writes
   `HKLM\Software\Diskoria\InstallDir`, and a build is "Installed" only when that
@@ -121,6 +133,12 @@ DISKORIA_SKIP_RESOURCE=1 cargo test    # unit tests; the env flag avoids the
                                        # test exe (see known-issues KI-10)
 cargo test --test boot_smoke -- --ignored   # launches the real exe, renders, exits 0
 DISKORIA_SMOKE=3 cargo run             # render N frames then exit (manual smoke)
+
+# Demo / capture mode (see `demo.rs`) — seeds the UI, never touches a disk:
+cargo run -- --page drive-health --demo-drive 1     # the SATA warning drive
+cargo run -- --page sector-read --demo-progress --demo-heatmap
+cargo run -- --page sector-write --demo-confirm     # the destructive dialog,
+                                                    # WITHOUT arming a write
 ```
 
 Tests are pure-logic unit tests (`alert_engine`, `smart_reader`, `monitor`

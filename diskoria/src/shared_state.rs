@@ -434,6 +434,18 @@ impl SharedAppState {
     /// kickoff and explicit refresh.
     pub fn start_drive_enumeration(&self, ctx: &egui::Context) {
         let (tx, rx) = mpsc::channel();
+
+        // `--demo-drives`: hand back the invented machine instead of querying
+        // WMI, so a capture run neither needs real hardware nor shows any.
+        if crate::demo::config().drives {
+            let _ = tx.send(Ok(crate::demo::drives()));
+            ctx.request_repaint();
+            self.set_drive_poll_rx(Some(rx));
+            *self.drive_poll_started.lock().expect("drive_poll_started poisoned") =
+                Some(Instant::now());
+            return;
+        }
+
         #[cfg(windows)]
         {
             let ctx2 = ctx.clone();
