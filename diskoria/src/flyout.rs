@@ -224,7 +224,10 @@ impl FlyoutRenderer {
                             let w1 = ((p2.1 - p0.1) * (fx - p2.0) + (p0.0 - p2.0) * (fy - p2.1)) / denom;
                             let w2 = 1.0 - w0 - w1;
 
-                            if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+                            if w0 < -crate::EDGE_EPS
+                                || w1 < -crate::EDGE_EPS
+                                || w2 < -crate::EDGE_EPS
+                            {
                                 continue;
                             }
 
@@ -244,6 +247,10 @@ impl FlyoutRenderer {
                                 (tr * vr, tg * vg, tb * vb, ta * va / 255.0)
                             };
 
+                            // See `crate::EDGE_EPS`: an admitted edge pixel can
+                            // interpolate to alpha outside [0, 1], and an
+                            // out-of-range blend sqrt()s to NaN — a black speck.
+                            let final_a = final_a.clamp(0.0, 1.0);
                             if final_a < 1.0 / 255.0 {
                                 continue;
                             }
@@ -605,7 +612,7 @@ impl ContextMenuWindow {
                             let w0 = ((p1.1 - p2.1) * (fx - p2.0) + (p2.0 - p1.0) * (fy - p2.1)) / denom;
                             let w1 = ((p2.1 - p0.1) * (fx - p2.0) + (p0.0 - p2.0) * (fy - p2.1)) / denom;
                             let w2 = 1.0 - w0 - w1;
-                            if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 { continue; }
+                            if w0 < -crate::EDGE_EPS || w1 < -crate::EDGE_EPS || w2 < -crate::EDGE_EPS { continue; }
 
                             let uv_x = v0.uv.x * w0 + v1.uv.x * w1 + v2.uv.x * w2;
                             let uv_y = v0.uv.y * w0 + v1.uv.y * w1 + v2.uv.y * w2;
@@ -621,6 +628,10 @@ impl ContextMenuWindow {
                                 let [tr, tg, tb, ta] = self.tex_mgr.sample_rgba(mesh.texture_id, uv_x, uv_y);
                                 (tr * vr, tg * vg, tb * vb, ta * va / 255.0)
                             };
+                            // See `crate::EDGE_EPS`: an admitted edge pixel can
+                            // interpolate to alpha outside [0, 1], and an
+                            // out-of-range blend sqrt()s to NaN — a black speck.
+                            let final_a = final_a.clamp(0.0, 1.0);
                             if final_a < 1.0 / 255.0 { continue; }
 
                             let idx = (py as u32 * w + px as u32) as usize;
@@ -950,7 +961,7 @@ impl DriveContextMenuWindow {
                             let w0 = ((p1.1 - p2.1) * (fx - p2.0) + (p2.0 - p1.0) * (fy - p2.1)) / denom;
                             let w1 = ((p2.1 - p0.1) * (fx - p2.0) + (p0.0 - p2.0) * (fy - p2.1)) / denom;
                             let w2 = 1.0 - w0 - w1;
-                            if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 { continue; }
+                            if w0 < -crate::EDGE_EPS || w1 < -crate::EDGE_EPS || w2 < -crate::EDGE_EPS { continue; }
 
                             let uv_x = v0.uv.x * w0 + v1.uv.x * w1 + v2.uv.x * w2;
                             let uv_y = v0.uv.y * w0 + v1.uv.y * w1 + v2.uv.y * w2;
@@ -966,6 +977,10 @@ impl DriveContextMenuWindow {
                                 let [tr, tg, tb, ta] = self.tex_mgr.sample_rgba(mesh.texture_id, uv_x, uv_y);
                                 (tr * vr, tg * vg, tb * vb, ta * va / 255.0)
                             };
+                            // See `crate::EDGE_EPS`: an admitted edge pixel can
+                            // interpolate to alpha outside [0, 1], and an
+                            // out-of-range blend sqrt()s to NaN — a black speck.
+                            let final_a = final_a.clamp(0.0, 1.0);
                             if final_a < 1.0 / 255.0 { continue; }
 
                             let idx = (py as u32 * w + px as u32) as usize;

@@ -242,3 +242,23 @@ Condensed; see git history for full detail.
   be surprised. `from_rgba_unmultiplied` is almost certainly what was meant;
   changing it now would visibly lighten every selected nav row, so it is left
   alone and recorded here instead.
+- **KI-26 — Rasterizer dropped pixels on whole-pixel shape edges** `bug`. Reported
+  as black/blank specks around the title bar's "New Window" pill. egui antialiases
+  by tessellating a solid core plus a 1px feathered ring that *share* an edge, so
+  any shape edge landing on a whole pixel coordinate puts that shared edge exactly
+  down the middle of a row of pixel centres. Exact arithmetic would put those
+  centres on both triangles; f32 puts them ~1e-8 outside *both*, so the
+  `w0 < 0.0 || w1 < 0.0 || w2 < 0.0` inside-triangle test dropped them and the
+  background dotted through the fill. The pill is only the most visible victim —
+  its bottom edge sits at exactly `TITLEBAR_H` over a contrasting page, and it is
+  saturated accent — but every panel and button was exposed. Fixed by admitting
+  weights down to `-EDGE_EPS` (`lib.rs`, `1e-5` — float noise misses by ~1e-8,
+  real geometry by ~1e-1, so the threshold sits between with orders of magnitude
+  to spare) in all four rasterizer copies (`lib.rs` + the three in `flyout.rs`).
+  Clamping `final_a` to `[0, 1]` is part of the fix, not tidying: an admitted
+  pixel sits marginally outside its triangle, so its interpolated alpha can exceed
+  1, driving the gamma blend negative and `sqrt()` to NaN — which casts to 0 and
+  paints a black speck, the very artifact being removed. ✓ verified by A/B capture
+  at 100% scale: 6 background-gray pixels along the pill's bottom row (y=31)
+  became accent, plus 6 more on other panel edges; 0 remain. Ported from
+  phoenix-simulacra `e40a0a3`, which shares this rasterizer's lineage.
