@@ -11,8 +11,10 @@
     Skip code-signing without the interactive prompt.
 .NOTES
     Versioning: bump the `version` field in diskoria\Cargo.toml (or use set-version.ps1).
-    Git tags: on the diskoria-binaries GitHub repo, tag releases as `1.6.0` (bare, no `v`)
-    to match existing releases; the in-app updater strips an optional leading `v` either way.
+    Git tags: tag the SOURCE repo too, not just diskoria-binaries. Bare version, no `v`
+    prefix (`1.6.0`), on both; the in-app updater strips an optional leading `v` either way.
+    An untagged source repo is how 1.6.1 shipped without a marker and got rebuilt from
+    newer code under the same version. Full checklist: docs\releasing.md.
 
     Output: releases\<version>\diskoria.exe + diskoria-<version>-setup.exe (if Inno Setup present).
 

@@ -44,6 +44,7 @@ assets/                appicon2.ico, trayicon.ico, applogo.png (embedded at comp
 | `docs/known-issues.md` | Living bug/oddity log (KI-1…). **Append here** when you find something; mark items resolved when fixed. |
 | `docs/refactor-roadmap.md` | Done vs. deferred cleanup; the `pages/` split pattern; the planned `PageLayout` / enum-test-state / `StorageBackend` work. |
 | `docs/testing.md` | What's tested and how to run it. |
+| `docs/releasing.md` | Release checklist: version bump, unsigned build → manual test → sign, **tag the source repo**, artifacts on diskoria-binaries. |
 | `docs/monitoring.md` | Pro-Monitoring subsystem (tray icons, flyout, alert engine, history DB, toasts, settings). |
 | `docs/smart-telemetry-reference.md` | Windows SMART/NVMe IOCTL reference for extending telemetry. |
 | `docs/TODO.md` | Forward-looking feature backlog. |

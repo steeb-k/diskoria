@@ -91,6 +91,30 @@ windows re-gray live. Drive Health never disables items (read-only); test pages
 gray drives locked elsewhere and also gate Start via `selected_drive_busy_elsewhere`.
 Identity is `DetectedDrive::lock_key()` (serial, else `disk{n}`).
 
+### KI-28 — Single-instance handoff crosses build boundaries `fragile`
+The single-instance guard (`lib.rs`, `acquire_single_instance_mutex`) is keyed on
+a machine-wide named mutex and does **not** distinguish which `diskoria.exe`
+holds it. So launching the *installed* build while a *portable* copy is still
+running raises the portable window instead of starting the installed one — and
+that window then correctly reports "Portable", shows the About page's Portable
+chip, and disables the update controls (`updates_supported()` is installed-only,
+KI-23). The installer looks broken when nothing is wrong.
+
+Hit for real while validating 1.6.x: a portable exe left running from a test
+session swallowed the launch of a freshly installed build. Diagnosis is now one
+line — the startup banner logs the install mode and the exe path:
+
+```text
+Diskoria 1.6.2 starting (Portable, exe=C:\...\releases\1.6.2\diskoria.exe)
+```
+
+Arguably correct behaviour (one Diskoria per machine, and the raise is the whole
+point of the guard), so not "fixed" — but if it ever warrants one, the fix is to
+include the exe directory in the mutex name, or to refuse the handoff when the
+running instance's path differs from the launching one. Worth remembering
+whenever an installed build seems to ignore the installer: **close the portable
+copy, including its tray icon, first.**
+
 ---
 
 ## Resolved

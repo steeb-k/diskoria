@@ -1340,10 +1340,19 @@ pub fn run() {
     .format_timestamp_millis()
     .try_init();
 
+    // Install mode goes in the banner because the single-instance guard does not
+    // distinguish builds: launching an installed copy while a *portable* one is
+    // already running just raises the portable window, which then correctly
+    // reports "Portable" and looks like the installer failed (known-issues
+    // KI-28). Logging the exe path next to it makes that one line to check.
     log::info!(
         target: "diskoria",
-        "Diskoria {} starting",
-        env!("CARGO_PKG_VERSION")
+        "Diskoria {} starting ({}, exe={})",
+        env!("CARGO_PKG_VERSION"),
+        install_mode::current().label(),
+        std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "<unknown>".to_string()),
     );
 
     // Parse `--page` / `--demo-*` once, so the log records what a capture run
