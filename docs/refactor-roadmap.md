@@ -30,6 +30,29 @@ What's been done structurally, and what's deliberately deferred. Pair with
   minimum-visible window). The open list is keyboard-navigable
   (arrow keys/Enter/Esc) via egui's geometric focus nav — see KI-16 for the
   load-bearing popup-id coupling that makes the focus binding work.
+- **Standardized card layout** — `src/card.rs` (`CardLayout`) replaced the
+  hand-rolled "compute `card_h`, `allocate_space`, paint rows at absolute `y`"
+  pattern; geometry constants moved to `theme.rs`. Resolves KI-18 (see there for
+  the mechanism and what was migrated). The pattern for a new card:
+
+  ```rust
+  let mut card = CardLayout::builder(content_x + margin, section_w)
+      .title("Test Results")
+      .begin(ui, t);
+  let row = card.row(ROW_H);        // returns the rect; paint into it as before
+  let row = card.row(ROW_H);
+  card.end(ui);                     // frame at measured height + the one advance
+  ```
+
+  Builders: `.pad()`, `.gap_before(0.0)` (first card on a page, or a page like
+  Drive Health that sets its own rhythm with `add_space`), `.title()`. Inside:
+  `row()`, `add_gap()`, `section_title()` for a second heading behind one frame
+  (Settings → Theme/Accent), and `left()`/`right()`/`inner_x()`/`inner_w()`/`pad()`
+  as anchors. **Don't** pre-compute a height and don't add your own
+  `advance_cursor_after_rect` — `end()` is deliberately the only one.
+  Cards that use a real `egui::Frame` + `allocate_new_ui` (the About card, the
+  sector test panel's lower card, the Benchmark progress card) already self-size
+  and were left alone.
 
 ### How the page split works (pattern for future moves)
 
@@ -100,30 +123,6 @@ Not started; capture here so it's ready.
    tests) with a Windows impl, so the Linux port fills in a second impl instead
    of threading `#[cfg]` through call sites. Pair with the `paths` seam already
    in place. Until then, keep the per-module `#[cfg(windows)]` + stub pattern.
-
-6. **Standardized card layout (cards report their own bottom).** *Pinned after
-   the Test Results card overlapped the Monitoring card — see KI-18.* Today every
-   card hand-computes a `card_h`, calls `ui.allocate_space(card_h + N)`, and
-   paints rows at absolute `y` coordinates. Two recurring failure modes: (a) the
-   hand-counted `card_h` drifts out of sync when rows are added/removed, and
-   (b) a child `ui.allocate_rect` (sliders) rewinds the layout cursor so the next
-   card overlaps. Replace the ad-hoc pattern with a small card helper that owns
-   the bookkeeping, e.g.:
-   ```rust
-   // Reserves space as rows are added and returns the card's outer rect so the
-   // next card auto-positions below it — no manual card_h, no cursor drift.
-   let mut card = CardLayout::begin(ui, t, content_x, margin, section_w, "Test Results");
-   card.row(ui, ROW_H, |ui, rect| { /* toggle */ });
-   card.row(ui, ROW_H, |ui, rect| { /* preview buttons */ });
-   card.end(ui); // paints bg/border at the measured height, advances the cursor
-   ```
-   `row()` hands out the row rect (so existing absolute-coord painting still
-   works) while accumulating height; `end()` paints the frame at the true content
-   height and does a single authoritative `advance_cursor_after_rect`, making the
-   `allocate_rect` rewind harmless. Migrate `draw_settings_theme` /
-   `draw_settings_monitoring` / `draw_settings_test_overlay` and the page cards to
-   it; once in place the KI-18 workaround can be removed. Pairs naturally with the
-   `PageLayout` struct idea under "Related known issues" (KI-12).
 
 ## Related known issues to fold in
 

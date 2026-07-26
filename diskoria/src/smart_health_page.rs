@@ -226,7 +226,7 @@ fn draw_unavailable(
     let content_h = icon_size.max(text_h);
 
     // The page's own `add_space` calls set the rhythm here, so no lead gap.
-    let mut card = CardLayout::new(content_x + margin, section_w)
+    let mut card = CardLayout::builder(content_x + margin, section_w)
         .gap_before(0.0)
         .begin(ui, t);
     let inner = card.row(content_h);
@@ -484,7 +484,7 @@ fn draw_ata_vitals(
 
     // Rows are reserved as they are painted, so the optional Power-On Hours /
     // Power Cycles rows no longer need a matching `row_count` (KI-18).
-    let mut card = CardLayout::new(content_x + margin, section_w)
+    let mut card = CardLayout::builder(content_x + margin, section_w)
         .gap_before(0.0)
         .begin(ui, t);
     let card_x = card.left();
@@ -538,7 +538,7 @@ fn draw_nvme_vitals(
     // Rows: temp, % used, spare, POH, power cycles, data written, unsafe
     // shutdowns, media errors, critical warning — each reserved as it is
     // painted, so there is no row count to keep in sync (KI-18).
-    let mut card = CardLayout::new(content_x + margin, section_w)
+    let mut card = CardLayout::builder(content_x + margin, section_w)
         .gap_before(0.0)
         .begin(ui, t);
     let card_x = card.left();
@@ -733,7 +733,7 @@ fn draw_ufs_vitals(
     ui.add_space(6.0);
 
     // Pre-EOL status, Life Used A, Life Used B.
-    let mut card = CardLayout::new(content_x + margin, section_w)
+    let mut card = CardLayout::builder(content_x + margin, section_w)
         .gap_before(0.0)
         .begin(ui, t);
     let card_x = card.left();

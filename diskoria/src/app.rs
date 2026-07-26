@@ -2051,7 +2051,7 @@ impl DiskoriaApp {
 
         // Every line here is font-measured, so the card is grown as each galley
         // is painted rather than laid out twice to pre-compute a height (KI-18).
-        let mut card = CardLayout::new(content_x + margin, section_w)
+        let mut card = CardLayout::builder(content_x + margin, section_w)
             .gap_before(0.0)
             .begin(ui, t);
         let left_x = card.inner_x();
@@ -3984,21 +3984,28 @@ impl DiskoriaApp {
         let cell = ((grid_inner_w - gap * (cols as f32 - 1.0)) / cols as f32).max(2.0);
         let grid_rows = TOTAL_UI_BLOCKS.div_ceil(cols);
         let grid_h = grid_rows as f32 * (cell + gap) - gap;
+        // Still needed to size the chart tab's plot; the card's own height is
+        // accumulated from the rows below rather than predicted here.
         let content_h = pad + grid_h + SECTOR_LEGEND_GAP + SECTOR_LEGEND_ROW_H + pad;
-        let total_h = TAB_H + SEP_H + content_h;
 
-        // Capture card_top before any allocations so the cursor is still here
-        // when we call allocate_new_ui for the chart tab.  Allocating total_h
-        // upfront first and then calling allocate_new_ui causes egui to try to
-        // advance the cursor *backward* (into already-consumed space) which
-        // corrupts layout state and panics on the next frame.
-        let card_top = ui.cursor().min.y;
-        let full_card_rect = Rect::from_min_size(Pos2::new(left, card_top), Vec2::new(section_w, total_h));
-
-        ui.painter().rect_filled(full_card_rect, 8.0, t.bg_pri);
-        ui.painter().rect_stroke(full_card_rect, 8.0, Stroke::new(1.5, t.border), StrokeKind::Middle);
+        // `CardLayout` never reserves space up front — the frame is painted into
+        // placeholder shapes at the measured height and `end()` is the only
+        // cursor advance. That matters here: allocating `total_h` first and
+        // *then* calling `allocate_new_ui` for the chart tab made egui advance
+        // the cursor backward into already-consumed space, corrupting layout
+        // state and panicking on the next frame. The cursor still sits at the
+        // card top when the plot allocates, exactly as before.
+        //
+        // Padding is zero because the tab strip runs flush to the card edge; the
+        // content area applies `pad` itself below.
+        let mut card = CardLayout::builder(left, section_w)
+            .pad(0.0)
+            .gap_before(0.0)
+            .begin(ui, t);
 
         let tab_w = section_w / 2.0;
+        let tab_row = card.row(TAB_H);
+        let card_top = tab_row.top();
         let left_tab_rect = Rect::from_min_size(Pos2::new(left, card_top), Vec2::new(tab_w, TAB_H));
         let right_tab_rect = Rect::from_min_size(Pos2::new(left + tab_w, card_top), Vec2::new(tab_w, TAB_H));
 
@@ -4073,7 +4080,7 @@ impl DiskoriaApp {
             ui.painter().rect_filled(left_tab_rect, CornerRadius { nw: 8, ne: 0, sw: 0, se: 0 }, t.hover);
         }
 
-        let sep_y = card_top + TAB_H;
+        let sep_y = card.row(SEP_H).top();
         ui.painter().line_segment(
             [Pos2::new(left + 1.5, sep_y), Pos2::new(left + section_w - 1.5, sep_y)],
             Stroke::new(SEP_H, t.border),
@@ -4083,12 +4090,8 @@ impl DiskoriaApp {
         let content_top = sep_y + SEP_H;
 
         if active_tab == 0 {
-            // Advance the cursor past the full card for the sector-map tab.
-            // For the chart tab, allocate_new_ui on chart_rect (which sits below
-            // the current cursor) handles cursor advancement naturally.
-            ui.advance_cursor_after_rect(full_card_rect);
-
-            let grid_top = content_top + pad;
+            card.add_gap(pad);
+            let grid_top = card.row(grid_h).top();
             let grid_left = left + pad;
             let (heat_min, heat_max) = if is_surface {
                 (self.heat_min_ms, self.heat_max_ms)
@@ -4113,8 +4116,9 @@ impl DiskoriaApp {
                 );
             }
 
-            let legend_top = content_top + pad + grid_h + SECTOR_LEGEND_GAP;
-            let legend_cy = legend_top + SECTOR_LEGEND_ROW_H * 0.5;
+            card.add_gap(SECTOR_LEGEND_GAP);
+            let legend_cy = card.row(SECTOR_LEGEND_ROW_H).center().y;
+            card.add_gap(pad);
             let sw = 11.0_f32;
             let gap_label = 6.0_f32;
             let gap_group = 16.0_f32;
@@ -4152,6 +4156,7 @@ impl DiskoriaApp {
                 lx += sw + gap_label + tw + gap_group;
             }
         } else {
+            card.row(content_h);
             let chart_rect = Rect::from_min_max(
                 Pos2::new(left + 1.5, content_top + 1.0),
                 Pos2::new(left + section_w - 1.5, content_top + content_h - 1.0),
@@ -4262,6 +4267,11 @@ impl DiskoriaApp {
                 }
             }
         }
+
+        // Single authoritative advance for both tabs. On the chart tab this runs
+        // after `allocate_new_ui`, so it re-asserts the card's real bottom rather
+        // than leaving the cursor wherever the plot finished.
+        card.end(ui);
     }
 
     /// Sector map + progress/stats/time cards.
@@ -4373,7 +4383,7 @@ impl DiskoriaApp {
 
         // One frame, two titled sections. First card on the page, so no lead gap
         // — `draw_central` already added the 20px top margin.
-        let mut card = CardLayout::new(content_x + margin, section_w)
+        let mut card = CardLayout::builder(content_x + margin, section_w)
             .gap_before(0.0)
             .title("Theme")
             .begin(ui, t);
@@ -5325,7 +5335,7 @@ impl DiskoriaApp {
         let section_w = content_w - margin * 2.0;
         let row_h = 34.0_f32;
 
-        let mut card = CardLayout::new(content_x + margin, section_w)
+        let mut card = CardLayout::builder(content_x + margin, section_w)
             .title("Test Results")
             .begin(ui, t);
         let inner_x = card.inner_x();
@@ -5444,7 +5454,7 @@ impl DiskoriaApp {
         let section_w = content_w - margin * 2.0;
         let row_h = 40.0_f32;
 
-        let mut card = CardLayout::new(content_x + margin, section_w)
+        let mut card = CardLayout::builder(content_x + margin, section_w)
             .title("Window")
             .begin(ui, t);
         let inner_x = card.inner_x();
@@ -5520,7 +5530,7 @@ impl DiskoriaApp {
         let section_w = content_w - margin * 2.0;
         let row_h = 40.0_f32;
 
-        let mut card = CardLayout::new(content_x + margin, section_w)
+        let mut card = CardLayout::builder(content_x + margin, section_w)
             .title("Updates")
             .begin(ui, t);
         let inner_x = card.inner_x();
@@ -5608,7 +5618,7 @@ impl DiskoriaApp {
         let section_w = content_w - margin * 2.0;
         let row_h = 40.0_f32;
 
-        let mut card = CardLayout::new(content_x + margin, section_w)
+        let mut card = CardLayout::builder(content_x + margin, section_w)
             .title("Startup")
             .begin(ui, t);
         let inner_x = card.inner_x();
@@ -5690,7 +5700,7 @@ impl DiskoriaApp {
         // The card sizes itself to the rows actually added, so the early return
         // below (monitoring off) genuinely shrinks it instead of leaving four
         // rows of empty frame. See `card.rs` / known-issues KI-18.
-        let mut card = CardLayout::new(content_x + margin, section_w)
+        let mut card = CardLayout::builder(content_x + margin, section_w)
             .title("Monitoring")
             .begin(ui, t);
         let inner_x = card.inner_x();

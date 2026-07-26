@@ -196,8 +196,9 @@ pub(crate) struct CardLayout {
 }
 
 impl CardLayout {
-    /// Start describing a card at `left` with the given width.
-    pub fn new<'a>(left: f32, width: f32) -> CardBuilder<'a> {
+    /// Start describing a card at `left` with the given width. Configure it,
+    /// then call [`CardBuilder::begin`] to start laying rows out.
+    pub fn builder<'a>(left: f32, width: f32) -> CardBuilder<'a> {
         CardBuilder {
             left,
             width,
