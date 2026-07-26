@@ -126,6 +126,43 @@ builder that owns its `allocate_space` and reports its own bottom rect — see
 
 Condensed; see git history for full detail.
 
+- **KI-27 — Vendor-packed SMART raws shown and judged as scalar counts** `bug`.
+  Several ATA attributes pack more than one field into the 48-bit raw. Found on
+  a real Seagate ST2000DM008-2FR102, which reports Power-On Hours as
+  `0xCEF0_0000_27F7` — 10,231 hours in the low 32 bits, vendor data in the high
+  word. `query_ata` masked that when extracting the vitals, so the **Vitals card
+  read 10,231 while the attribute grid printed 227,530,187,483,127** for the same
+  fact on the same page. The exported HTML report had it too.
+
+  Two changes, both in `smart_reader.rs`:
+  - `display_raw(id, raw)` decodes the packed forms — low 32 bits for the hour
+    and cycle counters (0x09, 0x0C, 0xF0), low byte for the temperature
+    attributes (0xC2, 0xBE) — and `AtaAttribute::display_raw()` exposes it. The
+    grid (`smart_health_page.rs`) and the Export Log now use it, and
+    `query_ata`'s own vitals extraction routes through the *same* function, so
+    the two can't drift apart again. `AtaAttribute::raw` still holds the
+    untouched 48-bit value: the history-DB snapshot archives it, and a
+    diagnostic must not lose the vendor's bytes.
+  - **0x01 Read Error Rate removed from `is_critical`.** Its raw is a packed
+    *rate*, not a count, and is large and non-zero on healthy Seagate/WD drives
+    (that same disk: raw 120,202,145 with a healthy normalised 81 against a
+    threshold of 6). The `is_critical(id) && raw > 0` rule therefore flagged
+    every such drive amber forever. The normalised current/worst-vs-threshold
+    checks still catch a genuinely failing read-error rate — which is how
+    smartctl and CrystalDiskInfo judge this attribute. 0x07 Seek Error Rate was
+    never in the list for the same reason.
+
+  Audited every other `attr.raw` consumer while here; the rest are correct:
+  `monitor.rs` reads 0x05/0xC5/0xC6 (genuine sector counts) and already masks
+  0xE7 to its low byte, its `"raw"` JSON field is an archive and should stay
+  unpacked, and the 0xC7 cable-warning icon tests a plain count.
+  `demo.rs`'s SATA drive now carries the real packed values so the invented
+  machine exercises the same path; it still displays 14,226 and still warns
+  about exactly the two things it is meant to.
+
+  Note this drive also shows **KI-24** live on attributes 0x0A (`cur 100 /
+  thr 97`) and 0xB8 (`cur 100 / thr 99`), both amber while healthy. That is the
+  separate proximity-band issue and is still unfixed.
 - **KI-8 — Stale doc comments after multi-window landed** `cleanup`. The
   `renderers` field and `App::primary()` comments in `lib.rs` (and a couple of
   dangling references to a non-existent `WINDOWS11_EGUI_STYLE_GUIDE.md` and a
