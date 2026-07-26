@@ -165,13 +165,12 @@ impl crate::app::DiskoriaApp {
             return;
         }
 
-        self.ensure_speed_volume_selection_valid();
-
         // One entry per mounted volume; row 1 = volume + model, free-space is the
         // neutral chip (the per-partition equivalent of the whole-drive size chip).
         let busy = self.drives_busy_elsewhere();
         let pairs = Self::speed_volume_pairs(&self.drives);
-        let entries: Vec<DriveEntry> = pairs
+        let mut targets: Vec<Option<(usize, usize)>> = pairs.iter().copied().map(Some).collect();
+        let mut entries: Vec<DriveEntry> = pairs
             .iter()
             .map(|&(di, pi)| {
                 let d = &self.drives[di];
@@ -194,17 +193,43 @@ impl crate::app::DiskoriaApp {
                         ChipSpec::bus(d.bus),
                     ],
                     // A whole physical drive is locked, so every volume on it.
-                    disabled: busy.contains(&d.lock_key()),
+                    disabled: busy
+                        .contains(&d.lock_key())
+                        .then_some(drive_selector::BUSY_ELSEWHERE),
                 }
             })
             .collect();
-        let sel = self
-            .selected_drive
-            .min(self.drives.len().saturating_sub(1));
-        let flat_current = pairs
-            .iter()
-            .position(|&(di, pi)| di == self.selected_drive && pi == self.selected_speed_partition)
-            .unwrap_or(0);
+
+        // KI-15: the drive selection is shared with Drive Health / Sector /
+        // Sector Write, so it can name a disk with no mounted volume. Rather than
+        // repointing it at whichever drive happens to have one — which would
+        // change what those pages show — list the selection here, in drive order
+        // and unselectable, so the page displays what it was actually given and
+        // the user picks a volume deliberately.
+        let target = self.speed_target_pair();
+        if target.is_none() {
+            let sel = self.selected_drive.min(self.drives.len().saturating_sub(1));
+            if let Some(d) = self.drives.get(sel) {
+                let at = pairs
+                    .iter()
+                    .position(|&(di, _)| di > sel)
+                    .unwrap_or(pairs.len());
+                entries.insert(
+                    at,
+                    DriveEntry {
+                        title: format!("Drive {} — {}", d.disk_number, d.model.trim()),
+                        chips: vec![
+                            ChipSpec::neutral(t, "No mounted volume"),
+                            ChipSpec::media(d.media),
+                            ChipSpec::bus(d.bus),
+                        ],
+                        disabled: Some("No mounted volume to benchmark"),
+                    },
+                );
+                targets.insert(at, None);
+            }
+        }
+        let flat_current = targets.iter().position(|&x| x == target).unwrap_or(0);
 
         ui.add_enabled_ui(!self.any_test_running(), |ui| {
             let out = drive_selector::two_row_combo(
@@ -219,8 +244,10 @@ impl crate::app::DiskoriaApp {
                 card_w,
                 y_row,
             );
+            // Picking a volume here *is* an explicit choice, so this is the one
+            // place the Benchmark page may move the shared drive selection.
             if out.selected != flat_current {
-                if let Some(&(di, pi)) = pairs.get(out.selected) {
+                if let Some(Some((di, pi))) = targets.get(out.selected).copied() {
                     self.selected_drive = di;
                     self.selected_speed_partition = pi;
                 }
@@ -232,7 +259,7 @@ impl crate::app::DiskoriaApp {
             ui.advance_cursor_after_rect(row_rect);
         });
 
-        if self.selected_drive_busy_elsewhere() {
+        if self.speed_target_busy_elsewhere() {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 let pad = (content_x + margin) - ui.min_rect().left();
@@ -245,11 +272,8 @@ impl crate::app::DiskoriaApp {
             });
         }
 
-        if let Some(d) = self.drives.get(sel) {
-            let pi = self
-                .selected_speed_partition
-                .min(d.partitions.len().saturating_sub(1));
-            if !d.partitions.is_empty() && d.partitions[pi].is_bitlocker_locked() {
+        match target {
+            Some((di, pi)) if self.drives[di].partitions[pi].is_bitlocker_locked() => {
                 ui.horizontal(|ui| {
                     let pad = (content_x + margin) - ui.min_rect().left();
                     if pad > 0.0 {
@@ -264,20 +288,27 @@ impl crate::app::DiskoriaApp {
                     );
                 });
                 ui.add_space(10.0);
-            } else if d.partitions.is_empty() {
+            }
+            // Reachable now that the page no longer repoints the selection away
+            // from a partition-less drive (KI-15); Start stays disabled until the
+            // user picks a volume above.
+            None if !self.drives.is_empty() => {
                 ui.horizontal(|ui| {
                     let pad = (content_x + margin) - ui.min_rect().left();
                     if pad > 0.0 {
                         ui.add_space(pad);
                     }
                     ui.label(
-                        egui::RichText::new("No mounted volume on this disk for testing.")
-                            .size(13.0)
-                            .color(t.txt_sec),
+                        egui::RichText::new(
+                            "No mounted volume on this disk. Choose a volume above to benchmark.",
+                        )
+                        .size(13.0)
+                        .color(t.txt_sec),
                     );
                 });
                 ui.add_space(10.0);
             }
+            _ => {}
         }
 
         ui.add_space(8.0);
@@ -333,7 +364,7 @@ impl crate::app::DiskoriaApp {
                     self.stop_speed_test();
                 }
             } else {
-                let can_start = self.can_start_speed_test() && !self.selected_drive_busy_elsewhere();
+                let can_start = self.can_start_speed_test() && !self.speed_target_busy_elsewhere();
                 let start_focused = can_start && self.speed_focus == Some(2);
                 let btn_sense = if can_start {
                     Sense::click()

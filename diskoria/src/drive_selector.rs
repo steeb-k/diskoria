@@ -70,12 +70,18 @@ impl ChipSpec {
     }
 }
 
+/// Tooltip for a row grayed out by the cross-window test lock (KI-17).
+pub(crate) const BUSY_ELSEWHERE: &str = "Testing in another window";
+
 /// A selectable drive/volume: title on row 1, chips on row 2.
 pub(crate) struct DriveEntry {
     pub title: String,
     pub chips: Vec<ChipSpec>,
-    /// Locked by a test in another window — shown grayed and unselectable.
-    pub disabled: bool,
+    /// `Some(reason)` when the row is shown grayed and unselectable; `reason` is
+    /// the hover tooltip. Usually [`BUSY_ELSEWHERE`], but the Benchmark page also
+    /// grays the shared drive selection when it has no volume to test (KI-15),
+    /// so the reason travels with the entry rather than being assumed.
+    pub disabled: Option<&'static str>,
 }
 
 /// Result of [`two_row_combo`]: the ComboBox button id (for manual focus
@@ -220,10 +226,19 @@ pub(crate) fn two_row_combo(
             ui.spacing_mut().button_padding = Vec2::ZERO;
             ui.spacing_mut().item_spacing.y = 2.0;
             ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                // The current row is normally the one to focus on open, but it can
+                // itself be disabled (a drive locked mid-selection, or the
+                // Benchmark page's volume-less selection); fall back to the first
+                // row the user can actually reach.
+                let focus_idx = if entries.get(current).is_some_and(|e| e.disabled.is_none()) {
+                    Some(current)
+                } else {
+                    entries.iter().position(|e| e.disabled.is_none())
+                };
                 for (idx, entry) in entries.iter().enumerate() {
-                    if entry.disabled {
-                        // Locked elsewhere: grayed, not focusable (arrow-nav skips
-                        // it), not clickable; a tooltip explains why.
+                    if let Some(reason) = entry.disabled {
+                        // Grayed, not focusable (arrow-nav skips it), not
+                        // clickable; a tooltip explains why.
                         let (rect, r) =
                             ui.allocate_exact_size(Vec2::new(width, ROW_H), Sense::hover());
                         paint_entry(ui.painter(), ui.ctx(), rect, entry, t, 0.0);
@@ -237,12 +252,12 @@ pub(crate) fn two_row_combo(
                                 140,
                             ),
                         );
-                        r.on_hover_text("Testing in another window");
+                        r.on_hover_text(reason);
                         continue;
                     }
                     let r =
                         ui.add_sized([width, ROW_H], egui::SelectableLabel::new(idx == current, ""));
-                    if just_opened && idx == current {
+                    if just_opened && Some(idx) == focus_idx {
                         r.request_focus();
                     }
                     if r.gained_focus() {

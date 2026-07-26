@@ -873,17 +873,47 @@ impl DiskoriaApp {
         self.shared.clear_window_test_lock(self.window_token);
     }
 
+    /// The `lock_key` of the drive at `idx` in this window's drive list.
+    fn drive_lock_key_at(&self, idx: usize) -> Option<String> {
+        self.drives.get(idx).map(|d| d.lock_key())
+    }
+
     /// The `lock_key` of the currently-selected physical drive, if any.
     fn selected_drive_lock_key(&self) -> Option<String> {
-        let sel = self.selected_drive.min(self.drives.len().saturating_sub(1));
-        self.drives.get(sel).map(|d| d.lock_key())
+        self.drive_lock_key_at(self.selected_drive.min(self.drives.len().saturating_sub(1)))
+    }
+
+    /// The `lock_key` of the drive a *running* test is actually working on.
+    ///
+    /// Each `*_test_target` carries the disk number the worker was started
+    /// against, which is the authoritative answer — the Benchmark page's target
+    /// is derived rather than stored in `selected_drive` (KI-15), so the
+    /// selection alone can name a different disk than the one under test.
+    fn running_test_lock_key(&self) -> Option<String> {
+        let disk = if self.speed_test_running {
+            self.speed_test_target.as_ref().map(|&(n, _)| n)
+        } else if self.surface_test_running {
+            self.surface_test_target.as_ref().map(|&(n, _)| n)
+        } else if self.destructive_test_running {
+            self.destructive_test_target.as_ref().map(|&(n, _)| n)
+        } else {
+            None
+        }?;
+        self.drives
+            .iter()
+            .find(|d| d.disk_number == disk)
+            .map(|d| d.lock_key())
     }
 
     /// Publish this window's drive-under-test to the shared registry (or clear
     /// it when idle). Called once per frame from `draw`.
     fn publish_test_lock(&self) {
         let key = if self.any_test_running() {
-            self.selected_drive_lock_key()
+            // Fall back to the selection if a target hasn't been recorded yet:
+            // publishing the wrong key is far better than publishing none, which
+            // would let another window start on the same disk.
+            self.running_test_lock_key()
+                .or_else(|| self.selected_drive_lock_key())
         } else {
             None
         };
@@ -895,10 +925,25 @@ impl DiskoriaApp {
         self.shared.busy_keys_excluding(self.window_token)
     }
 
+    fn drive_busy_elsewhere_at(&self, idx: usize) -> bool {
+        match self.drive_lock_key_at(idx) {
+            Some(k) => self.shared.drive_busy_elsewhere(self.window_token, &k),
+            None => false,
+        }
+    }
+
     /// Whether this window's currently-selected drive is under test elsewhere.
     pub(crate) fn selected_drive_busy_elsewhere(&self) -> bool {
-        match self.selected_drive_lock_key() {
-            Some(k) => self.shared.drive_busy_elsewhere(self.window_token, &k),
+        self.drive_busy_elsewhere_at(self.selected_drive.min(self.drives.len().saturating_sub(1)))
+    }
+
+    /// Whether the drive the Benchmark page would test is under test elsewhere.
+    /// Same as [`Self::selected_drive_busy_elsewhere`] except when the selection
+    /// has no mounted volume, in which case there is nothing to run and nothing
+    /// to warn about.
+    pub(crate) fn speed_target_busy_elsewhere(&self) -> bool {
+        match self.speed_target_pair() {
+            Some((di, _)) => self.drive_busy_elsewhere_at(di),
             None => false,
         }
     }
@@ -1319,20 +1364,6 @@ impl DiskoriaApp {
         crate::about::draw_about(self, ui, t, margin, content_x, content_w);
     }
 
-    fn sync_speed_partition_after_drives_refresh(&mut self) {
-        if self.drives.is_empty() {
-            return;
-        }
-        let sel = self.selected_drive.min(self.drives.len().saturating_sub(1));
-        let parts = &self.drives[sel].partitions;
-        if parts.is_empty() {
-            self.selected_speed_partition = 0;
-        } else if self.selected_speed_partition >= parts.len() {
-            self.selected_speed_partition = parts.len() - 1;
-        }
-        self.ensure_speed_volume_selection_valid();
-    }
-
     fn speed_volume_pairs(drives: &[DetectedDrive]) -> Vec<(usize, usize)> {
         let mut v = Vec::new();
         for (di, d) in drives.iter().enumerate() {
@@ -1343,30 +1374,24 @@ impl DiskoriaApp {
         v
     }
 
-    /// Keep `(selected_drive, selected_speed_partition)` pointing at a real mounted volume for speed test.
-    fn ensure_speed_volume_selection_valid(&mut self) {
-        let pairs = Self::speed_volume_pairs(&self.drives);
-        if pairs.is_empty() {
-            return;
-        }
-        let di = self.selected_drive.min(self.drives.len().saturating_sub(1));
-        let pi = self.selected_speed_partition;
-        if pairs.iter().any(|&(a, b)| a == di && b == pi) {
-            return;
-        }
-        let preferred_disk = self.drives.get(di).map(|d| d.disk_number);
-        if let Some(n) = preferred_disk {
-            if let Some(&(ndi, npi)) = pairs.iter().find(|&&(didx, _)| {
-                self.drives.get(didx).map(|d| d.disk_number) == Some(n)
-            }) {
-                self.selected_drive = ndi;
-                self.selected_speed_partition = npi;
-                return;
-            }
-        }
-        let (ndi, npi) = pairs[0];
-        self.selected_drive = ndi;
-        self.selected_speed_partition = npi;
+    /// The `(drive, partition)` pair the Benchmark page will test, or `None` when
+    /// the shared drive selection names a disk with no mounted volume.
+    ///
+    /// KI-15: `selected_drive` is shared with Drive Health / Sector / Sector
+    /// Write, so the Benchmark page **derives** its target rather than repointing
+    /// the shared selection at the first drive that happens to have a volume. The
+    /// partition — a Benchmark-only field — is clamped to what the drive has; the
+    /// drive itself is never changed behind the user's back. When the selection
+    /// has no volume the page says so and Start stays disabled (which is what
+    /// `can_start_speed_test` always intended — the old repointing just made that
+    /// branch unreachable).
+    pub(crate) fn speed_target_pair(&self) -> Option<(usize, usize)> {
+        speed_target(
+            self.drives.len(),
+            |i| self.drives[i].partitions.len(),
+            self.selected_drive,
+            self.selected_speed_partition,
+        )
     }
 
     fn pick_best_speed_partition_for_selected_drive(&mut self) {
@@ -1413,13 +1438,11 @@ impl DiskoriaApp {
         if self.drives.is_empty() || self.drives_loading {
             return false;
         }
-        let sel = self.selected_drive.min(self.drives.len().saturating_sub(1));
-        let parts = &self.drives[sel].partitions;
-        if parts.is_empty() {
+        // `None` = the shared selection names a disk with no mounted volume.
+        let Some((di, pi)) = self.speed_target_pair() else {
             return false;
-        }
-        let pi = self.selected_speed_partition.min(parts.len().saturating_sub(1));
-        !parts[pi].is_bitlocker_locked()
+        };
+        !self.drives[di].partitions[pi].is_bitlocker_locked()
     }
 
     fn start_speed_test(&mut self, ctx: &egui::Context) {
@@ -1433,11 +1456,11 @@ impl DiskoriaApp {
             if !self.can_start_speed_test() {
                 return;
             }
-            let sel = self.selected_drive.min(self.drives.len().saturating_sub(1));
+            // `can_start_speed_test` already rejected a target-less selection.
+            let Some((sel, pi)) = self.speed_target_pair() else {
+                return;
+            };
             let d = &self.drives[sel];
-            let pi = self
-                .selected_speed_partition
-                .min(d.partitions.len().saturating_sub(1));
             let disk_number = d.disk_number;
             let letter = d.partitions[pi].drive_letter.clone();
             let path = Self::speed_test_temp_path(&letter);
@@ -2460,7 +2483,9 @@ impl DiskoriaApp {
         self.drives = self.shared.drives_read(|d| d.list.clone());
         self.drives_generation = shared_gen;
         self.selected_drive = self.selected_drive.min(self.drives.len().saturating_sub(1));
-        self.sync_speed_partition_after_drives_refresh();
+        // No speed-partition fixup here: `speed_target_pair` clamps on read, so a
+        // refresh that shrinks or unmounts a volume can't silently rewrite the
+        // Benchmark selection (KI-15).
         if had_no_drives {
             self.pick_best_speed_partition_for_selected_drive();
         }
@@ -6039,5 +6064,64 @@ impl DiskoriaApp {
         // cursor; `end()` is the last advance, so it wins and the next card
         // lands below this one regardless (KI-18).
         card.end(ui);
+    }
+}
+
+/// Pure core of [`DiskoriaApp::speed_target_pair`] — kept free of `DiskoriaApp`
+/// so the KI-15 rule ("clamp the partition, never move the drive") is unit
+/// testable. `volumes_on(i)` is the mounted-volume count of drive `i`.
+fn speed_target(
+    drive_count: usize,
+    volumes_on: impl Fn(usize) -> usize,
+    selected_drive: usize,
+    partition: usize,
+) -> Option<(usize, usize)> {
+    let di = selected_drive.min(drive_count.checked_sub(1)?);
+    let volumes = volumes_on(di);
+    (volumes > 0).then(|| (di, partition.min(volumes - 1)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::speed_target;
+
+    /// `speed_target(&[2, 0, 1], sel, part)` — three drives with 2, 0 and 1
+    /// mounted volumes respectively.
+    fn target(counts: &[usize], selected_drive: usize, partition: usize) -> Option<(usize, usize)> {
+        speed_target(counts.len(), |i| counts[i], selected_drive, partition)
+    }
+
+    #[test]
+    fn keeps_the_selected_drive_when_it_has_a_volume() {
+        assert_eq!(target(&[2, 0, 1], 0, 1), Some((0, 1)));
+        assert_eq!(target(&[2, 0, 1], 2, 0), Some((2, 0)));
+    }
+
+    /// The KI-15 regression: a partition-less selection must *not* be silently
+    /// repointed at another drive that happens to have a volume.
+    #[test]
+    fn partitionless_selection_yields_no_target_instead_of_jumping() {
+        assert_eq!(target(&[2, 0, 1], 1, 0), None);
+    }
+
+    #[test]
+    fn partition_is_clamped_to_the_selected_drive() {
+        // Stale partition index from a drive that had more volumes.
+        assert_eq!(target(&[2, 0, 1], 0, 7), Some((0, 1)));
+        assert_eq!(target(&[2, 0, 1], 2, 7), Some((2, 0)));
+    }
+
+    #[test]
+    fn drive_index_past_the_end_is_clamped_not_wrapped() {
+        assert_eq!(target(&[2, 0, 1], 9, 0), Some((2, 0)));
+        // …and clamping onto a partition-less last drive still yields no target.
+        assert_eq!(target(&[1, 0], 9, 0), None);
+    }
+
+    #[test]
+    fn no_drives_and_no_volumes_anywhere_yield_no_target() {
+        assert_eq!(target(&[], 0, 0), None);
+        assert_eq!(target(&[0, 0], 0, 0), None);
+        assert_eq!(target(&[0, 0], 1, 3), None);
     }
 }

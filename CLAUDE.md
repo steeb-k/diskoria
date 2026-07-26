@@ -179,8 +179,12 @@ headless GUI test — window/tray/disk paths are verified manually (see
 
 - The app manifest requests `requireAdministrator`; real disk ops need elevation,
   and `cargo test` needs `DISKORIA_SKIP_RESOURCE=1` in an unelevated shell.
-- `selected_drive` can be silently repointed by the Benchmark page when a
-  partition-less drive is selected (known-issues KI-15).
+- `selected_drive` is written **only** by an explicit dropdown pick. The
+  Benchmark page needs a `(drive, partition)` pair, so it *derives* one via
+  `speed_target_pair()` — clamping the partition, never moving the drive — and
+  shows a grayed "no mounted volume" row with Start disabled when the shared
+  selection has nothing to benchmark (known-issues KI-15). Don't reintroduce a
+  "fix up the selection so this page works" pass.
 - Drive list is enumerated at startup, on Refresh, and on `WM_DEVICECHANGE`
   (debounced); a 12 s watchdog recovers a hung WMI scan.
 - Closing the **last** window only hides it to the tray when `close_to_tray` is
