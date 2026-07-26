@@ -12,6 +12,7 @@
 mod about;
 mod app;
 mod app_settings;
+mod card;
 #[cfg(windows)]
 mod autostart;
 mod chrome;

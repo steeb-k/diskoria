@@ -68,6 +68,11 @@ assets/                appicon2.ico, trayicon.ico, applogo.png (embedded at comp
   color, including white (known-issues KI-19). **Keyboard focus rings are always
   `Stroke::new(2.0, t.accent)`** at `rect.expand(2..3)` — white rings vanish on
   the light theme's white cards (KI-21).
+- **`card.rs`** — `CardLayout`, the builder every stacked card goes through.
+  Rows are handed out by `row()` while it accumulates the real height; the frame
+  is painted last into placeholder shapes reserved at `begin()`; `end()` does the
+  **single** cursor advance. Never pre-compute a card height, never add your own
+  `advance_cursor_after_rect` — that combination is what KI-18 was.
 - **`focus.rs`, `shortcuts.rs`** — manual Tab order + Alt mnemonics (egui's
   auto-focus is not used).
 - **`drive_selector.rs`** — the shared two-row drive/volume dropdown + icon
@@ -155,6 +160,9 @@ headless GUI test — window/tray/disk paths are verified manually (see
 - **Drive selection is shared** across Drive Health / Sector / Benchmark via the
   single `selected_drive` field (new windows start at 0). Don't reintroduce
   per-page selection fields.
+- **New card** → `CardLayout::builder(left, section_w).title(…).begin(ui, t)`,
+  `card.row(h)` per row, `card.end(ui)`. See `card.rs` and the pattern in
+  `refactor-roadmap.md`.
 - **Paths** go through `paths.rs`, never inline `%PROGRAMDATA%`.
 - **Layout constants** come from `theme.rs`.
 - **Background work** posts results over an `mpsc` channel and is drained in a

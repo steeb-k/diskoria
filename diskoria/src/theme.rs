@@ -17,6 +17,20 @@ pub const SIDE_PANEL_W: f32 = 240.0;
 pub const CONTENT_MARGIN: f32 = 24.0;
 pub const MAX_CONTENT_W: f32 = 800.0;
 
+// ── Card geometry ─────────────────────────────────────────────────────────────
+// The rounded panels every page stacks vertically. Shared by `card::CardLayout`,
+// which is the only thing that should be reading them — see known-issues KI-18.
+
+/// Inner padding between a card's frame and its content, on all four sides.
+pub const CARD_PAD: f32 = 16.0;
+/// On-screen vertical gap between two stacked cards.
+pub const CARD_GAP: f32 = 12.0;
+pub const CARD_RADIUS: f32 = 8.0;
+pub const CARD_BORDER_W: f32 = 1.5;
+/// Height of a card's bold title row, and the gap between it and the first row.
+pub const CARD_TITLE_H: f32 = 22.0;
+pub const CARD_TITLE_GAP: f32 = 12.0;
+
 const BG_PRI_L: Color32 = Color32::from_rgb(243, 243, 243);
 const BG_SEC_L: Color32 = Color32::from_rgb(255, 255, 255);
 const SB_BG_L: Color32 = Color32::from_rgb(249, 249, 249);

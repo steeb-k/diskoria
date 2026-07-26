@@ -103,28 +103,50 @@ windows re-gray live. Drive Health never disables items (read-only); test pages
 gray drives locked elsewhere and also gate Start via `selected_drive_busy_elsewhere`.
 Identity is `DetectedDrive::lock_key()` (serial, else `disk{n}`).
 
-### KI-18 — Manual card layout: `allocate_rect` rewinds the cursor, next card overlaps `fragile`
-Every settings/page "card" hand-computes a `card_h`, calls
-`ui.allocate_space(card_h + N)` to reserve vertical space, then paints its rows at
-absolute coordinates. The footgun: any widget inside the card that uses
-`ui.allocate_rect(...)` (e.g. the temperature/wear **sliders** in
-`draw_settings_monitoring`, via `Sense::click_and_drag`) calls
-`advance_cursor_after_rect`, which moves the layout cursor **backward** to that
-rect's bottom — *discarding* the `allocate_space` reservation. The next card then
-reads a stale, too-high cursor and overlaps the previous one (seen when the Test
-Results card landed on top of the Monitoring card's "Test notifications" buttons).
-Worked around in `draw_settings_monitoring` by calling
-`ui.advance_cursor_after_rect(section_rect)` at the end to re-assert the reserved
-bottom. This whole class of bug ("adding a new card overlaps an old one") has
-recurred across pages during development; the real fix is a standardized card
-builder that owns its `allocate_space` and reports its own bottom rect — see
-`docs/refactor-roadmap.md` ("Standardized card layout").
-
 ---
 
 ## Resolved
 
 Condensed; see git history for full detail.
+
+- **KI-18 — Manual card layout: `allocate_rect` rewinds the cursor, next card
+  overlaps** `fragile`. Every card hand-computed a `card_h`, reserved it with
+  `ui.allocate_space(card_h + N)`, then painted rows at absolute coordinates.
+  Two failure modes: **(a)** the hand-counted height drifted from the real
+  content (`draw_settings_monitoring` reserved six rows but early-returned after
+  two when monitoring was off, leaving ~136 px of empty frame); **(b)** any
+  widget inside the card that allocated — the temperature/wear **sliders** via
+  `ui.allocate_rect`, and the accent hex **`TextEdit`** via `ui.put` — moved the
+  layout cursor *backward*, discarding the reservation so the next card painted
+  on top. Confirmed against egui 0.31.1: `advance_cursor_after_rect` and
+  `allocate_space` both call `Placer::advance_after_rects`, which sets the cursor
+  unconditionally from the rect, while `expand_to_include_rect` only ever *grows*
+  `min_rect` — hence a cursor bug that never showed up as a scroll-height bug.
+  Fixed by **`card::CardLayout`**: rows come from `row()`, which accumulates the
+  true height; the frame is painted last into two `ShapeIdx` placeholders
+  reserved at `begin()` (so it still renders *under* the content while being
+  sized *after* it); and `end()` performs the single authoritative cursor
+  advance, which — being last — overrides any rewind from inside the card. The
+  sliders and hex field still rewind; it is simply harmless now. Geometry
+  constants live in `theme.rs` (`CARD_PAD`/`CARD_GAP`/`CARD_RADIUS`/…).
+  Migrated: the seven Settings cards, the four Drive Health cards (deleting the
+  `smart_health_page::card_rect` precursor), `draw_smart_health_card` (which had
+  been laying every galley out twice — once to measure, once to paint), and
+  `draw_tabbed_map_card`. Both `advance_cursor_after_rect` workarounds are gone.
+  Two deliberate deviations from the plan in `refactor-roadmap.md`: `row()` takes
+  neither `ui` nor a closure (card bodies mutate `DiskoriaApp` throughout, and a
+  closure capturing `&mut self` while the card is alive fights the borrow checker
+  at every call site — `CardLayout` borrows nothing, so `card.row(h)` and
+  `self.whatever()` coexist), and the card never allocates up front, which is
+  what makes it safe in `draw_tabbed_map_card` — the old note there was right
+  that reserving `total_h` *before* `allocate_new_ui` corrupts layout state and
+  panics on the next frame. Settings card gaps normalized to one `CARD_GAP`
+  (Monitoring had 27 px below it against 15 px elsewhere) and the Monitoring card
+  now shrinks to its two real rows when monitoring is off. ✓ verified by capture:
+  all six Settings cards, both themes, all three sliders dragged with no reflow,
+  Drive Health across NVMe/ATA/UFS row counts, and seven map/chart tab switches
+  with no panic. **Note the Settings wiki captures need retaking** — the
+  normalized gaps shift that page.
 
 - **KI-8 — Stale doc comments after multi-window landed** `cleanup`. The
   `renderers` field and `App::primary()` comments in `lib.rs` (and a couple of

@@ -16,6 +16,7 @@ use crate::app_settings::{
     accent_from_palette, color_to_hex_6, parse_hex_color_6,
     AccentSourcePref, ThemePref, ACCENT_PALETTE, ACCENT_PALETTE_LABELS,
 };
+use crate::card::CardLayout;
 use crate::chrome::{
     apply_win11_rounded_corners, draw_titlebar, load_logo_textures, setup_fonts,
     INTERACT_MANUAL_FOCUS,
@@ -2033,29 +2034,6 @@ impl DiskoriaApp {
             }
         };
 
-        let mut body_h = 0.0_f32;
-        if let Some(rs) = reason_lines {
-            if !rs.is_empty() {
-                body_h += 8.0;
-                for s in rs {
-                    let line = format!("• {}", s);
-                    let galley = ui.ctx().fonts(|f| {
-                        f.layout(line, FontId::proportional(13.0), t.txt_sec, inner_w)
-                    });
-                    body_h += galley.rect.height() + 2.0;
-                }
-            }
-        }
-
-        let err_h = self.smart_health_err.as_ref().map_or(0.0, |e| {
-            6.0
-                + ui.ctx().fonts(|f| {
-                    f.layout(e.clone(), FontId::proportional(12.0), t.txt_sec, inner_w)
-                        .rect
-                        .height()
-                })
-        });
-
         const SMART_LABEL_DRIVE_LETTERS: &str = "Drive Letters: ";
         const SMART_LABEL_PARTITION_STYLE: &str = "Partition Style: ";
 
@@ -2069,50 +2047,14 @@ impl DiskoriaApp {
                 d.partition_style.as_str().to_string(),
             ))
         };
-        let (drive_lines_h, gap_drive_to_status) =
-            if let Some((ref letters, ref style)) = smart_drive_lines {
-                let j1 = smart_health_kv_line_job(
-                    SMART_LABEL_DRIVE_LETTERS,
-                    letters,
-                    inner_w,
-                    t.txt_pri,
-                );
-                let j2 = smart_health_kv_line_job(
-                    SMART_LABEL_PARTITION_STYLE,
-                    style,
-                    inner_w,
-                    t.txt_pri,
-                );
-                let h1 = ui
-                    .ctx()
-                    .fonts(|f| f.layout_job(j1.clone()))
-                    .rect
-                    .height();
-                let h2 = ui.ctx().fonts(|f| f.layout_job(j2.clone())).rect.height();
-                // The status row below is centered in a 22px header row, which adds
-                // ~2px of padding above its text; use a smaller gap here so the
-                // Partition-Style → status spacing matches the 6px line spacing above.
-                (h1 + 6.0 + h2, 4.0_f32)
-            } else {
-                (0.0_f32, 0.0_f32)
-            };
-
         let header_row_h = 22.0_f32;
-        let card_h =
-            pad + drive_lines_h + gap_drive_to_status + header_row_h + body_h + err_h + pad;
 
-        let (_, alloc) = ui.allocate_space(Vec2::new(ui.available_width(), card_h));
-        let card = Rect::from_min_size(
-            Pos2::new(content_x + margin, alloc.top()),
-            Vec2::new(section_w, card_h),
-        );
-
-        ui.painter().rect_filled(card, 8.0, t.bg_pri);
-        ui.painter()
-            .rect_stroke(card, 8.0, Stroke::new(1.5, t.border), StrokeKind::Middle);
-
-        let left_x = card.left() + pad;
-        let mut y = card.top() + pad;
+        // Every line here is font-measured, so the card is grown as each galley
+        // is painted rather than laid out twice to pre-compute a height (KI-18).
+        let mut card = CardLayout::builder(content_x + margin, section_w)
+            .gap_before(0.0)
+            .begin(ui, t);
+        let left_x = card.inner_x();
 
         if let Some((letters, style)) = smart_drive_lines {
             let j1 = smart_health_kv_line_job(
@@ -2124,11 +2066,11 @@ impl DiskoriaApp {
             let g1 = ui.ctx().fonts(|f| f.layout_job(j1));
             let h1 = g1.rect.height();
             ui.painter().add(egui::Shape::galley(
-                Pos2::new(left_x, y),
+                Pos2::new(left_x, card.row(h1).top()),
                 g1,
                 t.txt_pri,
             ));
-            y += h1 + 6.0;
+            card.add_gap(6.0);
             let j2 = smart_health_kv_line_job(
                 SMART_LABEL_PARTITION_STYLE,
                 &style,
@@ -2138,15 +2080,18 @@ impl DiskoriaApp {
             let g2 = ui.ctx().fonts(|f| f.layout_job(j2));
             let h2 = g2.rect.height();
             ui.painter().add(egui::Shape::galley(
-                Pos2::new(left_x, y),
+                Pos2::new(left_x, card.row(h2).top()),
                 g2,
                 t.txt_pri,
             ));
-            y += h2 + gap_drive_to_status;
+            // The status row below is centered in a 22px header row, which adds
+            // ~2px of padding above its text; use a smaller gap here so the
+            // Partition-Style → status spacing matches the 6px line spacing above.
+            card.add_gap(4.0);
         }
 
         let label_font = FontId::new(14.0, FontFamily::Name("InterBold".into()));
-        let row_cy = y + header_row_h * 0.5;
+        let row_cy = card.row(header_row_h).center().y;
         ui.painter().text(
             Pos2::new(left_x, row_cy),
             Align2::LEFT_CENTER,
@@ -2169,10 +2114,9 @@ impl DiskoriaApp {
             status_col,
         );
 
-        y += header_row_h;
         if let Some(rs) = reason_lines {
             if !rs.is_empty() {
-                y += 8.0;
+                card.add_gap(8.0);
             }
             for s in rs {
                 let line = format!("• {}", s);
@@ -2181,11 +2125,11 @@ impl DiskoriaApp {
                 });
                 let gh = galley.rect.height();
                 ui.painter().add(egui::Shape::galley(
-                    Pos2::new(left_x, y),
+                    Pos2::new(left_x, card.row(gh).top()),
                     galley,
                     t.txt_sec,
                 ));
-                y += gh + 2.0;
+                card.add_gap(2.0);
             }
         }
 
@@ -2193,14 +2137,16 @@ impl DiskoriaApp {
             let galley = ui.ctx().fonts(|f| {
                 f.layout(e.clone(), FontId::proportional(12.0), t.txt_sec, inner_w)
             });
+            let gh = galley.rect.height();
+            card.add_gap(4.0);
             ui.painter().add(egui::Shape::galley(
-                Pos2::new(left_x, y + 4.0),
+                Pos2::new(left_x, card.row(gh).top()),
                 galley,
                 t.txt_sec,
             ));
         }
 
-        ui.advance_cursor_after_rect(alloc);
+        card.end(ui);
     }
 
     /// Tab order + slot clamping (runs before UI so the same frame’s paint matches focus).
@@ -4038,21 +3984,28 @@ impl DiskoriaApp {
         let cell = ((grid_inner_w - gap * (cols as f32 - 1.0)) / cols as f32).max(2.0);
         let grid_rows = TOTAL_UI_BLOCKS.div_ceil(cols);
         let grid_h = grid_rows as f32 * (cell + gap) - gap;
+        // Still needed to size the chart tab's plot; the card's own height is
+        // accumulated from the rows below rather than predicted here.
         let content_h = pad + grid_h + SECTOR_LEGEND_GAP + SECTOR_LEGEND_ROW_H + pad;
-        let total_h = TAB_H + SEP_H + content_h;
 
-        // Capture card_top before any allocations so the cursor is still here
-        // when we call allocate_new_ui for the chart tab.  Allocating total_h
-        // upfront first and then calling allocate_new_ui causes egui to try to
-        // advance the cursor *backward* (into already-consumed space) which
-        // corrupts layout state and panics on the next frame.
-        let card_top = ui.cursor().min.y;
-        let full_card_rect = Rect::from_min_size(Pos2::new(left, card_top), Vec2::new(section_w, total_h));
-
-        ui.painter().rect_filled(full_card_rect, 8.0, t.bg_pri);
-        ui.painter().rect_stroke(full_card_rect, 8.0, Stroke::new(1.5, t.border), StrokeKind::Middle);
+        // `CardLayout` never reserves space up front — the frame is painted into
+        // placeholder shapes at the measured height and `end()` is the only
+        // cursor advance. That matters here: allocating `total_h` first and
+        // *then* calling `allocate_new_ui` for the chart tab made egui advance
+        // the cursor backward into already-consumed space, corrupting layout
+        // state and panicking on the next frame. The cursor still sits at the
+        // card top when the plot allocates, exactly as before.
+        //
+        // Padding is zero because the tab strip runs flush to the card edge; the
+        // content area applies `pad` itself below.
+        let mut card = CardLayout::builder(left, section_w)
+            .pad(0.0)
+            .gap_before(0.0)
+            .begin(ui, t);
 
         let tab_w = section_w / 2.0;
+        let tab_row = card.row(TAB_H);
+        let card_top = tab_row.top();
         let left_tab_rect = Rect::from_min_size(Pos2::new(left, card_top), Vec2::new(tab_w, TAB_H));
         let right_tab_rect = Rect::from_min_size(Pos2::new(left + tab_w, card_top), Vec2::new(tab_w, TAB_H));
 
@@ -4127,7 +4080,7 @@ impl DiskoriaApp {
             ui.painter().rect_filled(left_tab_rect, CornerRadius { nw: 8, ne: 0, sw: 0, se: 0 }, t.hover);
         }
 
-        let sep_y = card_top + TAB_H;
+        let sep_y = card.row(SEP_H).top();
         ui.painter().line_segment(
             [Pos2::new(left + 1.5, sep_y), Pos2::new(left + section_w - 1.5, sep_y)],
             Stroke::new(SEP_H, t.border),
@@ -4137,12 +4090,8 @@ impl DiskoriaApp {
         let content_top = sep_y + SEP_H;
 
         if active_tab == 0 {
-            // Advance the cursor past the full card for the sector-map tab.
-            // For the chart tab, allocate_new_ui on chart_rect (which sits below
-            // the current cursor) handles cursor advancement naturally.
-            ui.advance_cursor_after_rect(full_card_rect);
-
-            let grid_top = content_top + pad;
+            card.add_gap(pad);
+            let grid_top = card.row(grid_h).top();
             let grid_left = left + pad;
             let (heat_min, heat_max) = if is_surface {
                 (self.heat_min_ms, self.heat_max_ms)
@@ -4167,8 +4116,9 @@ impl DiskoriaApp {
                 );
             }
 
-            let legend_top = content_top + pad + grid_h + SECTOR_LEGEND_GAP;
-            let legend_cy = legend_top + SECTOR_LEGEND_ROW_H * 0.5;
+            card.add_gap(SECTOR_LEGEND_GAP);
+            let legend_cy = card.row(SECTOR_LEGEND_ROW_H).center().y;
+            card.add_gap(pad);
             let sw = 11.0_f32;
             let gap_label = 6.0_f32;
             let gap_group = 16.0_f32;
@@ -4206,6 +4156,7 @@ impl DiskoriaApp {
                 lx += sw + gap_label + tw + gap_group;
             }
         } else {
+            card.row(content_h);
             let chart_rect = Rect::from_min_max(
                 Pos2::new(left + 1.5, content_top + 1.0),
                 Pos2::new(left + section_w - 1.5, content_top + content_h - 1.0),
@@ -4316,6 +4267,11 @@ impl DiskoriaApp {
                 }
             }
         }
+
+        // Single authoritative advance for both tabs. On the chart tab this runs
+        // after `allocate_new_ui`, so it re-asserts the card's real bottom rather
+        // than leaving the cursor wherever the plot finished.
+        card.end(ui);
     }
 
     /// Sector map + progress/stats/time cards.
@@ -4417,41 +4373,23 @@ impl DiskoriaApp {
 
         let page_keys = !self.blocks_content_interaction();
         let section_w = content_w - margin * 2.0;
-        let pad = 16.0_f32;
+        let pad = crate::theme::CARD_PAD;
         let seg_h = 34.0_f32;
-        let theme_h = pad + 22.0 + 12.0 + seg_h + pad;
 
         let swatch_gap = 8.0_f32;
         let row_available_w = section_w - pad * 2.0;
         let swatch_size = ((row_available_w - swatch_gap * 7.0) / 8.0).clamp(16.0, 26.0);
         let accent_grid_h = swatch_size;
-        let accent_h = pad + 22.0 + 12.0 + seg_h + pad + accent_grid_h + pad + 10.0 + 34.0 + pad;
 
-        let section_h = theme_h + 12.0 + accent_h;
+        // One frame, two titled sections. First card on the page, so no lead gap
+        // — `draw_central` already added the 20px top margin.
+        let mut card = CardLayout::builder(content_x + margin, section_w)
+            .gap_before(0.0)
+            .title("Theme")
+            .begin(ui, t);
+        let inner_x = card.inner_x();
 
-        let (_, section_rect) = ui.allocate_space(Vec2::new(ui.available_width(), section_h));
-        let card = Rect::from_min_size(
-            Pos2::new(content_x + margin, section_rect.top()),
-            Vec2::new(section_w, section_h),
-        );
-
-        ui.painter().rect_filled(card, 8.0, t.bg_pri);
-        ui.painter()
-            .rect_stroke(card, 8.0, Stroke::new(1.5, t.border), StrokeKind::Middle);
-
-        ui.painter().text(
-            Pos2::new(card.left() + pad, card.top() + pad + 11.0),
-            Align2::LEFT_CENTER,
-            "Theme",
-            FontId::new(14.0, FontFamily::Name("InterBold".into())),
-            t.txt_pri,
-        );
-
-        let seg_top = card.top() + pad + 22.0 + 12.0;
-        let seg_rect = Rect::from_min_size(
-            Pos2::new(card.left() + pad, seg_top),
-            Vec2::new(section_w - pad * 2.0, seg_h),
-        );
+        let seg_rect = card.row(seg_h);
         ui.painter().rect_filled(seg_rect, 6.0, t.bg_sec);
         ui.painter().rect_stroke(
             seg_rect,
@@ -4512,25 +4450,13 @@ impl DiskoriaApp {
             }
         }
 
-        let accent_card_top = card.top() + theme_h + 12.0;
-        let accent_card = Rect::from_min_size(
-            Pos2::new(card.left(), accent_card_top),
-            Vec2::new(section_w, accent_h),
-        );
+        // Bottom padding of the Theme section, the inter-section gap, then the
+        // Accent section's own top padding — the two used to be laid out as
+        // separate cards inside one frame.
+        card.add_gap(pad + crate::theme::CARD_GAP + pad);
+        card.section_title(ui, t, "Accent");
 
-        ui.painter().text(
-            Pos2::new(accent_card.left() + pad, accent_card.top() + pad + 11.0),
-            Align2::LEFT_CENTER,
-            "Accent",
-            FontId::new(14.0, FontFamily::Name("InterBold".into())),
-            t.txt_pri,
-        );
-
-        let accent_seg_top = accent_card.top() + pad + 22.0 + 12.0;
-        let accent_seg_rect = Rect::from_min_size(
-            Pos2::new(accent_card.left() + pad, accent_seg_top),
-            Vec2::new(section_w - pad * 2.0, seg_h),
-        );
+        let accent_seg_rect = card.row(seg_h);
         ui.painter().rect_filled(accent_seg_rect, 6.0, t.bg_sec);
         ui.painter().rect_stroke(
             accent_seg_rect,
@@ -4644,8 +4570,9 @@ impl DiskoriaApp {
             }
         }
 
-        let accent_grid_top = accent_seg_rect.bottom() + pad;
-        let start_x = accent_card.left() + pad;
+        card.add_gap(pad);
+        let accent_grid_top = card.row(accent_grid_h).top();
+        let start_x = inner_x;
         let start_y = accent_grid_top;
         let palette_snap = self.shared.settings_snapshot();
         if palette_snap.accent_source == AccentSourcePref::Palette {
@@ -4724,7 +4651,7 @@ impl DiskoriaApp {
             }
         } else {
             ui.painter().text(
-                Pos2::new(accent_card.left() + pad, accent_grid_top + 10.0),
+                Pos2::new(inner_x, accent_grid_top + 10.0),
                 Align2::LEFT_CENTER,
                 "Switch to Palette to choose colors.",
                 FontId::proportional(13.0),
@@ -4732,21 +4659,20 @@ impl DiskoriaApp {
             );
         }
 
-        let custom_label_y = accent_grid_top + accent_grid_h + pad;
+        card.add_gap(pad);
+        // The label is drawn centered on the row's top edge, so it overhangs
+        // upward into the padding above — the row only reserves the 10px down
+        // to the input field, which is what the old hand-counted height did too.
+        let custom_label_y = card.row(10.0).top();
         ui.painter().text(
-            Pos2::new(accent_card.left() + pad, custom_label_y),
+            Pos2::new(inner_x, custom_label_y),
             Align2::LEFT_CENTER,
             "Custom hex (#RRGGBB)",
             FontId::proportional(13.0),
             t.txt_pri,
         );
 
-        let input_rect_y = custom_label_y + 10.0;
-        let input_h = 34.0_f32;
-        let input_rect = Rect::from_min_size(
-            Pos2::new(accent_card.left() + pad, input_rect_y),
-            Vec2::new(section_w - pad * 2.0, input_h),
-        );
+        let input_rect = card.row(34.0);
         ui.painter().rect_filled(input_rect, 0.0, t.bg_sec);
 
         let hex_slot = self.settings_hex_slot();
@@ -4808,7 +4734,9 @@ impl DiskoriaApp {
             }
         }
 
-        ui.advance_cursor_after_rect(section_rect);
+        // The hex field's `ui.put` rewinds the cursor the same way the Monitoring
+        // sliders do; `end()` runs last and re-asserts the card's real bottom (KI-18).
+        card.end(ui);
     }
 
     fn speed_primary_id() -> Id {
@@ -5405,37 +5333,19 @@ impl DiskoriaApp {
 
         let page_keys = !self.blocks_content_interaction();
         let section_w = content_w - margin * 2.0;
-        let pad = 16.0_f32;
         let row_h = 34.0_f32;
-        let card_h = pad + 22.0 + 12.0 + row_h + row_h + pad;
 
-        let (_, section_rect) = ui.allocate_space(Vec2::new(ui.available_width(), card_h + 12.0));
-        let card = Rect::from_min_size(
-            Pos2::new(content_x + margin, section_rect.top() + 12.0),
-            Vec2::new(section_w, card_h),
-        );
-        ui.painter().rect_filled(card, 8.0, t.bg_pri);
-        ui.painter()
-            .rect_stroke(card, 8.0, Stroke::new(1.5, t.border), StrokeKind::Middle);
-
-        let inner_x = card.min.x + pad;
-        let mut y = card.min.y + pad;
+        let mut card = CardLayout::builder(content_x + margin, section_w)
+            .title("Test Results")
+            .begin(ui, t);
+        let inner_x = card.inner_x();
         let slot = self.settings_test_overlay_slot();
-
-        ui.painter().text(
-            Pos2::new(inner_x, y + 11.0),
-            Align2::LEFT_CENTER,
-            "Test Results",
-            FontId::new(14.0, FontFamily::Name("InterBold".into())),
-            t.txt_pri,
-        );
-        y += 22.0 + 12.0;
 
         // ── Enable toggle (slot +0) ─────────────────────────────────────────
         {
-            let row_rect = Rect::from_min_size(Pos2::new(inner_x, y), Vec2::new(section_w - pad * 2.0, row_h));
+            let row_rect = card.row(row_h);
             let toggle_rect = Rect::from_min_size(
-                Pos2::new(card.max.x - pad - 44.0, y + (row_h - 24.0) / 2.0),
+                Pos2::new(card.right() - card.pad() - 44.0, row_rect.top() + (row_h - 24.0) / 2.0),
                 Vec2::new(44.0, 24.0),
             );
             let focused = self.settings_focus == Some(slot);
@@ -5466,12 +5376,11 @@ impl DiskoriaApp {
                 );
             }
             scroll_to_focused(&mut self.pending_scroll_rect, row_rect, focused, self.scroll_focus_frames > 0);
-            y += row_h;
         }
 
         // ── Preview buttons (slots +1 Pass, +2 Warn, +3 Fail) ───────────────
         {
-            let row_rect = Rect::from_min_size(Pos2::new(inner_x, y), Vec2::new(section_w - pad * 2.0, row_h));
+            let row_rect = card.row(row_h);
             ui.painter().text(
                 Pos2::new(inner_x, row_rect.center().y),
                 Align2::LEFT_CENTER,
@@ -5483,9 +5392,9 @@ impl DiskoriaApp {
             let btn_w = 80.0_f32;
             let btn_h = 24.0_f32;
             let btn_gap = 8.0_f32;
-            let btn_y = y + (row_h - btn_h) / 2.0;
+            let btn_y = row_rect.top() + (row_h - btn_h) / 2.0;
             // Right-aligned trio so it lines up with the toggle above.
-            let fail_rect = Rect::from_min_size(Pos2::new(card.max.x - pad - btn_w, btn_y), Vec2::new(btn_w, btn_h));
+            let fail_rect = Rect::from_min_size(Pos2::new(card.right() - card.pad() - btn_w, btn_y), Vec2::new(btn_w, btn_h));
             let warn_rect = Rect::from_min_size(Pos2::new(fail_rect.left() - btn_gap - btn_w, btn_y), Vec2::new(btn_w, btn_h));
             let pass_rect = Rect::from_min_size(Pos2::new(warn_rect.left() - btn_gap - btn_w, btn_y), Vec2::new(btn_w, btn_h));
 
@@ -5517,6 +5426,8 @@ impl DiskoriaApp {
                 scroll_to_focused(&mut self.pending_scroll_rect, row_rect, focused, self.scroll_focus_frames > 0);
             }
         }
+
+        card.end(ui);
     }
 
     // ── Window-behaviour settings section ─────────────────────────────────────
@@ -5541,36 +5452,18 @@ impl DiskoriaApp {
 
         let page_keys = !self.blocks_content_interaction();
         let section_w = content_w - margin * 2.0;
-        let pad = 16.0_f32;
         let row_h = 40.0_f32;
-        let card_h = pad + 22.0 + 12.0 + row_h + pad;
 
-        let (_, section_rect) = ui.allocate_space(Vec2::new(ui.available_width(), card_h + 12.0));
-        let card = Rect::from_min_size(
-            Pos2::new(content_x + margin, section_rect.top() + 12.0),
-            Vec2::new(section_w, card_h),
-        );
-        ui.painter().rect_filled(card, 8.0, t.bg_pri);
-        ui.painter()
-            .rect_stroke(card, 8.0, Stroke::new(1.5, t.border), StrokeKind::Middle);
-
-        let inner_x = card.min.x + pad;
-        let mut y = card.min.y + pad;
+        let mut card = CardLayout::builder(content_x + margin, section_w)
+            .title("Window")
+            .begin(ui, t);
+        let inner_x = card.inner_x();
         let slot = self.settings_window_slot();
 
-        ui.painter().text(
-            Pos2::new(inner_x, y + 11.0),
-            Align2::LEFT_CENTER,
-            "Window",
-            FontId::new(14.0, FontFamily::Name("InterBold".into())),
-            t.txt_pri,
-        );
-        y += 22.0 + 12.0;
-
         let enabled = self.shared.settings_snapshot().close_to_tray;
-        let row_rect = Rect::from_min_size(Pos2::new(inner_x, y), Vec2::new(section_w - pad * 2.0, row_h));
+        let row_rect = card.row(row_h);
         let toggle_rect = Rect::from_min_size(
-            Pos2::new(card.max.x - pad - 44.0, y + (row_h - 24.0) / 2.0),
+            Pos2::new(card.right() - card.pad() - 44.0, row_rect.top() + (row_h - 24.0) / 2.0),
             Vec2::new(44.0, 24.0),
         );
         let focused = self.settings_focus == Some(slot);
@@ -5612,6 +5505,8 @@ impl DiskoriaApp {
             );
         }
         scroll_to_focused(&mut self.pending_scroll_rect, row_rect, focused, self.scroll_focus_frames > 0);
+
+        card.end(ui);
     }
 
     // ── Updates settings section ──────────────────────────────────────────────
@@ -5633,37 +5528,19 @@ impl DiskoriaApp {
         let installed = crate::install_mode::current().is_installed();
         let page_keys = !self.blocks_content_interaction();
         let section_w = content_w - margin * 2.0;
-        let pad = 16.0_f32;
         let row_h = 40.0_f32;
-        let card_h = pad + 22.0 + 12.0 + row_h + pad;
 
-        let (_, section_rect) = ui.allocate_space(Vec2::new(ui.available_width(), card_h + 12.0));
-        let card = Rect::from_min_size(
-            Pos2::new(content_x + margin, section_rect.top() + 12.0),
-            Vec2::new(section_w, card_h),
-        );
-        ui.painter().rect_filled(card, 8.0, t.bg_pri);
-        ui.painter()
-            .rect_stroke(card, 8.0, Stroke::new(1.5, t.border), StrokeKind::Middle);
-
-        let inner_x = card.min.x + pad;
-        let mut y = card.min.y + pad;
+        let mut card = CardLayout::builder(content_x + margin, section_w)
+            .title("Updates")
+            .begin(ui, t);
+        let inner_x = card.inner_x();
         let slot = self.settings_updates_slot();
-
-        ui.painter().text(
-            Pos2::new(inner_x, y + 11.0),
-            Align2::LEFT_CENTER,
-            "Updates",
-            FontId::new(14.0, FontFamily::Name("InterBold".into())),
-            t.txt_pri,
-        );
-        y += 22.0 + 12.0;
 
         // Portable builds never check, whatever the stored value says.
         let enabled = installed && self.shared.settings_snapshot().auto_check_updates;
-        let row_rect = Rect::from_min_size(Pos2::new(inner_x, y), Vec2::new(section_w - pad * 2.0, row_h));
+        let row_rect = card.row(row_h);
         let toggle_rect = Rect::from_min_size(
-            Pos2::new(card.max.x - pad - 44.0, y + (row_h - 24.0) / 2.0),
+            Pos2::new(card.right() - card.pad() - 44.0, row_rect.top() + (row_h - 24.0) / 2.0),
             Vec2::new(44.0, 24.0),
         );
         let focused = installed && self.settings_focus == Some(slot);
@@ -5716,6 +5593,8 @@ impl DiskoriaApp {
                 Color32::WHITE.gamma_multiply(0.5),
             );
         }
+
+        card.end(ui);
     }
 
     // ── Launch-at-startup settings section ────────────────────────────────────
@@ -5737,40 +5616,22 @@ impl DiskoriaApp {
 
         let page_keys = !self.blocks_content_interaction();
         let section_w = content_w - margin * 2.0;
-        let pad = 16.0_f32;
         let row_h = 40.0_f32;
-        let card_h = pad + 22.0 + 12.0 + row_h + pad;
 
-        let (_, section_rect) = ui.allocate_space(Vec2::new(ui.available_width(), card_h + 12.0));
-        let card = Rect::from_min_size(
-            Pos2::new(content_x + margin, section_rect.top() + 12.0),
-            Vec2::new(section_w, card_h),
-        );
-        ui.painter().rect_filled(card, 8.0, t.bg_pri);
-        ui.painter()
-            .rect_stroke(card, 8.0, Stroke::new(1.5, t.border), StrokeKind::Middle);
-
-        let inner_x = card.min.x + pad;
-        let mut y = card.min.y + pad;
+        let mut card = CardLayout::builder(content_x + margin, section_w)
+            .title("Startup")
+            .begin(ui, t);
+        let inner_x = card.inner_x();
         let slot = self.settings_startup_slot();
-
-        ui.painter().text(
-            Pos2::new(inner_x, y + 11.0),
-            Align2::LEFT_CENTER,
-            "Startup",
-            FontId::new(14.0, FontFamily::Name("InterBold".into())),
-            t.txt_pri,
-        );
-        y += 22.0 + 12.0;
 
         // Query the scheduled task once (subprocess), then reuse the cache.
         let enabled = *self
             .startup_enabled
             .get_or_insert_with(crate::autostart::is_enabled);
 
-        let row_rect = Rect::from_min_size(Pos2::new(inner_x, y), Vec2::new(section_w - pad * 2.0, row_h));
+        let row_rect = card.row(row_h);
         let toggle_rect = Rect::from_min_size(
-            Pos2::new(card.max.x - pad - 44.0, y + (row_h - 24.0) / 2.0),
+            Pos2::new(card.right() - card.pad() - 44.0, row_rect.top() + (row_h - 24.0) / 2.0),
             Vec2::new(44.0, 24.0),
         );
         let focused = self.settings_focus == Some(slot);
@@ -5814,6 +5675,8 @@ impl DiskoriaApp {
             );
         }
         scroll_to_focused(&mut self.pending_scroll_rect, row_rect, focused, self.scroll_focus_frames > 0);
+
+        card.end(ui);
     }
 
     // ── Pro-Monitoring settings section ───────────────────────────────────────
@@ -5832,41 +5695,24 @@ impl DiskoriaApp {
 
         let page_keys = !self.blocks_content_interaction();
         let section_w = content_w - margin * 2.0;
-        let pad = 16.0_f32;
         let row_h = 34.0_f32;
 
-        // card height: title + toggle + poll interval + temp warn + temp crit + wear threshold + test buttons
-        let card_h = pad + 22.0 + 12.0 + row_h + row_h + row_h + row_h + row_h + row_h + pad;
-        let (_, section_rect) = ui.allocate_space(Vec2::new(ui.available_width(), card_h + 24.0));
-        let card = Rect::from_min_size(
-            Pos2::new(content_x + margin, section_rect.top() + 12.0),
-            Vec2::new(section_w, card_h),
-        );
-
-        ui.painter().rect_filled(card, 8.0, t.bg_pri);
-        ui.painter().rect_stroke(card, 8.0, Stroke::new(1.5, t.border), StrokeKind::Middle);
-
-        let inner_x = card.min.x + pad;
-        let mut y = card.min.y + pad;
+        // The card sizes itself to the rows actually added, so the early return
+        // below (monitoring off) genuinely shrinks it instead of leaving four
+        // rows of empty frame. See `card.rs` / known-issues KI-18.
+        let mut card = CardLayout::builder(content_x + margin, section_w)
+            .title("Monitoring")
+            .begin(ui, t);
+        let inner_x = card.inner_x();
 
         // Monitoring slot numbering: M+0=toggle, M+1..4=poll segs, M+5=warn, M+6=crit, M+7=wear, M+8=test_warn, M+9=test_crit
         let m = self.settings_monitoring_slot_start();
 
-        // Section title
-        ui.painter().text(
-            Pos2::new(inner_x, y + 11.0),
-            Align2::LEFT_CENTER,
-            "Monitoring",
-            FontId::new(14.0, FontFamily::Name("InterBold".into())),
-            t.txt_pri,
-        );
-        y += 22.0 + 12.0;
-
         // ── Monitoring enabled toggle ───────────────────────────────────────
         {
-            let row_rect = Rect::from_min_size(Pos2::new(inner_x, y), Vec2::new(section_w - pad * 2.0, row_h));
+            let row_rect = card.row(row_h);
             let toggle_rect = Rect::from_min_size(
-                Pos2::new(card.max.x - pad - 44.0, y + (row_h - 24.0) / 2.0),
+                Pos2::new(card.right() - card.pad() - 44.0, row_rect.top() + (row_h - 24.0) / 2.0),
                 Vec2::new(44.0, 24.0),
             );
             let focused = self.settings_focus == Some(m);
@@ -5899,25 +5745,24 @@ impl DiskoriaApp {
                 );
             }
             scroll_to_focused(&mut self.pending_scroll_rect, row_rect, focused, self.scroll_focus_frames > 0);
-            y += row_h;
         }
 
         // ── Poll interval ───────────────────────────────────────────────────
         {
             const OPTS: [(&str, u8); 4] = [("1 min", 1), ("3 min", 3), ("5 min", 5), ("10 min", 10)];
-            let row_rect = Rect::from_min_size(Pos2::new(inner_x, y), Vec2::new(section_w - pad * 2.0, row_h));
+            let row_rect = card.row(row_h);
             ui.painter().text(
-                Pos2::new(inner_x, y + row_h / 2.0 - 7.0),
+                Pos2::new(inner_x, row_rect.top() + row_h / 2.0 - 7.0),
                 Align2::LEFT_TOP,
                 "Poll interval",
                 FontId::new(12.0, egui::FontFamily::Proportional),
                 t.txt_sec,
             );
-            let seg_total_w = section_w - pad * 2.0 - 130.0;
+            let seg_total_w = card.inner_w() - 130.0;
             let seg_x = inner_x + 130.0;
             let seg_h = 24.0_f32;
             let seg_w = seg_total_w / OPTS.len() as f32;
-            let seg_top = y + (row_h - seg_h) / 2.0;
+            let seg_top = row_rect.top() + (row_h - seg_h) / 2.0;
             let seg_rect = Rect::from_min_size(Pos2::new(seg_x, seg_top), Vec2::new(seg_total_w, seg_h));
             ui.painter().rect_filled(seg_rect, 6.0, t.bg_sec);
             ui.painter().rect_stroke(seg_rect, 6.0, Stroke::new(1.0, t.border), StrokeKind::Middle);
@@ -5947,28 +5792,28 @@ impl DiskoriaApp {
                 }
                 scroll_to_focused(&mut self.pending_scroll_rect, row_rect, focused, self.scroll_focus_frames > 0);
             }
-            y += row_h;
         }
 
         if !self.monitoring_enabled {
+            card.end(ui);
             return;
         }
 
         // ── Temp warn threshold ─────────────────────────────────────────────
         {
             let focused = self.settings_focus == Some(m + 5);
-            let row_rect = Rect::from_min_size(Pos2::new(inner_x, y), Vec2::new(section_w - pad * 2.0, row_h));
+            let row_rect = card.row(row_h);
             let label = format!("Temperature warning  ({}°C)", self.alert_temp_warn);
             ui.painter().text(
-                Pos2::new(inner_x, y + row_h / 2.0 - 7.0),
+                Pos2::new(inner_x, row_rect.top() + row_h / 2.0 - 7.0),
                 Align2::LEFT_TOP,
                 label,
                 FontId::new(12.0, egui::FontFamily::Proportional),
                 if focused { t.txt_pri } else { t.txt_sec },
             );
             let slider_rect = Rect::from_min_size(
-                Pos2::new(inner_x + 240.0, y + (row_h - 20.0) / 2.0),
-                Vec2::new(section_w - pad * 2.0 - 250.0, 20.0),
+                Pos2::new(inner_x + 240.0, row_rect.top() + (row_h - 20.0) / 2.0),
+                Vec2::new(card.inner_w() - 250.0, 20.0),
             );
             let resp = ui.allocate_rect(slider_rect, Sense::click_and_drag());
             if resp.dragged() || resp.clicked() {
@@ -6005,24 +5850,23 @@ impl DiskoriaApp {
                 ui.painter().rect_stroke(slider_rect.expand(3.0), 3.0, Stroke::new(2.0, t.accent), StrokeKind::Outside);
             }
             scroll_to_focused(&mut self.pending_scroll_rect, row_rect, focused, self.scroll_focus_frames > 0);
-            y += row_h;
         }
 
         // ── Temp critical threshold ─────────────────────────────────────────
         {
             let focused = self.settings_focus == Some(m + 6);
-            let row_rect = Rect::from_min_size(Pos2::new(inner_x, y), Vec2::new(section_w - pad * 2.0, row_h));
+            let row_rect = card.row(row_h);
             let label = format!("Temperature critical  ({}°C)", self.alert_temp_critical);
             ui.painter().text(
-                Pos2::new(inner_x, y + row_h / 2.0 - 7.0),
+                Pos2::new(inner_x, row_rect.top() + row_h / 2.0 - 7.0),
                 Align2::LEFT_TOP,
                 label,
                 FontId::new(12.0, egui::FontFamily::Proportional),
                 if focused { t.txt_pri } else { t.txt_sec },
             );
             let slider_rect = Rect::from_min_size(
-                Pos2::new(inner_x + 240.0, y + (row_h - 20.0) / 2.0),
-                Vec2::new(section_w - pad * 2.0 - 250.0, 20.0),
+                Pos2::new(inner_x + 240.0, row_rect.top() + (row_h - 20.0) / 2.0),
+                Vec2::new(card.inner_w() - 250.0, 20.0),
             );
             let resp = ui.allocate_rect(slider_rect, Sense::click_and_drag());
             if resp.dragged() || resp.clicked() {
@@ -6060,24 +5904,23 @@ impl DiskoriaApp {
                 ui.painter().rect_stroke(slider_rect.expand(3.0), 3.0, Stroke::new(2.0, t.accent), StrokeKind::Outside);
             }
             scroll_to_focused(&mut self.pending_scroll_rect, row_rect, focused, self.scroll_focus_frames > 0);
-            y += row_h;
         }
 
         // ── Wear threshold ──────────────────────────────────────────────────
         {
             let focused = self.settings_focus == Some(m + 7);
-            let row_rect = Rect::from_min_size(Pos2::new(inner_x, y), Vec2::new(section_w - pad * 2.0, row_h));
+            let row_rect = card.row(row_h);
             let label = format!("Wear level alert  ({}%)", self.alert_wear_threshold);
             ui.painter().text(
-                Pos2::new(inner_x, y + row_h / 2.0 - 7.0),
+                Pos2::new(inner_x, row_rect.top() + row_h / 2.0 - 7.0),
                 Align2::LEFT_TOP,
                 label,
                 FontId::new(12.0, egui::FontFamily::Proportional),
                 if focused { t.txt_pri } else { t.txt_sec },
             );
             let slider_rect = Rect::from_min_size(
-                Pos2::new(inner_x + 240.0, y + (row_h - 20.0) / 2.0),
-                Vec2::new(section_w - pad * 2.0 - 250.0, 20.0),
+                Pos2::new(inner_x + 240.0, row_rect.top() + (row_h - 20.0) / 2.0),
+                Vec2::new(card.inner_w() - 250.0, 20.0),
             );
             let resp = ui.allocate_rect(slider_rect, Sense::click_and_drag());
             if resp.dragged() || resp.clicked() {
@@ -6112,16 +5955,15 @@ impl DiskoriaApp {
                 ui.painter().rect_stroke(slider_rect.expand(3.0), 3.0, Stroke::new(2.0, t.accent), StrokeKind::Outside);
             }
             scroll_to_focused(&mut self.pending_scroll_rect, row_rect, focused, self.scroll_focus_frames > 0);
-            y += row_h;
         }
 
         // ── Test notifications ──────────────────────────────────────────────
         {
             let warn_focused = self.settings_focus == Some(m + 8);
             let crit_focused = self.settings_focus == Some(m + 9);
-            let row_rect = Rect::from_min_size(Pos2::new(inner_x, y), Vec2::new(section_w - pad * 2.0, row_h));
+            let row_rect = card.row(row_h);
             ui.painter().text(
-                Pos2::new(inner_x, y + row_h / 2.0 - 7.0),
+                Pos2::new(inner_x, row_rect.top() + row_h / 2.0 - 7.0),
                 Align2::LEFT_TOP,
                 "Test notifications",
                 FontId::new(12.0, egui::FontFamily::Proportional),
@@ -6130,7 +5972,7 @@ impl DiskoriaApp {
 
             let btn_w = 90.0_f32;
             let btn_h = 24.0_f32;
-            let btn_y = y + (row_h - btn_h) / 2.0;
+            let btn_y = row_rect.top() + (row_h - btn_h) / 2.0;
             let btn_gap = 8.0_f32;
             let warn_rect = Rect::from_min_size(Pos2::new(inner_x + 160.0, btn_y), Vec2::new(btn_w, btn_h));
             let crit_rect = Rect::from_min_size(Pos2::new(warn_rect.right() + btn_gap, btn_y), Vec2::new(btn_w, btn_h));
@@ -6193,10 +6035,9 @@ impl DiskoriaApp {
             scroll_to_focused(&mut self.pending_scroll_rect, row_rect, warn_focused || crit_focused, self.scroll_focus_frames > 0);
         }
 
-        // The slider `allocate_rect` calls above move the layout cursor backward
-        // to the last slider's bottom, discarding our `allocate_space` reservation.
-        // Re-assert the cursor to the card's reserved bottom so the next card
-        // (Test Results) doesn't overlap this one. See known-issues KI-18.
-        ui.advance_cursor_after_rect(section_rect);
+        // The sliders' `allocate_rect` calls above still rewind the layout
+        // cursor; `end()` is the last advance, so it wins and the next card
+        // lands below this one regardless (KI-18).
+        card.end(ui);
     }
 }

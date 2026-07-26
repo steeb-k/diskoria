@@ -11,6 +11,7 @@ use egui::{
 #[cfg(windows)]
 use egui_plot::{Line, Plot, PlotPoints};
 
+use crate::card::CardLayout;
 use crate::detected_drive::DetectedDrive;
 use crate::drive_selector::{self, ChipSpec, DriveEntry};
 use crate::smart_reader::{AtaAttribute, AtaSmartData, AttrStatus, NvmeHealthData, UfsHealthData, SmartReport};
@@ -86,24 +87,6 @@ fn status_color(status: AttrStatus, _dark: bool) -> Color32 {
 }
 
 // ── Card frame helper ─────────────────────────────────────────────────────────
-
-fn card_rect(
-    ui: &mut egui::Ui,
-    t: &Theme,
-    content_x: f32,
-    margin: f32,
-    section_w: f32,
-    height: f32,
-) -> Rect {
-    let top = ui.cursor().min.y;
-    let rect = Rect::from_min_size(
-        Pos2::new(content_x + margin, top),
-        Vec2::new(section_w, height),
-    );
-    ui.painter().rect_filled(rect, 8.0, t.bg_pri);
-    ui.painter().rect_stroke(rect, 8.0, Stroke::new(1.5, t.border), StrokeKind::Middle);
-    rect
-}
 
 // ── Drive picker ──────────────────────────────────────────────────────────────
 
@@ -241,10 +224,12 @@ fn draw_unavailable(
     });
     let text_h = galley.rect.height();
     let content_h = icon_size.max(text_h);
-    let card_h = pad + content_h + pad;
 
-    let card = card_rect(ui, t, content_x, margin, section_w, card_h);
-    let inner = Rect::from_min_size(Pos2::new(card.min.x + pad, card.min.y + pad), Vec2::new(inner_w, content_h));
+    // The page's own `add_space` calls set the rhythm here, so no lead gap.
+    let mut card = CardLayout::builder(content_x + margin, section_w)
+        .gap_before(0.0)
+        .begin(ui, t);
+    let inner = card.row(content_h);
 
     let icon_rect = Rect::from_min_size(
         Pos2::new(inner.min.x, inner.min.y + (content_h - icon_size) * 0.5),
@@ -261,7 +246,7 @@ fn draw_unavailable(
     let text_pos = Pos2::new(inner.min.x + icon_size + gap, inner.min.y + (content_h - text_h) * 0.5);
     ui.painter().add(egui::Shape::galley(text_pos, galley, t.txt_sec));
 
-    ui.advance_cursor_after_rect(card);
+    card.end(ui);
 }
 
 // ── Section label row ─────────────────────────────────────────────────────────
@@ -494,29 +479,22 @@ fn draw_ata_vitals(
     let row_h = 22.0_f32;
     let gap = 4.0_f32;
 
-    let row_count = 1  // temperature or placeholder
-        + if data.power_on_hours.is_some() { 1 } else { 0 }
-        + if data.power_cycles.is_some() { 1 } else { 0 };
-
-    // Exact height: top pad + rows + (rows-1) gaps + bottom pad
-    let card_h = pad + row_count as f32 * row_h + (row_count - 1) as f32 * gap + pad;
-
     draw_section_label(ui, t, content_x, margin, section_w, "Vitals", true);
     ui.add_space(6.0);
 
-    let card = card_rect(ui, t, content_x, margin, section_w, card_h);
-    let card_x = card.min.x;
+    // Rows are reserved as they are painted, so the optional Power-On Hours /
+    // Power Cycles rows no longer need a matching `row_count` (KI-18).
+    let mut card = CardLayout::builder(content_x + margin, section_w)
+        .gap_before(0.0)
+        .begin(ui, t);
+    let card_x = card.left();
 
-    // Use absolute Y positions — no cursor tracking inside the card.
-    let mut row_y = card.min.y + pad;
-    let row_step = row_h + gap;
-
+    let row_y = card.row(row_h).top();
     if let Some(tc) = data.temperature_c {
         paint_temp_bar(ui, t, card_x, inner_w, pad, row_y, row_h, tc);
     } else {
         paint_vitals_kv(ui, t, card_x, inner_w, pad, row_y, row_h, "Temperature", "N/A", t.txt_pri, None);
     }
-    row_y += row_step;
 
     if let Some(poh) = data.power_on_hours {
         let days = poh / 24;
@@ -525,16 +503,18 @@ fn draw_ata_vitals(
         } else {
             format!("{} hours", poh)
         };
+        card.add_gap(gap);
+        let row_y = card.row(row_h).top();
         paint_vitals_kv(ui, t, card_x, inner_w, pad, row_y, row_h, "Power-On Hours", &label, t.txt_pri, None);
-        row_y += row_step;
     }
 
     if let Some(pc) = data.power_cycles {
+        card.add_gap(gap);
+        let row_y = card.row(row_h).top();
         paint_vitals_kv(ui, t, card_x, inner_w, pad, row_y, row_h, "Power Cycles", &fmt_thousands(pc), t.txt_pri, None);
     }
 
-    // Single cursor advance past the whole card.
-    ui.advance_cursor_after_rect(card);
+    card.end(ui);
 }
 
 // ── NVMe vitals card ──────────────────────────────────────────────────────────
@@ -552,27 +532,26 @@ fn draw_nvme_vitals(
     let row_h = 22.0_f32;
     let gap = 4.0_f32;
 
-    // Rows: temp, % used, spare, POH, power cycles, data written, unsafe shutdowns, media errors, critical warning
-    let rows = 9usize;
-    // Exact height: top pad + rows*row_h + (rows-1)*gap + bottom pad
-    let card_h = pad + rows as f32 * row_h + (rows - 1) as f32 * gap + pad;
-
     draw_section_label(ui, t, content_x, margin, section_w, "Vitals", true);
     ui.add_space(6.0);
 
-    let card = card_rect(ui, t, content_x, margin, section_w, card_h);
-    let card_x = card.min.x;
+    // Rows: temp, % used, spare, POH, power cycles, data written, unsafe
+    // shutdowns, media errors, critical warning — each reserved as it is
+    // painted, so there is no row count to keep in sync (KI-18).
+    let mut card = CardLayout::builder(content_x + margin, section_w)
+        .gap_before(0.0)
+        .begin(ui, t);
+    let card_x = card.left();
 
-    // Absolute Y positions — no cursor tracking inside the card.
-    let row_step = row_h + gap;
-    let mut row_y = card.min.y + pad;
-
+    let row_y = card.row(row_h).top();
     paint_temp_bar(ui, t, card_x, inner_w, pad, row_y, row_h, data.temperature_c as i32);
-    row_y += row_step;
 
+    card.add_gap(gap);
+    let row_y = card.row(row_h).top();
     paint_wear_bar(ui, t, card_x, inner_w, pad, row_y, row_h, data.percentage_used);
-    row_y += row_step;
 
+    card.add_gap(gap);
+    let row_y = card.row(row_h).top();
     paint_vitals_kv(
         ui, t, card_x, inner_w, pad, row_y, row_h,
         "Available Spare",
@@ -580,7 +559,6 @@ fn draw_nvme_vitals(
         t.txt_pri,
         Some("Remaining spare NAND blocks the controller can use for remapping bad cells."),
     );
-    row_y += row_step;
 
     let poh = data.power_on_hours;
     let days = poh / 24;
@@ -589,19 +567,21 @@ fn draw_nvme_vitals(
     } else {
         format!("{} hours", poh)
     };
+    card.add_gap(gap);
+    let row_y = card.row(row_h).top();
     paint_vitals_kv(
         ui, t, card_x, inner_w, pad, row_y, row_h,
         "Power-On Hours", &poh_label, t.txt_pri,
         Some("Total time the drive has been powered on since manufacture."),
     );
-    row_y += row_step;
 
+    card.add_gap(gap);
+    let row_y = card.row(row_h).top();
     paint_vitals_kv(
         ui, t, card_x, inner_w, pad, row_y, row_h,
         "Power Cycles", &fmt_thousands(data.power_cycles), t.txt_pri,
         Some("Number of times the drive has been powered on and off."),
     );
-    row_y += row_step;
 
     // Data written: NVMe reports in 512 KiB units
     let dw_gib = data.data_units_written as f64 * 512.0 / (1024.0 * 1024.0);
@@ -610,28 +590,31 @@ fn draw_nvme_vitals(
     } else {
         format!("{:.1} GiB", dw_gib)
     };
+    card.add_gap(gap);
+    let row_y = card.row(row_h).top();
     paint_vitals_kv(
         ui, t, card_x, inner_w, pad, row_y, row_h,
         "Data Written", &dw_label, t.txt_pri,
         Some("Cumulative host data written in 512 KiB units (NVMe spec)."),
     );
-    row_y += row_step;
 
+    card.add_gap(gap);
+    let row_y = card.row(row_h).top();
     paint_vitals_kv(
         ui, t, card_x, inner_w, pad, row_y, row_h,
         "Unsafe Shutdowns", &fmt_thousands(data.unsafe_shutdowns), t.txt_pri,
         Some("Power loss events that did not allow the drive to flush its cache. High counts can accelerate NAND wear."),
     );
-    row_y += row_step;
 
     // Media Errors — colored value
     let media_color = if data.media_errors > 0 { Color32::from_rgb(241, 196, 15) } else { t.txt_pri };
+    card.add_gap(gap);
+    let row_y = card.row(row_h).top();
     paint_vitals_kv(
         ui, t, card_x, inner_w, pad, row_y, row_h,
         "Media Errors", &fmt_thousands(data.media_errors), media_color,
         Some("Errors that occurred directly on the NAND media. Anything above zero warrants attention."),
     );
-    row_y += row_step;
 
     // Critical Warning — colored value, routed through paint_vitals_kv for consistent alignment
     let warn_color = if data.critical_warning != 0 { Color32::from_rgb(231, 76, 60) } else { t.txt_pri };
@@ -640,14 +623,15 @@ fn draw_nvme_vitals(
     } else {
         format!("{:02X}", data.critical_warning)
     };
+    card.add_gap(gap);
+    let row_y = card.row(row_h).top();
     paint_vitals_kv(
         ui, t, card_x, inner_w, pad, row_y, row_h,
         "Critical Warning", &warn_text, warn_color,
         Some("Bit field set by the controller for serious health events (spare below threshold, temperature excursion, read-only mode, etc.)."),
     );
 
-    // Single cursor advance past the whole card.
-    ui.advance_cursor_after_rect(card);
+    card.end(ui);
 }
 
 // ── ATA attribute grid ────────────────────────────────────────────────────────
@@ -745,17 +729,16 @@ fn draw_ufs_vitals(
     let row_h = 22.0_f32;
     let gap = 4.0_f32;
 
-    let rows = 3usize; // Pre-EOL status, Life Used A, Life Used B
-    let card_h = pad + rows as f32 * row_h + (rows - 1) as f32 * gap + pad;
-
     draw_section_label(ui, t, content_x, margin, section_w, "Vitals", true);
     ui.add_space(6.0);
 
-    let card = card_rect(ui, t, content_x, margin, section_w, card_h);
-    let card_x = card.min.x;
+    // Pre-EOL status, Life Used A, Life Used B.
+    let mut card = CardLayout::builder(content_x + margin, section_w)
+        .gap_before(0.0)
+        .begin(ui, t);
+    let card_x = card.left();
 
-    let row_step = row_h + gap;
-    let mut row_y = card.min.y + pad;
+    let row_y = card.row(row_h).top();
 
     let (pre_eol_text, pre_eol_color) = match data.pre_eol_info {
         0x01 => ("Normal", Color32::from_rgb(39, 174, 96)),
@@ -768,14 +751,16 @@ fn draw_ufs_vitals(
         "Pre-EOL Status", pre_eol_text, pre_eol_color,
         Some("End-of-life indicator from the UFS controller. Warning = 80%+ of reserved blocks consumed. Urgent = replacement recommended."),
     );
-    row_y += row_step;
 
+    card.add_gap(gap);
+    let row_y = card.row(row_h).top();
     paint_ufs_lifetime_bar(ui, t, card_x, inner_w, pad, row_y, row_h, "Life Used (Type A)", data.life_time_est_a);
-    row_y += row_step;
 
+    card.add_gap(gap);
+    let row_y = card.row(row_h).top();
     paint_ufs_lifetime_bar(ui, t, card_x, inner_w, pad, row_y, row_h, "Life Used (Type B)", data.life_time_est_b);
 
-    ui.advance_cursor_after_rect(card);
+    card.end(ui);
 }
 
 fn draw_attribute_card(
