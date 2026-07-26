@@ -2,6 +2,8 @@
 
 Windows utility for **storage health visibility**, **non-destructive sector scanning**, optional **full-disk verification writes**, and **volume speed benchmarks**. It is a single portable executable with a custom **egui** UI rendered on the CPU (**softbuffer**), so it does not depend on GPU drivers or OpenGL.
 
+**See the [Diskoria wiki](https://github.com/steeb-k/diskoria/wiki) for full usage documentation**, including a walkthrough of every page, how to read SMART attributes and drive health, background monitoring and alerts, a glossary, and answers to common questions.
+
 ## Requirements
 
 - **Windows 10 or later** (64-bit).
