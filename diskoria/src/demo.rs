@@ -528,6 +528,42 @@ pub fn write_export_reports() -> bool {
             Err(e) => eprintln!("--demo-export: {}: {e}", path.display()),
         }
     }
+
+    // ...and the COMBINED report, the one a sector test produces when you
+    // answer "Include report" to the chart export. Different document: same
+    // health tables with the performance chart embedded above them.
+    let drive = &drives()[1];
+    let report = health_report(1);
+    let total_gb = drive.size_bytes as f64 / 1_073_741_824.0;
+    let points = chart_samples(total_gb, 1.0);
+    let max_speed = points.iter().fold(0.0_f64, |m, p| m.max(p[1]));
+    // 1920x920 and dark, exactly as app.rs renders it for the report: 2x so the
+    // lightbox has real detail to zoom into, dark to match the report CSS.
+    match crate::app::render_performance_chart_png_bytes(
+        1920,
+        920,
+        &format!("Disk {} \u{2014} {}", drive.disk_number, drive.model),
+        "Sector Read Test",
+        &points,
+        &points,
+        max_speed,
+        total_gb,
+        true,
+    ) {
+        Ok(png) => {
+            let html =
+                crate::smart_health_page::build_chart_report_html(drive, &report, &png);
+            let path = std::path::Path::new(dir).join(format!(
+                "Performance-{}.html",
+                drive.safe_filename_stem()
+            ));
+            match std::fs::write(&path, html.as_bytes()) {
+                Ok(()) => println!("wrote {}", path.display()),
+                Err(e) => eprintln!("--demo-export: {}: {e}", path.display()),
+            }
+        }
+        Err(e) => eprintln!("--demo-export: chart render failed: {e}"),
+    }
     true
 }
 

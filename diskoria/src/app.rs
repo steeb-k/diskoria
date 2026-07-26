@@ -4980,7 +4980,9 @@ impl ChartExportRequest {
 /// baseline 460 px so a 2x render (used for the HTML-embed lightbox) stays crisp
 /// and proportioned. The on-disk export and the embedded copy share this path.
 #[cfg(windows)]
-fn render_performance_chart_png_bytes(
+/// `pub(crate)` so `demo::write_export_reports` can build the same combined
+/// report the chart-export button produces, without a file dialog.
+pub(crate) fn render_performance_chart_png_bytes(
     width: u32,
     height: u32,
     drive_label: &str,
