@@ -14,7 +14,7 @@ Windows utility for **storage health visibility**, **non-destructive sector scan
 
 1. Launch **Diskoria** elevated (right-click → Run as administrator if Windows does not prompt automatically).
 2. Wait for the **physical disk** list to populate (background query).
-3. Use the sidebar to open **Sector Test**, **Destructive Test**, **Speed Test**, **About**, or **Settings**.
+3. Use the sidebar to open **Drive Health**, **Sector Read Test**, **Sector Write Test**, **Benchmark**, **About**, or **Settings**.
 
 **Development build** (from repository root):
 
@@ -32,85 +32,26 @@ Start-Process .\target\debug\diskoria.exe -Verb RunAs
 
 **Release builds:** see `scripts\build-portable.ps1` and `scripts\build-release.ps1`.
 
-## Usage by page
+## What each page does
 
-### Sector Test (read-only)
+| Page | Target | Access | Data risk |
+| ---- | ------ | ------ | --------- |
+| Drive Health | Physical disk | Read-only telemetry | None |
+| Sector Read Test | Physical disk | Read-only | None |
+| Sector Write Test | Physical disk | Writes and verifies every sector | **Complete data loss** on that disk |
+| Benchmark | Volume (temp file) | Read/write a temporary file | Only the temp file; needs free space |
 
-- Select a **physical disk**.
-- **Start** opens the disk with **read-only** access and reads it **sequentially** from start to end in aligned chunks (typically 1 MiB).
-- The UI reports **good**, **bad**, and **slow** sectors. Reads slower than about **200 ms** are counted as slow; failed reads increment bad sectors and use follow-up logic to isolate problem ranges where possible.
-- **Cancel** stops the worker; partial progress is shown.
-- A **SMART / health** summary for the selected disk appears when WMI data is available.
+- **Drive Health** — SMART, NVMe and UFS telemetry for the selected disk, with a temperature history chart and an exportable HTML report.
+- **Sector Read Test** — reads the disk from start to end and marks bad and slow spans on a sector map and a performance chart. Does not modify disk contents.
+- **Sector Write Test** — writes a pattern to every sector and reads it back to verify. All volumes on the target disk are locked and dismounted first. **This erases the disk and there is no undo.**
+- **Benchmark** — sequential and random 4 KiB read/write throughput against a temporary file on the chosen volume. The workload profile is selected from the drive's bus and media type, so a USB stick is not given the same profile as an NVMe drive.
 
-This test does **not** modify disk contents. It is safe for diagnosing media and cabling issues on a live system, though heavy I/O may affect performance of volumes on that disk.
+Background monitoring, tray alerts and the settings are covered in the wiki.
+Settings are stored in `%ProgramData%\Diskoria\settings.txt`.
 
-#### Sector map (heatmap)
-
-The **Sector Map** tab (and the same grid on **Destructive Test**) is a fixed **1000-cell** grid. Cells are **not** individual disk sectors: each cell represents a **contiguous span of the disk’s capacity** in address order. As the worker advances, the cell index is
-
-`floor((bytes_scanned_so_far / total_disk_bytes) × 1000)`,
-
-clamped so it always lies in `0 … 999`. When the scan moves into a new cell (or completes), the worker finalizes the **previous** cell and sends:
-
-- **`block_read_time_ms`** — the **average** wall-clock time, in milliseconds, of every successful 1 MiB read that fell in that cell’s span.
-- **`block_is_good`** — `false` if **any** read in that span failed (after error handling / sector retries).
-
-The UI then classifies that cell:
-
-| Appearance | Meaning |
-|------------|---------|
-| **Dark gray** | Not scanned yet (or run not started). |
-| **Red** | At least one read error in that span (“bad / error” on Sector Test; “bad / mismatch” on Destructive). |
-| **Amber** | No errors, but the cell’s **average** read time is **≥ 200 ms** (slow threshold). |
-| **Green shades** | No errors, average read **under 200 ms**. These are the “good (heat)” cells. |
-
-**Light vs dark green:** Among **good** cells under the slow threshold, color is a **relative** heat map. The app tracks the **minimum and maximum** average read times seen so far in that category and maps each cell linearly between two RGB endpoints:
-
-- **Fastest** observed good average → brighter green (approximately RGB 76, 175, 80).
-- **Slowest** observed good average → darker green (approximately RGB 15, 50, 18).
-
-If all good samples are effectively the same speed, the scale uses a small floor on the range (0.1 ms) so the color still stabilizes. Because the scale is **per-run** and based on data seen so far, the same absolute read time can look slightly different early vs late in a scan as min/max updates. **Yellow/amber** always means “average at or above 200 ms,” regardless of that green scale.
-
-**Destructive Test** reuses the same grid and coloring: each cell’s timing is still an **average** over the I/O performed in that span, and the same 200 ms boundary and green min/max scaling apply (with separate min/max state from Sector Test).
-
-### Destructive Test
-
-- Same physical-disk selection metaphor as Sector Test, but the tool **writes a deterministic pattern to every sector** and **reads it back** to verify.
-- All volumes on the target disk are **locked and dismounted** before writing so the filesystem cannot interfere; handles stay open for the duration of the run.
-- **This erases all data on the selected disk.** Confirm prompts are intentional; there is no undo.
-
-Use only on disks you intend to wipe or fully retest at the block level.
-
-### Speed Test
-
-- Chooses a **volume** (drive letter / mount point), not raw `PhysicalDrive`.
-- Creates a **temporary file** on that volume (`Diskoria_SpeedTest_*.tmp`), then runs:
-  1. **Sequential write** — multi-pass, 1 MiB blocks, unbuffered + write-through.
-  2. **Sequential read** — same file, multi-pass.
-  3. **Random 4 KiB writes** — many random offsets within the file.
-  4. **Random 4 KiB reads** — same.
-- **Workload size** (file size, 4K iteration count, pass count) depends on detected **bus** (e.g. NVMe vs USB) and **media** (SSD vs HDD vs removable), so USB sticks are not hammered with the same profile as a local NVMe drive.
-- The temporary file is removed when the test finishes or is cancelled (best effort).
-
-Requires free space roughly equal to the configured test file size on the chosen volume.
-
-### About
-
-- Version, home URL, **Ko-fi** support link, and **Check for updates** (GitHub Releases API — see `diskoria/src/github_config.rs` for the binaries repo).
-
-### Settings
-
-- Theme (auto / dark / light), accent (Windows, palette, custom hex). Stored under `%ProgramData%\Diskoria\settings.txt`.
-
-## How the tests differ (summary)
-
-
-| Test             | Target        | Access                 | Data risk                                       |
-| ---------------- | ------------- | ---------------------- | ----------------------------------------------- |
-| Sector Test      | Physical disk | Read-only              | None                                            |
-| Destructive Test | Physical disk | Read/write all sectors | **Complete data loss** on that disk             |
-| Speed Test       | Volume (file) | Read/write temp file   | Only the temp file; normal use needs free space |
-
+**Full documentation for every page — including how to read the sector map's
+colouring and the SMART attribute table — is in the
+[wiki](https://github.com/steeb-k/diskoria/wiki).**
 
 ## Updating from GitHub Releases
 
