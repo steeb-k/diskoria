@@ -35,9 +35,20 @@ pub struct AtaAttribute {
     pub current: u8,
     pub worst: u8,
     pub threshold: u8,
+    /// The vendor's full 48-bit raw, exactly as the drive reported it. For
+    /// anything user-facing use [`AtaAttribute::display_raw`] instead — some
+    /// attributes pack several fields in here (KI-27).
     pub raw: u64,
     pub is_critical: bool,
     pub status: AttrStatus,
+}
+
+impl AtaAttribute {
+    /// `raw` with vendor packing removed — what the UI and the exported report
+    /// should show. See [`display_raw`].
+    pub fn display_raw(&self) -> u64 {
+        display_raw(self.id, self.raw)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -148,12 +159,46 @@ fn attr_name(id: u8) -> &'static str {
     }
 }
 
+/// The meaningful part of a packed 48-bit raw value, for display.
+///
+/// Several attributes pack more than one field into the six raw bytes. Power-On
+/// Hours is the visible offender: a Seagate ST2000DM008 sitting at 10,231 hours
+/// reports `0xCEF0_0000_27F7` = 227,530,187,483,127, because the vendor leaves
+/// its own data in the high word while the hours live in the low 32 bits.
+///
+/// `query_ata` routes its vitals extraction through here too, so the Vitals card
+/// and the attribute grid cannot report different numbers for the same fact —
+/// which is exactly what they used to do (known-issues KI-27).
+///
+/// The untouched 48-bit value stays on [`AtaAttribute::raw`]: the history-DB
+/// snapshot archives it, and a diagnostic record must not lose the vendor's
+/// bytes just because the UI cannot render them usefully.
+pub(crate) fn display_raw(id: u8, raw: u64) -> u64 {
+    match id {
+        // Hour counters — hours in the low 32 bits, vendor data above.
+        // 0x09 Power-On Hours, 0xF0 Head Flying Hours.
+        0x09 | 0xF0 => raw & 0xFFFF_FFFF,
+        // 0x0C Power Cycle Count — same shape.
+        0x0C => raw & 0xFFFF_FFFF,
+        // Temperature attributes carry the current reading in the low byte and
+        // frequently min/max above it. 0xC2 Temperature, 0xBE Airflow Temp.
+        0xC2 | 0xBE => raw & 0xFF,
+        _ => raw,
+    }
+}
+
 /// Critical attributes — a non-zero raw value or current ≤ threshold is a failure indicator.
+///
+/// Deliberately excludes **0x01 Read Error Rate**: its raw is a vendor-packed
+/// rate, not a count, and is large and non-zero on perfectly healthy Seagate and
+/// WD drives (the ST2000DM008 above reports 120,202,145 with a healthy
+/// normalised 81 against a threshold of 6). Treating that as "non-zero raw ⇒
+/// warning" flagged every such drive amber forever. The normalised
+/// current/worst-vs-threshold checks below still catch a genuinely failing
+/// read-error rate, which is how smartctl and CrystalDiskInfo judge this
+/// attribute too. Same reasoning is why 0x07 Seek Error Rate was never here.
 fn is_critical(id: u8) -> bool {
-    matches!(
-        id,
-        0x01 | 0x05 | 0x0A | 0xBB | 0xBC | 0xC4 | 0xC5 | 0xC6 | 0xC7
-    )
+    matches!(id, 0x05 | 0x0A | 0xBB | 0xBC | 0xC4 | 0xC5 | 0xC6 | 0xC7)
 }
 
 /// Info-only attributes — normalised values are meaningful but threshold is 0.
@@ -388,13 +433,14 @@ fn query_ata(device_path: &str) -> SmartReport {
             })
             .unwrap_or(0);
 
-        // Extract high-level vitals from well-known attribute IDs
+        // Extract high-level vitals from well-known attribute IDs. These go
+        // through `display_raw` so the Vitals card and the attribute grid can
+        // never disagree about the same number again (KI-27).
         match id {
-            0x09 => power_on_hours = Some(raw & 0xFFFF_FFFF),
-            0x0C => power_cycles = Some(raw & 0xFFFF_FFFF),
+            0x09 => power_on_hours = Some(display_raw(id, raw)),
+            0x0C => power_cycles = Some(display_raw(id, raw)),
             0xC2 | 0xBE => {
-                // Temperature: lower byte of raw
-                let t = (raw & 0xFF) as i32;
+                let t = display_raw(id, raw) as i32;
                 if t > 0 && t < 100 {
                     temperature_c = Some(t);
                 }
@@ -750,6 +796,58 @@ mod tests {
         assert_eq!(compute_status(0x01, 100, 100, 20, 0), AttrStatus::Good);
         // Critical ID with non-zero raw and no threshold → Warning.
         assert_eq!(compute_status(0x05, 100, 100, 0, 1), AttrStatus::Warning);
+    }
+
+    /// Observed on a real Seagate ST2000DM008-2FR102 at 10,231 power-on hours:
+    /// the drive reports `0xCEF0_0000_27F7`, hours in the low 32 bits and vendor
+    /// data in the high word. Printing that verbatim gave 227,530,187,483,127
+    /// in the attribute grid while the Vitals card said 10,231 (KI-27).
+    #[test]
+    fn display_raw_unpacks_vendor_hour_counters() {
+        let packed = 0xCEF0_0000_27F7_u64;
+        assert_eq!(packed, 227_530_187_483_127);
+        assert_eq!(display_raw(0x09, packed), 10_231);
+        // Head Flying Hours and Power Cycle Count pack the same way.
+        assert_eq!(display_raw(0xF0, packed), 10_231);
+        assert_eq!(display_raw(0x0C, packed), 10_231);
+    }
+
+    #[test]
+    fn display_raw_takes_the_low_byte_of_temperature_attributes() {
+        // Current in the low byte, min/max above it.
+        assert_eq!(display_raw(0xC2, 0x0015_0032_0026), 38);
+        assert_eq!(display_raw(0xBE, 38), 38);
+    }
+
+    #[test]
+    fn display_raw_leaves_genuine_counts_untouched() {
+        // Sector counts are plain scalars — masking them would corrupt a real
+        // failure signal.
+        assert_eq!(display_raw(0x05, 24), 24);
+        assert_eq!(display_raw(0xC5, 8), 8);
+        assert_eq!(display_raw(0xC6, 2), 2);
+        assert_eq!(display_raw(0xC7, 0), 0);
+        // Seagate's packed error *rates* are shown whole, as smartctl and
+        // CrystalDiskInfo do — there is no portable way to decode them.
+        assert_eq!(display_raw(0x01, 120_202_145), 120_202_145);
+        assert_eq!(display_raw(0x07, 102_114_014), 102_114_014);
+    }
+
+    /// The same drive reports Read Error Rate raw 120,202,145 with a healthy
+    /// normalised 81 against threshold 6. Treating a packed rate as a count
+    /// flagged every Seagate/WD drive amber forever (KI-27).
+    #[test]
+    fn read_error_rate_does_not_warn_on_a_packed_raw() {
+        assert!(!is_critical(0x01));
+        assert_eq!(
+            compute_status(0x01, 81, 64, 6, 120_202_145),
+            AttrStatus::Good
+        );
+        // …but a genuinely failing read error rate still trips the normalised
+        // threshold checks.
+        assert_eq!(compute_status(0x01, 5, 5, 6, 0), AttrStatus::Failed);
+        // And real sector counts still warn.
+        assert_eq!(compute_status(0xC5, 100, 100, 0, 8), AttrStatus::Warning);
     }
 
     #[cfg(windows)]

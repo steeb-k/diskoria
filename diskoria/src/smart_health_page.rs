@@ -876,7 +876,10 @@ fn draw_attribute_card(
         FontId::proportional(11.0),
         t.txt_sec,
     );
-    let raw_str = fmt_thousands(attr.raw);
+    // Not `attr.raw`: some attributes pack several fields into the 48-bit raw,
+    // which printed a 227-trillion Power-On Hours next to a Vitals card reading
+    // 10,231 (KI-27).
+    let raw_str = fmt_thousands(attr.display_raw());
     ui.painter().text(
         Pos2::new(raw_x + raw_col_w * 0.5, col_y + 14.0),
         Align2::CENTER_TOP,
@@ -1093,7 +1096,7 @@ fn build_report_html(drive: &DetectedDrive, report: &SmartReport, chart_png: Opt
                     "<tr class=\"{cls}\">\n<td>{id:02X}</td><td>{name}</td><td>{st}</td>\n<td>{cur}</td><td>{wst}</td><td>{thr}</td><td>{raw}</td>\n</tr>",
                     id = a.id, name = a.name, st = status_str,
                     cur = a.current, wst = a.worst, thr = a.threshold,
-                    raw = fmt_thousands(a.raw),
+                    raw = fmt_thousands(a.display_raw()),
                 )
             }).collect::<Vec<_>>().join("\n");
 

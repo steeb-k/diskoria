@@ -353,14 +353,20 @@ pub fn health_report(drive_index: usize) -> SmartReport {
         1 => SmartReport::Ata(AtaSmartData {
             attributes: vec![
                 //             id     cur worst thr  raw
-                ata_attribute(0x01, 118, 99, 6, 0),
+                // Real Seagate/WD drives report a large packed *rate* here, not
+                // a count — copied from an ST2000DM008 so the invented drive
+                // exercises the same path (KI-27).
+                ata_attribute(0x01, 118, 99, 6, 120_202_145),
                 ata_attribute(0x03, 96, 96, 0, 0),
                 ata_attribute(0x04, 100, 100, 20, 1_883),
                 // The reason this drive reads as a warning: 24 sectors have
                 // already been swapped out for spares.
                 ata_attribute(0x05, 96, 96, 10, 24),
                 ata_attribute(0x07, 84, 60, 30, 0),
-                ata_attribute(0x09, 84, 84, 0, 14_226),
+                // Power-On Hours as a real drive packs it: 14,226 in the low 32
+                // bits with vendor data above. Displays as 14,226 either way —
+                // that equality is the KI-27 fix.
+                ata_attribute(0x09, 84, 84, 0, 0xCEF0_0000_0000 | 14_226),
                 // Threshold kept low deliberately: `compute_status` warns when
                 // current is within 10 % of threshold, so a high threshold here
                 // would paint a perfectly healthy attribute amber and muddy the
