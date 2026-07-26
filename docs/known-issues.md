@@ -59,18 +59,6 @@ before `DiskoriaApp::draw` begins rendering, to avoid frame hitches when another
 window mutates settings. This is by convention only — no compile-time check. A
 leaked guard would show up as mysterious stalls when two windows interact.
 
-### KI-15 — Benchmark page can silently change the shared drive selection `cleanup`
-With the unified `selected_drive` (KI elsewhere), visiting the Benchmark page
-with a partition-less drive selected triggers
-`ensure_speed_volume_selection_valid` (`app.rs:889`), which can't keep a drive
-that has no `(drive, partition)` pair and falls back to `pairs[0]` — repointing
-`selected_drive` to the first drive that has a testable volume. Because the
-selection is shared, that change persists on Drive Health / Sector pages too.
-Only happens when another drive has a partition (else `pairs` is empty and the
-selection is left alone). Natural fix: have the speed page derive a *display*
-selection without mutating the shared `selected_drive`, or only adjust the
-partition, never the drive. (Behavior accepted for now.)
-
 ### KI-16 — Two-row drive dropdown: custom popup reuses egui's combo popup id `fragile`
 `drive_selector::two_row_combo` paints the collapsed card by hand and drives the
 dropdown via `popup_below_widget` opened on **`combo_id.with("popup")`** — the
@@ -126,6 +114,44 @@ builder that owns its `allocate_space` and reports its own bottom rect — see
 
 Condensed; see git history for full detail.
 
+- **KI-15 — Benchmark page silently changed the shared drive selection**
+  `cleanup`. `ensure_speed_volume_selection_valid` ran on every Benchmark frame;
+  when `selected_drive` named a disk with no `(drive, partition)` pair it fell
+  back to `pairs[0]`, repointing the *shared* selection at the first drive that
+  had a mounted volume — so merely visiting Benchmark moved what Drive Health /
+  Sector / Sector Write showed. Replaced with a derived
+  `DiskoriaApp::speed_target_pair()`: the selected drive is kept and only the
+  partition (a Benchmark-only field) is clamped; a volume-less selection yields
+  `None` rather than jumping. The mutation is gone entirely —
+  `sync_speed_partition_after_drives_refresh` was deleted too, since clamping on
+  read means a refresh can't rewrite the selection either. Picking a volume in
+  the Benchmark dropdown remains the one place the page writes `selected_drive`,
+  because that is an explicit user choice.
+
+  Three knock-on changes were required rather than optional:
+  - The volume-less selection is now shown in the dropdown as a grayed, in-drive-
+    order row ("Drive N — model" + a "No mounted volume" chip) and the page says
+    *"No mounted volume on this disk. Choose a volume above to benchmark."* Start
+    stays disabled — which is what `can_start_speed_test` always intended; the
+    old repointing just made that branch unreachable.
+  - `DriveEntry::disabled` became `Option<&'static str>` (the tooltip reason).
+    The popup previously hard-coded "Testing in another window" for every grayed
+    row, which would have been a lie on the new one. `BUSY_ELSEWHERE` in
+    `drive_selector.rs` is the shared constant for the KI-17 case.
+  - `two_row_combo` now focuses the first *enabled* row when the popup opens if
+    the current row is disabled. Previously nothing gained focus, which also
+    affected the pre-existing case of a drive that got locked by another window
+    while it was your selection.
+  - `publish_test_lock` derives its key from the running test's `*_test_target`
+    (falling back to the selection) instead of from `selected_drive`. With the
+    Benchmark target derived rather than stored, the selection alone can no
+    longer be trusted to name the disk actually under test.
+
+  Verified in demo mode with drive 1's partitions temporarily stripped: before,
+  Benchmark → Drive Health showed Drive 0; after, it stays on Drive 1. Note the
+  canned `demo::drives()` all have partitions (asserted by
+  `demo_drives_are_distinct_and_lockable`), so reproducing this state needs
+  either that temporary patch or real unformatted hardware.
 - **KI-8 — Stale doc comments after multi-window landed** `cleanup`. The
   `renderers` field and `App::primary()` comments in `lib.rs` (and a couple of
   dangling references to a non-existent `WINDOWS11_EGUI_STYLE_GUIDE.md` and a

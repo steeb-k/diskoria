@@ -140,7 +140,9 @@ impl crate::app::DiskoriaApp {
                     ChipSpec::media(d.media),
                     ChipSpec::bus(d.bus),
                 ],
-                disabled: busy.contains(&d.lock_key()),
+                disabled: busy
+                    .contains(&d.lock_key())
+                    .then_some(drive_selector::BUSY_ELSEWHERE),
             })
             .collect();
         let sel = self.selected_drive.min(entries.len().saturating_sub(1));

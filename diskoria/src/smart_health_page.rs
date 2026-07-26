@@ -172,7 +172,7 @@ fn draw_drive_picker(
             ],
             // Drive Health is read-only — any drive stays viewable even while
             // it is under test in another window.
-            disabled: false,
+            disabled: None,
         })
         .collect();
     let sel = app.selected_drive.min(entries.len().saturating_sub(1));
