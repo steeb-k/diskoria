@@ -69,12 +69,8 @@ Draw them from `docs/known-issues.md` — each fix moved to **Resolved** in that
 release is a line. Keep KI numbers in the notes; they are stable identifiers and
 make it possible to trace a user report back to the entry.
 
-**No emoji. Plain, professional English.** No decorative symbols, no marketing
-voice or call-to-action headings, no loaded verbs where a neutral one works, and
-sparing emphasis — a heading followed by plain sentences. State what went wrong,
-then what it does now. This is a signed product with real users; notes that read
-like a generated project undermine that. Check the published body, not just the
-file you wrote:
+No emoji. Plain, professional English: no decorative symbols, no marketing voice,
+no call-to-action headings. State what went wrong, then what it does now.
 
 ```powershell
 gh release view <tag> --repo <repo> --json body --jq '.body'
