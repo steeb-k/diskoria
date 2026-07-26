@@ -1329,6 +1329,12 @@ pub fn run() {
     // was seeded with. See `demo.rs` — none of it touches a disk.
     demo::init();
 
+    // `--demo-export`: write the Export Log reports and quit. Headless, so it
+    // never opens a window or reaches a real disk.
+    if demo::write_export_reports() {
+        return;
+    }
+
     // Boot-smoke mode: render a few frames then exit. Defaults to 3 frames;
     // `DISKORIA_SMOKE=N` overrides the count.
     let smoke_remaining: Option<u32> = std::env::var("DISKORIA_SMOKE").ok().map(|v| {

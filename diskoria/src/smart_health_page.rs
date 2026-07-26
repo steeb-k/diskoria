@@ -1259,6 +1259,15 @@ pub fn build_chart_report_html(
     build_report_html(drive, report, Some(chart_png))
 }
 
+/// Build the Export Log HTML without touching a file dialog.
+///
+/// Exists so `--demo-export` can write the exact report the button produces —
+/// the wiki documents this feature, and a hand-drawn mockup of a report would
+/// be a different document from the one users actually get.
+pub fn report_html_for_demo(drive: &DetectedDrive, report: &SmartReport) -> String {
+    build_report_html(drive, report, None)
+}
+
 pub fn save_smart_report(drive: &DetectedDrive, report: &SmartReport) {
     let html = build_report_html(drive, report, None);
     let filename = format!("SMART-{}.html", drive.safe_filename_stem());

@@ -660,7 +660,7 @@ impl DiskoriaApp {
     /// worker channel `None` — every `poll_*` early-returns on a missing
     /// receiver, so no disk I/O is started and none of the seeded numbers move.
     fn apply_demo_seed(&mut self) {
-        let cfg = *crate::demo::config();
+        let cfg = crate::demo::config();
         if let Some(page) = cfg.page {
             self.active_nav = page;
         }

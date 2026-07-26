@@ -25,6 +25,8 @@
 //! --demo-confirm    the confirmation modal for the current page
 //! --demo-theme <dark|light>   force the theme, ignoring the OS and settings
 //! --demo-accent <RRGGBB>      force the accent, ignoring the live Windows one
+//! --demo-export <dir>         write the Export Log report for every canned
+//!                             drive into <dir>, then exit without a window
 //! ```
 //!
 //! `--demo-theme` and `--demo-accent` exist so a reference capture is
@@ -57,7 +59,9 @@ pub const PAGE_BENCHMARK: usize = 3;
 pub const PAGE_ABOUT: usize = 4;
 pub const PAGE_SETTINGS: usize = 5;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+// Not `Copy`: `export_dir` is a String. Callers take `&'static DemoConfig`
+// from `config()` rather than a copy.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DemoConfig {
     /// Sidebar nav index to open on, from `--page`.
     pub page: Option<usize>,
@@ -77,6 +81,9 @@ pub struct DemoConfig {
     pub dark: Option<bool>,
     /// Accent as `(r, g, b)`, from `--demo-accent`.
     pub accent: Option<(u8, u8, u8)>,
+    /// Directory to write Export Log reports into, from `--demo-export`. This
+    /// is a headless path: it writes and exits without opening a window.
+    pub export_dir: Option<String>,
 }
 
 impl DemoConfig {
@@ -86,6 +93,7 @@ impl DemoConfig {
         self.drive.is_some()
             || self.dark.is_some()
             || self.accent.is_some()
+            || self.export_dir.is_some()
             || self.drives
             || self.health
             || self.progress
@@ -191,6 +199,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> DemoConfig {
             "--demo-accent" => {
                 cfg.accent = value_at(i, arg).as_deref().and_then(parse_hex_rgb);
             }
+            "--demo-export" => cfg.export_dir = value_at(i, arg),
             "--demo-toast" => cfg.toast = true,
             "--demo-alert" => cfg.alert = true,
             "--demo-confirm" => cfg.confirm = true,
@@ -493,6 +502,33 @@ pub fn wmi_health(drive_index: usize) -> (crate::smart_health::SmartHealth, Opti
         1 => (SmartHealth::Healthy, None),
         _ => (SmartHealth::Disabled, None),
     }
+}
+
+/// `--demo-export`: write the Export Log report for every canned drive, then
+/// return `true` so the caller exits before opening a window.
+///
+/// This produces the *real* report — the same `build_report_html` the button
+/// calls — from invented data, so the wiki can document what users actually
+/// get rather than a drawing of it.
+pub fn write_export_reports() -> bool {
+    let Some(dir) = config().export_dir.as_deref() else {
+        return false;
+    };
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        eprintln!("--demo-export: cannot create {dir}: {e}");
+        return true;
+    }
+    for (i, drive) in drives().iter().enumerate() {
+        let report = health_report(i);
+        let html = crate::smart_health_page::report_html_for_demo(drive, &report);
+        let path = std::path::Path::new(dir)
+            .join(format!("SMART-{}.html", drive.safe_filename_stem()));
+        match std::fs::write(&path, html.as_bytes()) {
+            Ok(()) => println!("wrote {}", path.display()),
+            Err(e) => eprintln!("--demo-export: {}: {e}", path.display()),
+        }
+    }
+    true
 }
 
 /// Title and body for the `--demo-toast` sample notification. Same shape the
