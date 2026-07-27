@@ -3,6 +3,8 @@ name = "diskoria"
 version = "1.6.3"
 edition = "2021"
 description = "Diskoria - Windows storage scanning and benchmarking"
+# Application, not a library — never published to crates.io.
+publish = false
 
 [dependencies]
 chrono = "0.4"
