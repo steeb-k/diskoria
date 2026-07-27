@@ -857,9 +857,11 @@ impl ApplicationHandler<UserEvent> for App {
                                 });
                             self.flyout = None;
                             self.flyout_drive_serial = Some(serial.clone());
-                            let accent = self.primary()
-                                .map(|r| r.app.shared.accent_color())
-                                .unwrap_or(egui::Color32::from_rgb(61, 90, 128));
+                            // Straight from shared state, not from the primary
+                            // window: tray-only runs (`--minimized`, or the last
+                            // window closed to tray) have no primary, and used to
+                            // fall back to a hard-coded blue (known-issues KI-31).
+                            let accent = self.shared.accent_color();
                             if let Some(flyout) = crate::flyout::FlyoutRenderer::new(event_loop, snapshot, Some(rect), accent) {
                                 unsafe {
                                     use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
@@ -882,9 +884,7 @@ impl ApplicationHandler<UserEvent> for App {
                         self.flyout_drive_serial = None;
                     } else if let Some((serial, pos)) = tray.alert_drive_right_click(&e) {
                         // Right-click on a flashing drive icon → show suppression menu.
-                        let accent = self.primary()
-                            .map(|r| r.app.shared.accent_color())
-                            .unwrap_or(egui::Color32::from_rgb(61, 90, 128));
+                        let accent = self.shared.accent_color();
                         self.drive_context_menu = None;
                         if let Some(dcm) = crate::flyout::DriveContextMenuWindow::new(
                             event_loop, pos, accent, serial,
@@ -911,9 +911,7 @@ impl ApplicationHandler<UserEvent> for App {
                     } else if let Some(pos) = tray.app_icon_right_click_pos(&e) {
                         log::info!(target: "diskoria::tray", "App icon right-clicked at {:?}", pos);
                         // Right-click on the app icon → custom themed context menu.
-                        let accent = self.primary()
-                            .map(|r| r.app.shared.accent_color())
-                            .unwrap_or(egui::Color32::from_rgb(61, 90, 128));
+                        let accent = self.shared.accent_color();
                         self.context_menu = None;
                         if let Some(cm) = crate::flyout::ContextMenuWindow::new(event_loop, pos, accent) {
                             log::info!(target: "diskoria::tray", "Context menu window created");

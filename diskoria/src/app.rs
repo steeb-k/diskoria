@@ -149,6 +149,12 @@ pub struct DiskoriaApp {
     /// is the in-progress text the user is typing.
     accent_custom_hex: String,
     accent_custom_te_id: Option<Id>,
+    /// Whether the hex field has actually been typed into since it last gained
+    /// focus. The draft is seeded from the *default* setting (`#8E44AD`), so a
+    /// blind commit on `lost_focus` made merely Tab-ing through the Settings page
+    /// enable the custom accent and repaint everything purple (known-issues
+    /// KI-29). Only a real edit may commit.
+    accent_hex_edited: bool,
     /// Settings page (`active_nav == 4`): manual keyboard focus slots (see example app).
     settings_focus: Option<usize>,
     /// Cached "Launch at startup" state for the Settings toggle. `None` until the
@@ -473,6 +479,7 @@ impl DiskoriaApp {
             hwnd,
             accent_custom_hex: s.accent_custom_hex.clone(),
             accent_custom_te_id: None,
+            accent_hex_edited: false,
             settings_focus: None,
             #[cfg(windows)]
             startup_enabled: None,
@@ -3584,6 +3591,31 @@ impl DiskoriaApp {
         }
     }
 
+    /// Re-resolve the accent after the source changed. The Windows arm records
+    /// whether the OS actually had an accent to give and falls back explicitly
+    /// rather than leaving the previous source's color in place under a
+    /// "Windows accent" label (known-issues KI-30).
+    fn reapply_accent_source(&mut self) {
+        let snap = self.shared.settings_snapshot();
+        match snap.accent_source {
+            AccentSourcePref::Windows => {
+                let os_accent = windows_accent_color();
+                self.shared.set_accent_os_available(os_accent.is_some());
+                self.shared
+                    .set_accent_color(os_accent.unwrap_or(ACCENT_PALETTE[0]));
+            }
+            AccentSourcePref::Palette => {
+                self.shared.set_accent_color(accent_from_palette(
+                    snap.accent_palette_idx,
+                    snap.accent_use_custom,
+                    &snap.accent_custom_hex,
+                ));
+            }
+        }
+        // Let the next poll run immediately instead of waiting out the interval.
+        self.shared.set_accent_last_poll(None);
+    }
+
     fn update_accent_color(&mut self, ctx: &egui::Context) {
         // `--demo-accent` pins the accent; polling DWM would overwrite it on the
         // next frame and put the host's colour into the capture.
@@ -3603,7 +3635,9 @@ impl DiskoriaApp {
                 return;
             }
             self.shared.set_accent_last_poll(Some(now));
-            if let Some(c) = windows_accent_color() {
+            let os_accent = windows_accent_color();
+            self.shared.set_accent_os_available(os_accent.is_some());
+            if let Some(c) = os_accent {
                 if c != self.shared.accent_color() {
                     self.shared.set_accent_color(c);
                     ctx.request_repaint();
@@ -4545,26 +4579,7 @@ impl DiskoriaApp {
                 } else {
                     self.settings_focus = Some(slot);
                 }
-                let snap = self.shared.settings_snapshot();
-                match snap.accent_source {
-                    AccentSourcePref::Windows => {
-                        #[cfg(windows)]
-                        if let Some(c) = windows_accent_color() {
-                            self.shared.set_accent_color(c);
-                        }
-                    }
-                    AccentSourcePref::Palette => {
-                        self.shared.set_accent_color(accent_from_palette(
-                            snap.accent_palette_idx,
-                            snap.accent_use_custom,
-                            &snap.accent_custom_hex,
-                        ));
-                    }
-                }
-                #[cfg(windows)]
-                {
-                    self.shared.set_accent_last_poll(None);
-                }
+                self.reapply_accent_source();
             }
             if page_keys && keyboard_activate(ui, focused) {
                 let old = self.shared.settings_snapshot().accent_source;
@@ -4572,26 +4587,7 @@ impl DiskoriaApp {
                 if old != *pref {
                     self.settings_focus = None;
                 }
-                let snap = self.shared.settings_snapshot();
-                match snap.accent_source {
-                    AccentSourcePref::Windows => {
-                        #[cfg(windows)]
-                        if let Some(c) = windows_accent_color() {
-                            self.shared.set_accent_color(c);
-                        }
-                    }
-                    AccentSourcePref::Palette => {
-                        self.shared.set_accent_color(accent_from_palette(
-                            snap.accent_palette_idx,
-                            snap.accent_use_custom,
-                            &snap.accent_custom_hex,
-                        ));
-                    }
-                }
-                #[cfg(windows)]
-                {
-                    self.shared.set_accent_last_poll(None);
-                }
+                self.reapply_accent_source();
             }
         }
 
@@ -4675,10 +4671,18 @@ impl DiskoriaApp {
                 }
             }
         } else {
+            // When the OS has no accent to report (Windows PE, or a profile with
+            // no accent value) the "Windows accent" option is silently painting
+            // the palette fallback — say so instead of looking broken (KI-30).
+            let msg = if self.shared.accent_os_available() {
+                "Switch to Palette to choose colors."
+            } else {
+                "Windows reports no accent color — using the fallback. Switch to Palette to choose one."
+            };
             ui.painter().text(
                 Pos2::new(inner_x, accent_grid_top + 10.0),
                 Align2::LEFT_CENTER,
-                "Switch to Palette to choose colors.",
+                msg,
                 FontId::proportional(13.0),
                 t.txt_sec,
             );
@@ -4729,8 +4733,19 @@ impl DiskoriaApp {
         if te_resp.clicked() {
             self.settings_focus = Some(hex_slot);
         }
+        if te_resp.changed() {
+            self.accent_hex_edited = true;
+        }
 
-        if te_resp.lost_focus() {
+        // Focus alone must not commit: the manual tab order binds egui focus to
+        // this field (`focus.rs::bind_text_focus_slot`), so without this guard
+        // Tab-ing past it committed the seeded placeholder and overwrote the
+        // chosen palette swatch with purple (known-issues KI-29).
+        if te_resp.lost_focus() && !self.accent_hex_edited {
+            // Drop any stale draft so the field re-seeds from the real setting.
+            self.accent_custom_hex = self.shared.settings_snapshot().accent_custom_hex.clone();
+        } else if te_resp.lost_focus() {
+            self.accent_hex_edited = false;
             let trimmed = self.accent_custom_hex.trim().to_string();
             if trimmed.is_empty() {
                 let draft = self.accent_custom_hex.clone();

@@ -371,3 +371,54 @@ Condensed; see git history for full detail.
   at 100% scale: 6 background-gray pixels along the pill's bottom row (y=31)
   became accent, plus 6 more on other panel edges; 0 remain. Ported from
   phoenix-simulacra `e40a0a3`, which shares this rasterizer's lineage.
+- **KI-29 — Tabbing past the custom-hex field silently pinned the accent to purple**
+  `bug`. Reported as "the accent is set to Windows but it's always purple". The
+  `TextEdit` draft `DiskoriaApp::accent_custom_hex` is seeded from
+  `Settings::accent_custom_hex`, whose default is **`"#8E44AD"`** — the same purple
+  as `ACCENT_PALETTE[0]`. The `te_resp.lost_focus()` handler committed whatever
+  the buffer held without checking that the user had typed anything, setting
+  `accent_use_custom = true`, persisting the hex and (source == Palette) calling
+  `set_accent_color`. So the field committed its own placeholder — and focus gets
+  there with no click, because `focus.rs`'s `bind_text_focus_slot` binds egui
+  focus to it at the hex tab slot. **Tab-ing through the Settings page was enough
+  to discard a chosen swatch and repaint everything purple.** It also looked
+  stuck rather than overridden: a swatch only draws as selected when
+  `!accent_use_custom`, so afterwards nothing was ringed. This is how a profile
+  ends up with `accent_source=palette / accent_use_custom=true /
+  accent_custom_hex=#8E44AD` in `settings.txt` without anyone typing a hex code —
+  confirmed on the author's own profile. Fixed by gating the commit on a real
+  edit: `accent_hex_edited` is set from `te_resp.changed()` and cleared on
+  commit; an unedited blur now re-seeds the draft from the setting instead of
+  writing to it.
+- **KI-30 — "Windows accent" read the DWM colorization color, not the accent**
+  `bug`. `theme::windows_accent_color` used `DwmGetColorizationColor`, which
+  returns the composited **colorization** color — the accent blended per
+  `ColorizationColorBalance`/afterglow — not the accent itself. Measured on a
+  stock Windows 11 profile (balance 89, `ColorPrevalence=0`): accent `#0078D4`,
+  colorization `0xE3006FC4`, so Diskoria painted `#006FC4`. Plausible enough to
+  pass a glance, never a match. Worse, it is not guaranteed to track the accent
+  at all, and in a session without DWM composition — **including Windows PE, a
+  target environment** — it fails outright, `windows_accent_color()` returns
+  `None`, and `initial_accent_color` silently falls back to `ACCENT_PALETTE[0]`:
+  the Settings page reads "Windows accent" while the UI is purple, permanently,
+  with nothing to explain it. The segment handlers had the mirror hole — on
+  `None` they skipped `set_accent_color` entirely, stranding the previous
+  source's color under a "Windows accent" label. Fixed by reading
+  `HKCU\Software\Microsoft\Windows\DWM\AccentColor` (a `REG_DWORD` in **ABGR**,
+  the reverse of DWM's ARGB — `accent_from_abgr`/`accent_from_argb` are unit
+  tested precisely because mixing them up yields a plausible wrong color), with
+  `DwmGetColorizationColor` kept as fallback. ✓ verified: resolves to `#0078D4`,
+  matching the OS. The fallback is no longer silent — `SharedAppState::
+  accent_os_available` is set at startup and by the accent poll, logged once at
+  startup, and shown on the Settings page where the swatches would be; the
+  segment handlers now go through `reapply_accent_source`, which falls back
+  explicitly.
+- **KI-31 — Tray windows used a hard-coded accent when no main window existed**
+  `bug`. The flyout and both tray context menus (`lib.rs`) resolved their accent
+  as `self.primary().map(|r| r.app.shared.accent_color()).unwrap_or(Color32::from_rgb(61, 90, 128))`.
+  `primary()` is `None` in exactly the configuration where the tray *is* the whole
+  UI — launched `--minimized` from the startup scheduled task, or after the last
+  window closed to tray — so those surfaces painted a slate blue matching neither
+  the user's accent nor any palette entry. `self.shared` is in scope at all three
+  sites and `SharedAppState::accent_color()` is always populated, so the fallback
+  was never needed: all three now read it directly.

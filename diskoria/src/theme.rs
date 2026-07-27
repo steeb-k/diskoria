@@ -134,8 +134,67 @@ impl Theme {
     }
 }
 
+/// The accent color Windows itself is using, or `None` when the OS has none to
+/// give — in which case the caller falls back to the palette (known-issues
+/// KI-30) and should make that visible rather than silently painting purple.
+///
+/// Two sources, in order:
+///
+/// 1. `HKCU\Software\Microsoft\Windows\DWM\AccentColor` — the *exact* accent the
+///    user picked in Settings → Personalization.
+/// 2. `DwmGetColorizationColor` — the composited **colorization** color, which
+///    is the accent blended per `ColorizationColorBalance`/afterglow and so only
+///    approximates it (measured: accent `#0078D4` → colorization `#006FC4`).
+///    Kept as a fallback for sessions where the value above is missing.
+///
+/// Both fail where there is no per-user accent at all — notably Windows PE,
+/// which has no DWM composition.
 #[cfg(windows)]
 pub fn windows_accent_color() -> Option<Color32> {
+    registry_accent_color().or_else(dwm_colorization_color)
+}
+
+/// `HKCU\Software\Microsoft\Windows\DWM\AccentColor`, a `REG_DWORD` stored
+/// **ABGR** (`0xFFD47800` → `#0078D4`) — note the byte order is the reverse of
+/// the ARGB `DwmGetColorizationColor` returns.
+#[cfg(windows)]
+fn registry_accent_color() -> Option<Color32> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr::null_mut;
+
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{
+        RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD,
+    };
+
+    let wide = |s: &str| -> Vec<u16> {
+        OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    };
+    let subkey = wide(r"Software\Microsoft\Windows\DWM");
+    let value = wide("AccentColor");
+
+    unsafe {
+        let mut abgr: u32 = 0;
+        let mut cb: u32 = std::mem::size_of::<u32>() as u32;
+        let rc = RegGetValueW(
+            HKEY_CURRENT_USER,
+            subkey.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_DWORD,
+            null_mut(),
+            std::ptr::addr_of_mut!(abgr).cast(),
+            &mut cb,
+        );
+        if rc != ERROR_SUCCESS {
+            return None;
+        }
+        Some(accent_from_abgr(abgr))
+    }
+}
+
+#[cfg(windows)]
+fn dwm_colorization_color() -> Option<Color32> {
     use windows_sys::Win32::Graphics::Dwm::DwmGetColorizationColor;
     unsafe {
         let mut colorization: u32 = 0;
@@ -144,11 +203,21 @@ pub fn windows_accent_color() -> Option<Color32> {
         if hr != 0 {
             return None;
         }
-        let r = ((colorization >> 16) & 0xFF) as u8;
-        let g = ((colorization >> 8) & 0xFF) as u8;
-        let b = (colorization & 0xFF) as u8;
-        Some(Color32::from_rgb(r, g, b))
+        Some(accent_from_argb(colorization))
     }
+}
+
+/// `0xAABBGGRR` (registry `AccentColor`) → opaque RGB.
+/// `cfg(test)` too, so the byte-order test still builds on the non-Windows shell.
+#[cfg(any(windows, test))]
+fn accent_from_abgr(v: u32) -> Color32 {
+    Color32::from_rgb((v & 0xFF) as u8, ((v >> 8) & 0xFF) as u8, ((v >> 16) & 0xFF) as u8)
+}
+
+/// `0xAARRGGBB` (`DwmGetColorizationColor`) → opaque RGB.
+#[cfg(any(windows, test))]
+fn accent_from_argb(v: u32) -> Color32 {
+    Color32::from_rgb(((v >> 16) & 0xFF) as u8, ((v >> 8) & 0xFF) as u8, (v & 0xFF) as u8)
 }
 
 #[cfg(not(windows))]
@@ -225,6 +294,18 @@ mod tests {
         // Waltz (purple) and Foxtrot (blue) — the default and most common accents.
         assert_eq!(text_on(crate::app_settings::ACCENT_PALETTE[0]), Color32::WHITE);
         assert_eq!(text_on(crate::app_settings::ACCENT_PALETTE[1]), Color32::WHITE);
+    }
+
+    #[test]
+    fn accent_dword_byte_orders_are_not_mixed_up() {
+        // Both observed on a stock Windows 11 profile whose accent is #0078D4.
+        // The registry value is ABGR, DwmGetColorizationColor's is ARGB — reading
+        // one with the other's layout silently yields a plausible wrong color.
+        assert_eq!(accent_from_abgr(0xFFD4_7800), Color32::from_rgb(0x00, 0x78, 0xD4));
+        assert_eq!(accent_from_argb(0xE300_6FC4), Color32::from_rgb(0x00, 0x6F, 0xC4));
+        // Alpha is ignored: the accent is always painted opaque.
+        assert_eq!(accent_from_abgr(0x0000_00FF), Color32::from_rgb(0xFF, 0x00, 0x00));
+        assert_eq!(accent_from_argb(0x0000_00FF), Color32::from_rgb(0x00, 0x00, 0xFF));
     }
 
     #[test]

@@ -42,6 +42,11 @@ pub struct SharedAppState {
     settings: RwLock<Settings>,
     accent_color: Mutex<Color32>,
     accent_last_poll: Mutex<Option<Instant>>,
+    /// Whether the OS actually gave us an accent last time we asked. `false`
+    /// means "Windows accent" is selected but we are painting the palette
+    /// fallback — a Windows PE session, or any profile with no accent value.
+    /// Surfaced on the Settings page so the fallback isn't silent (KI-30).
+    accent_os_available: AtomicBool,
     drives: RwLock<DrivesState>,
     /// Singleton receiver for the one-shot drive-enumeration task.  Lives on
     /// shared state because multi-window mode has many windows but a single
@@ -93,10 +98,20 @@ impl SharedAppState {
     pub fn new(event_proxy: EventLoopProxy<UserEvent>) -> Self {
         let settings = app_settings::load_settings();
         let accent_color = initial_accent_color(&settings);
+        let accent_os_available = crate::theme::windows_accent_color().is_some();
+        if !accent_os_available {
+            // One line to explain an accent that ignores the OS — the Settings
+            // page says the same thing where the swatches would be (KI-30).
+            log::info!(
+                target: "diskoria::theme",
+                "No Windows accent color available; \"Windows accent\" falls back to the palette"
+            );
+        }
         Self {
             settings: RwLock::new(settings),
             accent_color: Mutex::new(accent_color),
             accent_last_poll: Mutex::new(None),
+            accent_os_available: AtomicBool::new(accent_os_available),
             drives: RwLock::new(DrivesState {
                 list: Vec::new(),
                 loading: true,
@@ -175,6 +190,16 @@ impl SharedAppState {
 
     pub fn set_accent_last_poll(&self, t: Option<Instant>) {
         *self.accent_last_poll.lock().expect("accent_last_poll poisoned") = t;
+    }
+
+    /// `false` when "Windows accent" is selected but the OS has no accent to
+    /// give, so the palette fallback is what's on screen (KI-30).
+    pub fn accent_os_available(&self) -> bool {
+        self.accent_os_available.load(Ordering::Relaxed)
+    }
+
+    pub fn set_accent_os_available(&self, v: bool) {
+        self.accent_os_available.store(v, Ordering::Relaxed);
     }
 
     // ── Drives ───────────────────────────────────────────────────────────────
