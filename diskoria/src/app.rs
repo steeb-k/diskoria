@@ -346,11 +346,7 @@ pub struct DiskoriaApp {
     #[cfg(windows)]
     update_download_rx: Option<mpsc::Receiver<Result<std::path::PathBuf, String>>>,
     #[cfg(windows)]
-    show_update_download_confirm: bool,
-    #[cfg(windows)]
     pending_update_version: String,
-    #[cfg(windows)]
-    pending_update_url: String,
     #[cfg(windows)]
     show_update_alert: bool,
     #[cfg(windows)]
@@ -361,8 +357,6 @@ pub struct DiskoriaApp {
     update_check_busy: bool,
     #[cfg(windows)]
     update_download_busy: bool,
-    #[cfg(windows)]
-    update_download_confirm_focus: Option<usize>,
     #[cfg(windows)]
     update_alert_focus: Option<usize>,
     /// The in-flight check was started automatically rather than by the About
@@ -604,11 +598,7 @@ impl DiskoriaApp {
             #[cfg(windows)]
             update_download_rx: None,
             #[cfg(windows)]
-            show_update_download_confirm: false,
-            #[cfg(windows)]
             pending_update_version: String::new(),
-            #[cfg(windows)]
-            pending_update_url: String::new(),
             #[cfg(windows)]
             show_update_alert: false,
             #[cfg(windows)]
@@ -619,8 +609,6 @@ impl DiskoriaApp {
             update_check_busy: false,
             #[cfg(windows)]
             update_download_busy: false,
-            #[cfg(windows)]
-            update_download_confirm_focus: None,
             #[cfg(windows)]
             update_alert_focus: None,
             #[cfg(windows)]
@@ -978,7 +966,6 @@ impl DiskoriaApp {
             && !self.update_download_busy
             && self.update_check_rx.is_none()
             && self.update_download_rx.is_none()
-            && !self.show_update_download_confirm
             && !self.show_update_alert
     }
 
@@ -1084,14 +1071,13 @@ impl DiskoriaApp {
                 self.update_check_rx = None;
                 self.update_check_busy = false;
                 self.pending_update_version = version_display;
-                if self.update_check_is_auto {
-                    // Automatic path: fetch it straight away and stage it. The
-                    // user is asked once it is ready to install, not before.
-                    self.start_update_download(ctx, &download_url);
-                } else {
-                    self.show_update_download_confirm = true;
-                    self.pending_update_url = download_url;
-                }
+                // Both paths download straight away. Asking "download it?" here
+                // was a prompt for something the user had already asked for —
+                // explicitly on the manual path, and by leaving automatic checks
+                // on for the startup one. What differs is what happens *after*
+                // the download (see `poll_update_download`): a manual check
+                // installs, an automatic one asks when to.
+                self.start_update_download(ctx, &download_url);
                 ctx.request_repaint();
             }
             Ok(Err(e)) => {
@@ -1134,15 +1120,24 @@ impl DiskoriaApp {
                     .unwrap_or("")
                     .to_ascii_lowercase();
                 if name.contains("setup") && name.ends_with(".exe") {
-                    // Stage rather than install: the installer runs when the
-                    // process exits, unless the user picks "Update now" in the
-                    // modal below. Applying it under the user mid-session would
-                    // kill running tests without warning.
                     self.shared.stage_update(path);
                     self.staged_update_version =
                         std::mem::take(&mut self.pending_update_version);
-                    self.show_update_staged_modal = true;
-                    ctx.request_repaint();
+                    if !self.update_check_is_auto && !self.any_test_running() {
+                        // Manual check: the user clicked "Check for updates" and
+                        // there is one, so install it. Asking again is asking
+                        // twice for one decision.
+                        if let Some(installer) = self.shared.take_staged_update() {
+                            self.cancel_all_tests();
+                            crate::update::spawn_run_installer_and_exit(&installer);
+                        }
+                    } else {
+                        // Automatic check, or a test is running: stage it and let
+                        // the modal decide when. Applying it under the user
+                        // mid-session would kill a running test without warning.
+                        self.show_update_staged_modal = true;
+                        ctx.request_repaint();
+                    }
                 } else if let Ok(exe) = std::env::current_exe() {
                     crate::update::spawn_apply_update_and_exit(&path, &exe);
                 } else {
@@ -1167,49 +1162,6 @@ impl DiskoriaApp {
                 self.update_download_rx = None;
                 self.update_download_busy = false;
             }
-        }
-    }
-
-    #[cfg(windows)]
-    fn draw_update_download_confirm(&mut self, ctx: &egui::Context, dark: bool) {
-        let t = Theme::new(dark, self.shared.accent_color());
-        let body = format!(
-            "Version {} is available on GitHub. Download it now? It will be \
-             installed when you close Diskoria, or sooner if you choose.",
-            self.pending_update_version
-        );
-        match two_button_modal(
-            ctx,
-            &t,
-            TwoButtonModalParams {
-                overlay_id: Id::new("diskoria_update_dl_overlay"),
-                dialog_id: Id::new("diskoria_update_dl_dialog"),
-                width: 400.0,
-                height: 200.0,
-                title: "Update available",
-                body: &body,
-                cancel_id: Id::new("diskoria_update_dl_cancel"),
-                cancel_label: "Cancel",
-                confirm_id: Id::new("diskoria_update_dl_ok"),
-                confirm: ModalConfirmPrimary::AccentIcon {
-                    label: "Download",
-                    icon: '\u{f295}',
-                },
-            },
-            &mut self.update_download_confirm_focus,
-        ) {
-            Some(ModalConfirmResult::Cancel) => {
-                self.show_update_download_confirm = false;
-                self.pending_update_version.clear();
-                self.pending_update_url.clear();
-            }
-            Some(ModalConfirmResult::Confirm) => {
-                self.show_update_download_confirm = false;
-                let url = std::mem::take(&mut self.pending_update_url);
-                // `pending_update_version` is kept: the staged modal names it.
-                self.start_update_download(ctx, &url);
-            }
-            None => {}
         }
     }
 
@@ -1857,7 +1809,6 @@ impl DiskoriaApp {
             self.destructive_stop_confirm_focus = None;
             #[cfg(windows)]
             {
-                self.update_download_confirm_focus = None;
                 self.update_staged_focus = None;
                 self.update_alert_focus = None;
             }
@@ -1873,7 +1824,6 @@ impl DiskoriaApp {
             self.destructive_stop_confirm_focus = None;
             #[cfg(windows)]
             {
-                self.update_download_confirm_focus = None;
                 self.update_staged_focus = None;
                 self.update_alert_focus = None;
             }
@@ -1888,7 +1838,6 @@ impl DiskoriaApp {
             tab_cycle_slots(ctx, &mut self.destructive_stop_confirm_focus, 2);
             #[cfg(windows)]
             {
-                self.update_download_confirm_focus = None;
                 self.update_staged_focus = None;
                 self.update_alert_focus = None;
             }
@@ -1903,23 +1852,11 @@ impl DiskoriaApp {
                     self.chart_export_focus = Some(0);
                 }
                 tab_cycle_slots(ctx, &mut self.chart_export_focus, 2);
-                self.update_download_confirm_focus = None;
                 self.update_staged_focus = None;
                 self.update_alert_focus = None;
                 return;
             }
             self.chart_export_focus = None;
-
-            if self.show_update_download_confirm {
-                if self.update_download_confirm_focus.is_none() {
-                    self.update_download_confirm_focus = Some(0);
-                }
-                tab_cycle_slots(ctx, &mut self.update_download_confirm_focus, 2);
-                self.update_staged_focus = None;
-                self.update_alert_focus = None;
-                return;
-            }
-            self.update_download_confirm_focus = None;
 
             if self.show_update_staged_modal {
                 if self.update_staged_focus.is_none() {
@@ -3398,7 +3335,6 @@ impl DiskoriaApp {
         {
             base
                 || self.pending_chart_export.is_some()
-                || self.show_update_download_confirm
                 || self.show_update_alert
                 || self.update_check_busy
                 || self.update_download_busy
@@ -3761,7 +3697,6 @@ impl DiskoriaApp {
         let is_active = self.active_nav == index;
         #[cfg(windows)]
         let update_nav_block = self.pending_chart_export.is_some()
-            || self.show_update_download_confirm
             || self.show_update_staged_modal
             || self.show_update_alert
             || self.update_check_busy
@@ -5195,7 +5130,6 @@ impl DiskoriaApp {
         self.alt_pressed = alt_pressed(ctx);
         #[cfg(windows)]
         let update_blocks_shortcuts = self.pending_chart_export.is_some()
-            || self.show_update_download_confirm
             || self.show_update_staged_modal
             || self.show_update_alert
             || self.update_check_busy
@@ -5333,9 +5267,6 @@ impl DiskoriaApp {
         {
             if self.pending_chart_export.is_some() {
                 self.draw_chart_export_confirm(ctx, dark);
-            }
-            if self.show_update_download_confirm {
-                self.draw_update_download_confirm(ctx, dark);
             }
             if self.show_update_staged_modal {
                 self.draw_update_staged_modal(ctx, dark);

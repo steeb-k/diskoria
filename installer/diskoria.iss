@@ -105,7 +105,22 @@ Filename: "schtasks.exe"; \
 ; requireAdministrator manifest is honored (no second UAC prompt). Without it,
 ; postinstall entries run de-elevated as the original user.
 Filename: "{app}\{#MyAppExe}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent runascurrentuser
+; The in-app updater installs silently, which skips the postinstall entry above
+; (skipifsilent), so it brings Diskoria back itself. Only when the updater asks
+; for it: /RELAUNCH=1 is passed when the update is applied mid-session, and
+; /RELAUNCH=0 from the exit hook, where the user was closing the app and
+; reopening it would be the last thing they wanted. See update::silent_install_args.
+Filename: "{app}\{#MyAppExe}"; Flags: nowait runascurrentuser; Check: RelaunchAfterSilent
 
 [UninstallRun]
 ; Remove the startup task on uninstall (harmless if it was never created).
 Filename: "schtasks.exe"; Parameters: "/Delete /TN ""{#MyStartupTask}"" /F"; Flags: runhidden; RunOnceId: "DelStartupTask"
+
+[Code]
+{ True only for an updater-driven silent install that asked to be relaunched.
+  An interactive install uses the postinstall checkbox instead, and a silent
+  install run by hand (or from the exit hook) leaves the app closed. }
+function RelaunchAfterSilent: Boolean;
+begin
+  Result := WizardSilent and (ExpandConstant('{param:RELAUNCH|0}') = '1');
+end;

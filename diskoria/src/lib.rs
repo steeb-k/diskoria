@@ -953,7 +953,8 @@ impl ApplicationHandler<UserEvent> for App {
             for r in self.renderers.values_mut() {
                 r.app.cancel_all_tests();
             }
-            crate::update::spawn_installer(&installer);
+            // relaunch = false: the user was closing Diskoria, not restarting it.
+            crate::update::spawn_installer(&installer, false);
         }
     }
 

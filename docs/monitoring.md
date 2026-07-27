@@ -104,8 +104,34 @@ Flow, when **Settings → Updates → "Check for updates automatically"** is on
    or the last window closing with `close_to_tray` off). Hiding to the tray is not
    an exit, so a staged update simply keeps waiting.
 
-The manual About-page check keeps its "Download?" confirm, then joins the same
-stage-and-prompt path.
+**The manual About-page check does not prompt at all.** Clicking "Check for
+updates" *is* the decision, so an available update downloads and installs without
+further questions — it skips step 4 entirely and goes straight to running the
+installer. The two exceptions both still stage and prompt: an automatic check
+(the user did not ask for anything right now), and a manual check while a test is
+running (step 4's single-OK variant). Manual checks still report "Up to date" and
+"Update check failed", since with nothing to install those are the only feedback
+there is.
+
+#### Running the installer
+
+`update::spawn_installer` always runs it **silently** — `/SILENT` (a progress
+window, no wizard pages, nothing to click), `/SUPPRESSMSGBOXES`, `/NORESTART`.
+Two switches carry session state across, both built in
+`update::silent_install_args`:
+
+- `/MERGETASKS=[!]startup,[!]desktopicon` — a silent install would otherwise fall
+  back to the `[Tasks]` defaults, and **both are checked by default**, so every
+  update would re-create a startup task or desktop icon the user had removed. The
+  values are read from live state (`autostart::is_enabled()`, and whether the
+  public-desktop `.lnk` exists), matching how `autostart` and `install_mode`
+  treat the OS as the source of truth.
+- `/RELAUNCH=1|0` — a custom parameter read by the installer's
+  `RelaunchAfterSilent` check, which gates a silent-only `[Run]` entry. The
+  interactive `[Run]` entry is `skipifsilent`, so without this a silent install
+  would leave the app closed. It is **1** when applying mid-session (the user is
+  sitting in front of Diskoria and expects it back) and **0** from the exit hook,
+  where the user was closing the app and reopening it would be unwelcome.
 
 ### Custom Context Menu
 Right-clicking the app tray icon opens a custom themed context menu (not the

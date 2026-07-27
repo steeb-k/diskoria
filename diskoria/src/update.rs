@@ -205,23 +205,76 @@ exit /b 1
 #[cfg(not(windows))]
 pub fn spawn_apply_update_and_exit(_new_exe: &std::path::Path, _target_exe: &std::path::Path) {}
 
+/// Inno Setup switches for an unattended update install.
+///
+/// * `/SILENT` — progress window only: no wizard pages and nothing to click.
+///   (`/VERYSILENT` would hide even that, which reads as a crash when the app
+///   disappears for several seconds mid-update.)
+/// * `/MERGETASKS` — carries the *current* selections forward. A silent install
+///   otherwise falls back to the `[Tasks]` defaults, and both are checked by
+///   default, so every update would re-create a startup task or desktop icon the
+///   user had deliberately removed.
+/// * `/RELAUNCH` — a custom parameter read by the `[Run]` entry's
+///   `RelaunchAfterSilent` check. True when the update is applied *mid-session*
+///   (the user is sitting in front of the app and expects it back); false from
+///   the exit hook, where the user was closing Diskoria and reopening it would
+///   be the last thing they wanted.
+///
+/// `keep_*` are read from live state rather than a stored preference for the
+/// same reason `autostart` and `install_mode` are: the OS is the source of truth.
+pub fn silent_install_args(keep_startup: bool, keep_desktop_icon: bool, relaunch: bool) -> Vec<String> {
+    let tasks = format!(
+        "{},{}",
+        if keep_startup { "startup" } else { "!startup" },
+        if keep_desktop_icon { "desktopicon" } else { "!desktopicon" },
+    );
+    vec![
+        "/SILENT".to_string(),
+        "/SUPPRESSMSGBOXES".to_string(),
+        "/NORESTART".to_string(),
+        format!("/MERGETASKS={tasks}"),
+        format!("/RELAUNCH={}", if relaunch { 1 } else { 0 }),
+    ]
+}
+
+/// Whether the all-users desktop shortcut the installer's `desktopicon` task
+/// creates is currently present.
+#[cfg(windows)]
+fn desktop_icon_present() -> bool {
+    std::env::var_os("PUBLIC")
+        .map(|p| {
+            std::path::Path::new(&p)
+                .join("Desktop")
+                .join("Diskoria.lnk")
+                .exists()
+        })
+        .unwrap_or(false)
+}
+
 /// Launch a downloaded installer without exiting. Used from the exit hook,
 /// where the process is already on its way down.
 #[cfg(windows)]
-pub fn spawn_installer(installer: &std::path::Path) {
-    if let Err(e) = std::process::Command::new(installer).spawn() {
+pub fn spawn_installer(installer: &std::path::Path, relaunch: bool) {
+    let args = silent_install_args(
+        crate::autostart::is_enabled(),
+        desktop_icon_present(),
+        relaunch,
+    );
+    log::info!(target: "diskoria", "running installer silently: {}", args.join(" "));
+    if let Err(e) = std::process::Command::new(installer).args(&args).spawn() {
         log::warn!(target: "diskoria", "failed to launch staged installer: {e}");
     }
 }
 
 #[cfg(not(windows))]
 #[allow(dead_code)]
-pub fn spawn_installer(_installer: &std::path::Path) {}
+pub fn spawn_installer(_installer: &std::path::Path, _relaunch: bool) {}
 
-/// Run a downloaded installer (e.g. Inno `*Setup*.exe`) and exit so the file is unlocked.
+/// Run a downloaded installer (e.g. Inno `*Setup*.exe`) and exit so the file is
+/// unlocked. Mid-session path, so the installer relaunches Diskoria afterwards.
 #[cfg(windows)]
 pub fn spawn_run_installer_and_exit(installer: &std::path::Path) {
-    spawn_installer(installer);
+    spawn_installer(installer, true);
     std::thread::sleep(std::time::Duration::from_millis(150));
     std::process::exit(0);
 }
@@ -270,6 +323,27 @@ mod tests {
             update_temp_file_name("https://x/diskoria.exe", 1),
             update_temp_file_name("https://x/diskoria.exe", 2)
         );
+    }
+
+    #[test]
+    fn silent_args_carry_task_state_and_relaunch_forward() {
+        let on = silent_install_args(true, true, true);
+        assert!(on.iter().any(|a| a == "/SILENT"));
+        assert!(on.iter().any(|a| a == "/SUPPRESSMSGBOXES"));
+        assert!(on.iter().any(|a| a == "/MERGETASKS=startup,desktopicon"));
+        assert!(on.iter().any(|a| a == "/RELAUNCH=1"));
+
+        // The point of passing these explicitly: a silent install falls back to
+        // the [Tasks] defaults (both checked), which would re-create a startup
+        // task or desktop icon the user had removed.
+        let off = silent_install_args(false, false, false);
+        assert!(off.iter().any(|a| a == "/MERGETASKS=!startup,!desktopicon"));
+        assert!(off.iter().any(|a| a == "/RELAUNCH=0"));
+
+        // Applying on exit must not bring the app back up.
+        assert!(silent_install_args(true, true, false)
+            .iter()
+            .any(|a| a == "/RELAUNCH=0"));
     }
 
     #[test]
