@@ -22,20 +22,27 @@ unmaintained = "workspace"
 # list is how each one gets fixed — re-run `cargo deny check advisories`
 # after any dependency bump to see if it can go.
 ignore = [
+    # rand 0.8.5: unsound with a custom logger that calls rand::rng()
+    #   fix: cargo update -p rand@0.8.5 (patched in 0.8.6)
+    #   note: requires a *custom* log impl that itself calls rand::rng(). This
+    #   crate uses env_logger and does not, so it is very likely unreachable here.
+    "RUSTSEC-2026-0097",
     # rustls-webpki: name constraints for URI names incorrectly accepted
     #   fix: cargo update -p rustls-webpki (>=0.103.13) — verified to clear
-    "RUSTSEC-2026-0097",
+    "RUSTSEC-2026-0098",
     # rustls-webpki: name constraints accepted for wildcard-asserting certs
     #   fix: cargo update -p rustls-webpki (>=0.103.13) — verified to clear
-    "RUSTSEC-2026-0098",
+    "RUSTSEC-2026-0099",
     # rustls-webpki: reachable panic parsing certificate revocation lists
     #   fix: cargo update -p rustls-webpki (>=0.103.13) — verified to clear
-    "RUSTSEC-2026-0099",
-    # rand: unsound with a custom logger using rand::rng()
-    #   fix: NOT fixed by a patch bump; needs investigation
+    #   note: only reachable if CRLs are parsed; this crate does not use them.
     "RUSTSEC-2026-0104",
     # quick-xml: quadratic run time on duplicate attribute names
     #   fix: needs quick-xml >=0.41; transitive via wayland-scanner, not a direct bump
+    #   note: reached only through the Wayland clipboard path
+    #   (wayland-scanner <- smithay-clipboard <- egui-winit), so it does not
+    #   compile into a Windows build at all. Setting [graph] targets to the
+    #   platforms actually shipped drops this legitimately — see PR discussion.
     "RUSTSEC-2026-0194",
     # quick-xml: unbounded namespace-declaration allocation (memory DoS)
     #   fix: needs quick-xml >=0.41; transitive via wayland-scanner, not a direct bump
