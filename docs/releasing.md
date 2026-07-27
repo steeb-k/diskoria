@@ -27,6 +27,12 @@ happen: `git tag` is the record of what shipped.
    edit `[package] version` — that is all the script does). Nothing else carries
    the version; `build-release.ps1` reads it from `cargo metadata` and passes it
    to Inno Setup.
+
+   `diskoria/Cargo.lock` is **tracked** and carries the version too, but only
+   rewrites itself the next time cargo runs — so committing straight after the
+   edit leaves it behind, and the release build then dirties the tree *after*
+   the tag. Run `cargo metadata --no-deps` (or any cargo command) in `diskoria\`
+   and commit both files together.
 3. **Build unsigned and hand off for manual testing**:
    ```powershell
    .\scripts\build-release.ps1 -NoSign
