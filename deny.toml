@@ -7,6 +7,14 @@
 # No `targets` filter, so dependencies for every platform are checked. An
 # advisory affecting a target we build only occasionally still fails CI.
 #
+# Do NOT add a `targets` filter to silence platform-specific advisories. It
+# would not fix anything — it stops cargo-deny evaluating that platform at all,
+# hiding the *entire* dependency surface there (GTK, X11, Wayland, D-Bus,
+# fontconfig, freetype), not just the advisory that prompted it. This app is
+# Windows-only today but a Linux port is intended, so a targets filter would
+# build a blind spot precisely where the project is heading, in a config line
+# that has been quietly green for years by the time anyone notices.
+#
 # `all-features` is intentionally not set here: CI runs with `--all-features` so
 # that optional dependencies are covered too. Local `cargo deny check` runs
 # without it and will see a slightly smaller graph.
@@ -22,24 +30,34 @@ unmaintained = "workspace"
 # list is how each one gets fixed — re-run `cargo deny check advisories`
 # after any dependency bump to see if it can go.
 ignore = [
-    # rand 0.8.5: unsound with a custom logger that calls rand::rng()
-    #   fix: cargo update -p rand@0.8.5 (patched in 0.8.6)
-    #   note: requires a *custom* log impl that itself calls rand::rng(). This
-    #   crate uses env_logger and does not, so it is very likely unreachable here.
-    "RUSTSEC-2026-0097",
-    # RUSTSEC-2026-0098/0099/0104 (rustls-webpki) were here and are now FIXED,
-    # not suppressed: rustls-webpki is at 0.103.13 as of the Dependabot bump in
-    # #3. Deleting them is the fix landing — if any had survived the bump, this
-    # file would no longer be green.
-    # quick-xml: quadratic run time on duplicate attribute names
-    #   fix: needs quick-xml >=0.41; transitive via wayland-scanner, not a direct bump
-    #   note: reached only through the Wayland clipboard path
-    #   (wayland-scanner <- smithay-clipboard <- egui-winit), so it does not
-    #   compile into a Windows build at all. Setting [graph] targets to the
-    #   platforms actually shipped drops this legitimately — see PR discussion.
+    # FIXED and removed, not suppressed — each left this list when the bump
+    # landed, and cargo-deny passing without them is the proof:
+    #   RUSTSEC-2026-0098/0099/0104  rustls-webpki -> 0.103.13  (#3, #5)
+    #   RUSTSEC-2026-0097            rand 0.8.5 -> 0.8.7
+    # Only the quick-xml pair is left. NOT APPLICABLE rather than deferred:
+    #
+    #   0194  quadratic run time on duplicate attribute names
+    #   0195  unbounded namespace-declaration allocation (memory DoS)
+    #
+    # `cargo tree -i quick-xml` shows exactly one consumer, and every path ends
+    # at the same place:
+    #
+    #   quick-xml -> wayland-scanner (proc-macro)
+    #
+    # wayland-scanner is a build-time code generator: it parses the fixed
+    # Wayland protocol XML that ships inside wayland-protocols and emits Rust.
+    # quick-xml never links into a binary, on ANY platform — verified with
+    # `cargo tree -e normal`, which shows no runtime path either.
+    #
+    # Both advisories are denial-of-service on parser *input*. The only input
+    # here is trusted XML vendored in the dependency tree, parsed on the build
+    # machine. Triggering either would require controlling that XML, which is
+    # already arbitrary code execution via build.rs. There is no runtime
+    # exposure to have, so this does not become reachable after a Linux port.
+    #
+    # No action needed and none possible: quick-xml >=0.41 is transitive, so it
+    # clears itself whenever wayland-scanner bumps.
     "RUSTSEC-2026-0194",
-    # quick-xml: unbounded namespace-declaration allocation (memory DoS)
-    #   fix: needs quick-xml >=0.41; transitive via wayland-scanner, not a direct bump
     "RUSTSEC-2026-0195",
 ]
 
