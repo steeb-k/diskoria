@@ -22,15 +22,12 @@ unmaintained = "workspace"
 # list is how each one gets fixed — re-run `cargo deny check advisories`
 # after any dependency bump to see if it can go.
 ignore = [
-    # rand 0.8.5: unsound with a custom logger that calls rand::rng()
-    #   fix: cargo update -p rand@0.8.5 (patched in 0.8.6)
-    #   note: requires a *custom* log impl that itself calls rand::rng(). This
-    #   crate uses env_logger and does not, so it is very likely unreachable here.
-    "RUSTSEC-2026-0097",
-    # RUSTSEC-2026-0098/0099/0104 (rustls-webpki) were here and are now FIXED,
-    # not suppressed: rustls-webpki is at 0.103.13 as of the Dependabot bump in
-    # #3. Deleting them is the fix landing — if any had survived the bump, this
-    # file would no longer be green.
+    # FIXED and removed, not suppressed — each left this list when the bump
+    # landed, and cargo-deny passing without them is the proof:
+    #   RUSTSEC-2026-0098/0099/0104  rustls-webpki -> 0.103.13  (#3, #5)
+    #   RUSTSEC-2026-0097            rand 0.8.5 -> 0.8.7
+    # Only the quick-xml pair is left, and it is blocked upstream rather than
+    # deferred.
     # quick-xml: quadratic run time on duplicate attribute names
     #   fix: needs quick-xml >=0.41; transitive via wayland-scanner, not a direct bump
     #   note: reached only through the Wayland clipboard path
