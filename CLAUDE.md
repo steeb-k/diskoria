@@ -136,7 +136,10 @@ cargo build                            # zero warnings is the bar — keep it th
 cargo clippy --all-targets             # also zero warnings
 DISKORIA_SKIP_RESOURCE=1 cargo test    # unit tests; the env flag avoids the
                                        # admin-manifest "requires elevation" on the
-                                       # test exe (see known-issues KI-10)
+                                       # test exe (see known-issues KI-10).
+                                       # CI sets the same flag — without it the
+                                       # test exe dies with os error 740 before
+                                       # running anything.
 cargo test --test boot_smoke -- --ignored   # launches the real exe, renders, exits 0
 DISKORIA_SMOKE=3 cargo run             # render N frames then exit (manual smoke)
 
@@ -151,6 +154,24 @@ Tests are pure-logic unit tests (`alert_engine`, `smart_reader`, `monitor`
 extraction, `app_settings`, `history_db`) plus the boot smoke. There is no GPU/
 headless GUI test — window/tray/disk paths are verified manually (see
 `docs/multi-window-smoke-tests.md`).
+
+### CI
+
+Two workflows run on push + PR. Neither builds or publishes a release — that
+stays local and signed (`docs/releasing.md`).
+
+- `.github/workflows/ci.yml` — `cargo build` + `cargo test` against
+  `diskoria/Cargo.toml`, on **windows-latest**. Windows rather than Linux
+  because the crate has ~283 `cfg(windows)` sites and keeps `rusqlite`, `wmi`,
+  `tray-icon` and the `windows` crates behind `[target.'cfg(windows)']`, so a
+  Linux job would compile an unrepresentative slice. It sets
+  `DISKORIA_SKIP_RESOURCE=1` (KI-10) and passes `--locked`, which makes a stale
+  `Cargo.lock` a CI failure instead of a silent re-resolve. Currently 75 pass,
+  1 ignored (the boot smoke, which needs a real desktop).
+- `.github/workflows/cargo-deny.yml` — supply-chain checks. `deny.toml`'s
+  `ignore` list is the open-advisory backlog and **removing an entry is how one
+  gets fixed**; each carries what it is and how to clear it. Re-run
+  `cargo deny check advisories` after any dependency bump to see if one can go.
 
 ## Conventions to follow when adding features
 
