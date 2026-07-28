@@ -25,15 +25,44 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 # act on. Transitive unmaintained crates are upstream's call, and failing on them
 # turns CI permanently red for something we cannot fix.
 unmaintained = "workspace"
+#
+# THIS LIST IS NOT A COMPLETE INVENTORY OF KNOWN ADVISORIES, and a green
+# cargo-deny run is not proof that a given advisory is gone. RustSec marks some
+# advisories `informational = "unsound"` (or "notice"), and cargo-deny does not
+# fail on those — they never appear here, and removing one from this list
+# proves nothing, because the check would pass either way.
+#
+# Two live examples of the gap, both worth knowing before trusting a green run:
+#
+#   RUSTSEC-2026-0097 (rand) is informational. Its `patched` field covers THREE
+#   ranges — >=0.8.6, >=0.9.3, >=0.10.1 — and this tree carries two rand
+#   versions. Bumping only the 0.8.x one and deleting the entry left 0.9.2
+#   (via ashpd -> rfd) still affected, with CI green throughout. Both are now
+#   patched (0.8.7 and 0.9.5); check BOTH after any rand change.
+#
+#   GHSA-wrw7-89jp-8q8g / RUSTSEC-2024-0429 (glib VariantStrIter unsoundness,
+#   fixed in 0.20.0) is open against glib 0.18.5 in Cargo.lock. cargo-deny is
+#   silent because it is informational, and Dependabot cannot fix it because it
+#   is transitive. It is dismissed on the Dependabot tab as not-used rather
+#   than suppressed here, because it is not suppressible here. It is genuinely
+#   unreachable: it enters only via tray-icon -> libappindicator -> gtk 0.18,
+#   and `cargo tree -i glib@0.18.5` finds it on neither x86_64-pc-windows-msvc
+#   nor x86_64-unknown-linux-gnu — only under `--target all`.
+#
+# So: cross-check the repo's Dependabot alerts against this file. They cover
+# different sets, and neither is a superset of the other.
+#
 # Open advisories as of 2026-07-26, suppressed so CI is green on merge.
 # These are earmarked work, NOT accepted risk. Removing an entry from this
 # list is how each one gets fixed — re-run `cargo deny check advisories`
 # after any dependency bump to see if it can go.
 ignore = [
-    # FIXED and removed, not suppressed — each left this list when the bump
-    # landed, and cargo-deny passing without them is the proof:
+    # FIXED and removed, not suppressed:
     #   RUSTSEC-2026-0098/0099/0104  rustls-webpki -> 0.103.13  (#3, #5)
-    #   RUSTSEC-2026-0097            rand 0.8.5 -> 0.8.7
+    #     real vulnerabilities, so cargo-deny passing without them IS proof.
+    #   RUSTSEC-2026-0097            rand -> 0.8.7 AND 0.9.5
+    #     informational, so cargo-deny is NOT proof here — verified by reading
+    #     the resolved versions in Cargo.lock instead.
     # Only the quick-xml pair is left. NOT APPLICABLE rather than deferred:
     #
     #   0194  quadratic run time on duplicate attribute names
