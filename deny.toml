@@ -27,16 +27,10 @@ ignore = [
     #   note: requires a *custom* log impl that itself calls rand::rng(). This
     #   crate uses env_logger and does not, so it is very likely unreachable here.
     "RUSTSEC-2026-0097",
-    # rustls-webpki: name constraints for URI names incorrectly accepted
-    #   fix: cargo update -p rustls-webpki (>=0.103.13) — verified to clear
-    "RUSTSEC-2026-0098",
-    # rustls-webpki: name constraints accepted for wildcard-asserting certs
-    #   fix: cargo update -p rustls-webpki (>=0.103.13) — verified to clear
-    "RUSTSEC-2026-0099",
-    # rustls-webpki: reachable panic parsing certificate revocation lists
-    #   fix: cargo update -p rustls-webpki (>=0.103.13) — verified to clear
-    #   note: only reachable if CRLs are parsed; this crate does not use them.
-    "RUSTSEC-2026-0104",
+    # RUSTSEC-2026-0098/0099/0104 (rustls-webpki) were here and are now FIXED,
+    # not suppressed: rustls-webpki is at 0.103.13 as of the Dependabot bump in
+    # #3. Deleting them is the fix landing — if any had survived the bump, this
+    # file would no longer be green.
     # quick-xml: quadratic run time on duplicate attribute names
     #   fix: needs quick-xml >=0.41; transitive via wayland-scanner, not a direct bump
     #   note: reached only through the Wayland clipboard path
