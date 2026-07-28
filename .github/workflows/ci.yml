@@ -1,0 +1,63 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch makes the older run's verdict irrelevant.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # winresource links the icon + app.manifest globally (rustc-link-lib), so the
+  # manifest's `requireAdministrator` also lands on the `cargo test` harness
+  # exe, which then refuses to launch with "requires elevation" (os error 740).
+  # build.rs provides this escape hatch precisely for unelevated/CI shells; see
+  # docs/known-issues.md (KI-10). Release builds keep the resource.
+  DISKORIA_SKIP_RESOURCE: 1
+
+jobs:
+  test:
+    name: build + test (windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      # Actions are pinned by commit SHA rather than tag, matching the
+      # cargo-deny workflow: a tag can be moved to point at different code.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Windows, not Linux: this crate has ~283 cfg(windows) sites and puts
+      # rusqlite, wmi, tray-icon and the windows crates behind
+      # [target.'cfg(windows)'], so a Linux job would compile a small and
+      # unrepresentative slice of it. rusqlite is "bundled", so SQLite builds
+      # from source with the runner's MSVC — no system packages are needed.
+      - name: Toolchain versions
+        run: |
+          rustc --version
+          cargo --version
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: diskoria
+
+      # The crate lives in diskoria/, not at the repo root — same manifest-path
+      # the cargo-deny workflow uses.
+      #
+      # Split from the test step so a compile failure is distinguishable from a
+      # test failure at a glance. --locked makes a stale Cargo.lock a CI failure
+      # instead of a silent re-resolve, which is the same supply-chain property
+      # cargo-deny is there to protect.
+      - name: Build
+        run: cargo build --locked --all-targets --manifest-path diskoria/Cargo.toml
+
+      # Plain `cargo test` deliberately: the one #[ignore]d test needs hardware
+      # this runner does not have. Everything else is unprivileged and runs.
+      - name: Test
+        run: cargo test --locked --manifest-path diskoria/Cargo.toml
