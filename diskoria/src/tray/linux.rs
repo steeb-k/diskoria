@@ -111,23 +111,29 @@ impl ksni::Tray for SniTray {
         // (Quickshell/waybar configs often don't), while the menu is the one
         // surface every SNI host shows.
         for d in &self.drives {
-            items.push(
-                StandardItem {
-                    label: match d.temp_c {
-                        Some(t) => format!("{} — {t}°C", d.model.trim()),
-                        None => format!("{} — no reading", d.model.trim()),
-                    },
-                    // Enabled on purpose: some panels dim or skip disabled
-                    // entries entirely, and this is the one place the status
-                    // is guaranteed to be readable when a bar renders no
-                    // tooltip. Clicking opens the app, where the detail is.
-                    activate: Box::new(|t: &mut SniTray| {
-                        let _ = t.proxy.send_event(UserEvent::ShowWindowRequested);
-                    }),
-                    ..Default::default()
-                }
-                .into(),
-            );
+            // Two lines per drive: model names are long and panels truncate a
+            // single row, which would cut the temperature off the end.
+            // Enabled on purpose — some panels dim or skip disabled entries,
+            // and this is the one surface guaranteed to show the reading when
+            // a bar renders no tooltip. Either line opens the app.
+            for label in [
+                d.model.trim().to_string(),
+                match d.temp_c {
+                    Some(t) => format!("    {t}°C"),
+                    None => "    no reading".to_string(),
+                },
+            ] {
+                items.push(
+                    StandardItem {
+                        label,
+                        activate: Box::new(|t: &mut SniTray| {
+                            let _ = t.proxy.send_event(UserEvent::ShowWindowRequested);
+                        }),
+                        ..Default::default()
+                    }
+                    .into(),
+                );
+            }
         }
         if !self.drives.is_empty() {
             items.push(MenuItem::Separator);

@@ -21,6 +21,44 @@ pub fn send_toast(title: &str, body: &str) {
     }
 }
 
+/// Absolute path to the app icon on disk, extracted from the binary on first
+/// use.
+///
+/// Freedesktop notifications take either a themed icon *name* or a path. A
+/// portable binary installs nothing into the icon theme, so a name like
+/// "diskoria" resolves to nothing and daemons fall back to a generic glyph —
+/// hence writing the bundled PNG out once and passing its path. Falls back to
+/// a themed disk icon if the file cannot be written.
+#[cfg(target_os = "linux")]
+fn app_icon_arg() -> String {
+    static APP_PNG: &[u8] = include_bytes!("../../assets/applogo.png");
+    const FALLBACK: &str = "drive-harddisk";
+
+    let path = crate::paths::data_dir().join("appicon.png");
+    if path.is_file() {
+        return path.to_string_lossy().into_owned();
+    }
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    match std::fs::write(&path, APP_PNG) {
+        Ok(()) => {
+            // An elevated session writes it as root; the notification daemon
+            // reads it as the user, so hand ownership over like the rest of
+            // the data dir.
+            #[cfg(target_os = "linux")]
+            if let Some(uid) = crate::elevation::session_uid() {
+                let _ = std::os::unix::fs::chown(&path, Some(uid), None);
+            }
+            path.to_string_lossy().into_owned()
+        }
+        Err(e) => {
+            log::warn!(target: "diskoria::toast", "could not write notification icon: {e}");
+            FALLBACK.to_string()
+        }
+    }
+}
+
 /// Send a desktop notification via the freedesktop session bus. Failure is
 /// logged, not fatal — a missing daemon just means no popup.
 #[cfg(target_os = "linux")]
@@ -38,7 +76,7 @@ pub fn send_toast(title: &str, body: &str) {
         .appname("Diskoria")
         .summary(title)
         .body(body)
-        .icon("drive-harddisk")
+        .icon(&app_icon_arg())
         .show();
     if let Err(e) = result {
         log::warn!(target: "diskoria::toast", "notification failed: {e}");
@@ -49,6 +87,7 @@ pub fn send_toast(title: &str, body: &str) {
 /// user. Returns whether the call succeeded.
 #[cfg(target_os = "linux")]
 fn send_toast_as_session_user(title: &str, body: &str) -> bool {
+    let icon = app_icon_arg();
     let ok = |mut c: std::process::Command| -> bool {
         c.stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -66,7 +105,7 @@ fn send_toast_as_session_user(title: &str, body: &str) -> bool {
         "org.freedesktop.Notifications.Notify",
         "string:Diskoria",
         "uint32:0",
-        "string:drive-harddisk",
+        &format!("string:{icon}"),
         &format!("string:{title}"),
         &format!("string:{body}"),
         "array:string:",
@@ -78,7 +117,7 @@ fn send_toast_as_session_user(title: &str, body: &str) -> bool {
     }
     // Some desktops ship notify-send but no dbus-send.
     let mut c = crate::elevation::command_as_session_user("notify-send");
-    c.args(["-a", "Diskoria", "-i", "drive-harddisk", title, body]);
+    c.args(["-a", "Diskoria", "-i", &icon, title, body]);
     ok(c)
 }
 
