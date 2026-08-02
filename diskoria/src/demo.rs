@@ -45,7 +45,7 @@
 use std::sync::OnceLock;
 
 use crate::detected_drive::{BusKind, DetectedDrive, MediaKind, PartitionTableStyle};
-use crate::partition_info::{BitLockerStatus, PartitionInfo};
+use crate::partition_info::{EncryptionStatus, PartitionInfo};
 use crate::smart_reader::{ata_attribute, AtaSmartData, NvmeHealthData, SmartReport};
 use crate::test_result_overlay::TestResult;
 
@@ -265,13 +265,13 @@ fn partition(
     system: bool,
 ) -> PartitionInfo {
     PartitionInfo {
-        drive_letter: letter.to_string(),
+        mount_point: letter.to_string(),
         volume_name: name.to_string(),
         total_size: total,
         free_space: free,
         file_system: fs.to_string(),
         is_system_partition: system,
-        bitlocker: BitLockerStatus::NotEncrypted,
+        encryption: EncryptionStatus::NotEncrypted,
     }
 }
 

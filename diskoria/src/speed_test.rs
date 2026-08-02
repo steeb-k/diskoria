@@ -624,3 +624,43 @@ pub fn spawn_speed_test(
         }));
     })
 }
+
+/// Benchmark temp-file path builders. Both flavours are compiled (and unit
+/// tested) on every platform; `DiskoriaApp::speed_test_temp_path` picks the
+/// host's at compile time. `mount` accepts the platform's raw mount value:
+/// a drive letter in the `C`/`C:`/`C:\` spellings, or a mount-point path.
+#[cfg_attr(not(windows), allow(dead_code))] // host dispatch picks one flavour; both stay tested
+pub(crate) fn temp_path_windows(mount: &str, id: u128) -> String {
+    let clean = mount.trim_end_matches('\\');
+    let root = if clean.ends_with(':') {
+        format!("{clean}\\")
+    } else {
+        format!("{}:\\", clean.trim_end_matches(':'))
+    };
+    format!("{root}Diskoria_SpeedTest_{id}.tmp")
+}
+
+#[cfg_attr(windows, allow(dead_code))] // host dispatch picks one flavour; both stay tested
+pub(crate) fn temp_path_unix(mount: &str, id: u128) -> String {
+    let root = mount.trim_end_matches('/');
+    format!("{root}/Diskoria_SpeedTest_{id}.tmp")
+}
+
+#[cfg(test)]
+mod temp_path_tests {
+    use super::{temp_path_unix, temp_path_windows};
+
+    #[test]
+    fn windows_flavours_normalize_to_letter_root() {
+        assert_eq!(temp_path_windows("C", 7), r"C:\Diskoria_SpeedTest_7.tmp");
+        assert_eq!(temp_path_windows("C:", 7), r"C:\Diskoria_SpeedTest_7.tmp");
+        assert_eq!(temp_path_windows(r"C:\", 7), r"C:\Diskoria_SpeedTest_7.tmp");
+    }
+
+    #[test]
+    fn unix_mounts_including_root() {
+        assert_eq!(temp_path_unix("/", 7), "/Diskoria_SpeedTest_7.tmp");
+        assert_eq!(temp_path_unix("/home", 7), "/home/Diskoria_SpeedTest_7.tmp");
+        assert_eq!(temp_path_unix("/mnt/usb/", 7), "/mnt/usb/Diskoria_SpeedTest_7.tmp");
+    }
+}

@@ -111,23 +111,13 @@ impl DetectedDrive {
         out.trim_matches('-').to_string()
     }
 
-    /// Mounted volume letters as `C:\, D:\` (sorted, unique).
-    pub fn drive_letters_display(&self) -> String {
+    /// Mounted volumes as `C:\, D:\` on Windows / `/, /home` on Linux
+    /// (sorted, unique).
+    pub fn mounts_display(&self) -> String {
         let mut parts: Vec<String> = self
             .partitions
             .iter()
-            .filter_map(|p| {
-                let l = p.drive_letter.trim();
-                if l.is_empty() {
-                    return None;
-                }
-                let base = l.trim_end_matches('\\').trim_end_matches(':');
-                if base.is_empty() {
-                    None
-                } else {
-                    Some(format!("{}:\\", base))
-                }
-            })
+            .filter_map(|p| crate::partition_info::display_mount(&p.mount_point))
             .collect();
         parts.sort();
         parts.dedup();

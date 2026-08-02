@@ -8,7 +8,7 @@ mod windows {
     use wmi::WMIConnection;
 
     use crate::detected_drive::{BusKind, DetectedDrive, MediaKind, PartitionTableStyle};
-    use crate::partition_info::{BitLockerStatus, PartitionInfo};
+    use crate::partition_info::{EncryptionStatus, PartitionInfo};
 
     #[derive(Debug, Deserialize)]
     #[serde(rename = "Win32_DiskDrive")]
@@ -231,7 +231,7 @@ mod windows {
         }
     }
 
-    fn bitlocker_status_map() -> HashMap<String, BitLockerStatus> {
+    fn bitlocker_status_map() -> HashMap<String, EncryptionStatus> {
         let Ok(wmi) = WMIConnection::with_namespace_path(
             r"ROOT\cimv2\Security\MicrosoftVolumeEncryption",
         ) else {
@@ -257,14 +257,14 @@ mod windows {
             let protection = row.ProtectionStatus.unwrap_or(0);
             let conversion = row.ConversionStatus.unwrap_or(0);
             let status = if conversion == 0 {
-                BitLockerStatus::NotEncrypted
+                EncryptionStatus::NotEncrypted
             } else if protection == 2 {
-                BitLockerStatus::Locked
+                EncryptionStatus::Locked
             } else if protection == 1 {
-                BitLockerStatus::Unlocked
+                EncryptionStatus::Unlocked
             } else {
                 // Encrypted but protection suspended (key in the clear); still accessible.
-                BitLockerStatus::Encrypted
+                EncryptionStatus::Encrypted
             };
             map.insert(key, status);
         }
@@ -278,8 +278,8 @@ mod windows {
         normalize_drive_letter(letter) == normalize_drive_letter(sd.trim())
     }
 
-    fn volume_ready(drive_letter: &str) -> bool {
-        let root = format!("{}\\", drive_letter.trim_end_matches('\\'));
+    fn volume_ready(mount_point: &str) -> bool {
+        let root = format!("{}\\", mount_point.trim_end_matches('\\'));
         std::fs::metadata(&root).is_ok()
     }
 
@@ -298,7 +298,7 @@ mod windows {
 
     /// Use `IOCTL_STORAGE_GET_DEVICE_NUMBER` to find which physical disk a volume belongs to.
     /// Returns `Some(disk_number)` on success, `None` if the IOCTL fails (e.g. network drive).
-    fn volume_disk_number(drive_letter: &str) -> Option<u32> {
+    fn volume_disk_number(mount_point: &str) -> Option<u32> {
         use windows_sys::Win32::Foundation::CloseHandle;
         use windows_sys::Win32::Storage::FileSystem::{
             CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
@@ -314,7 +314,7 @@ mod windows {
             partition_number: u32,
         }
 
-        let clean = drive_letter.trim_end_matches('\\').trim_end_matches(':');
+        let clean = mount_point.trim_end_matches('\\').trim_end_matches(':');
         let path: Vec<u16> = format!("\\\\.\\{}:", clean)
             .encode_utf16()
             .chain(std::iter::once(0))
@@ -360,7 +360,7 @@ mod windows {
     /// is missing, which commonly happens in Windows PE with mounted VHDx volumes.
     fn fallback_partitions_for_disk(
         disk_index: u32,
-        bitlocker: &HashMap<String, BitLockerStatus>,
+        encryption: &HashMap<String, EncryptionStatus>,
         already_found: &[String],
     ) -> Vec<PartitionInfo> {
         use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
@@ -398,7 +398,7 @@ mod windows {
             let bl = bitlocker
                 .get(&letter)
                 .copied()
-                .unwrap_or(BitLockerStatus::NotEncrypted);
+                .unwrap_or(EncryptionStatus::NotEncrypted);
 
             log::info!(
                 target: "diskoria",
@@ -407,13 +407,13 @@ mod windows {
             );
 
             out.push(PartitionInfo {
-                drive_letter: letter.clone(),
+                mount_point: letter.clone(),
                 volume_name: "Local Disk".to_string(),
                 total_size: total_bytes as i64,
                 free_space: free_bytes as i64,
                 file_system: String::new(),
                 is_system_partition: is_system_drive(&letter),
-                bitlocker: bl,
+                encryption: bl,
             });
         }
         out
@@ -422,7 +422,7 @@ mod windows {
     fn partitions_for_disk(
         wmi: &WMIConnection,
         disk_index: u32,
-        bitlocker: &HashMap<String, BitLockerStatus>,
+        encryption: &HashMap<String, EncryptionStatus>,
     ) -> Result<Vec<PartitionInfo>, wmi::WMIError> {
         let q = format!(
             "SELECT DeviceID FROM Win32_DiskPartition WHERE DiskIndex = {}",
@@ -444,11 +444,11 @@ mod windows {
                 let Some(device_id) = log.DeviceID else {
                     continue;
                 };
-                let drive_letter = normalize_drive_letter(&device_id);
-                if drive_letter.is_empty() {
+                let mount_point = normalize_drive_letter(&device_id);
+                if mount_point.is_empty() {
                     continue;
                 }
-                if !volume_ready(&drive_letter) {
+                if !volume_ready(&mount_point) {
                     continue;
                 }
 
@@ -463,29 +463,29 @@ mod windows {
                     .to_string();
 
                 let bl = bitlocker
-                    .get(&drive_letter)
+                    .get(&mount_point)
                     .copied()
-                    .unwrap_or(BitLockerStatus::NotEncrypted);
+                    .unwrap_or(EncryptionStatus::NotEncrypted);
 
                 out.push(PartitionInfo {
-                    drive_letter,
+                    mount_point,
                     volume_name: vol,
                     total_size: total,
                     free_space: free,
                     file_system: fs,
                     is_system_partition: is_system_drive(&device_id),
-                    bitlocker: bl,
+                    encryption: bl,
                 });
             }
         }
 
         if out.is_empty() {
-            let already: Vec<String> = out.iter().map(|p| p.drive_letter.clone()).collect();
+            let already: Vec<String> = out.iter().map(|p| p.mount_point.clone()).collect();
             let fallback = fallback_partitions_for_disk(disk_index, bitlocker, &already);
             out.extend(fallback);
         }
 
-        out.sort_by(|a, b| a.drive_letter.cmp(&b.drive_letter));
+        out.sort_by(|a, b| a.mount_point.cmp(&b.mount_point));
         Ok(out)
     }
 

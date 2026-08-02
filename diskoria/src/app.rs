@@ -1396,21 +1396,19 @@ impl DiskoriaApp {
     }
 
     #[cfg_attr(not(windows), allow(dead_code))] // caller is Windows-gated today
-    fn speed_test_temp_path(drive_letter: &str) -> String {
-        let clean = drive_letter.trim_end_matches('\\');
-        let root = if clean.ends_with(':') {
-            format!("{}\\", clean)
-        } else {
-            format!("{}:\\", clean.trim_end_matches(':'))
-        };
+    fn speed_test_temp_path(mount_point: &str) -> String {
         let id = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        format!(
-            "{}Diskoria_SpeedTest_{}.tmp",
-            root, id
-        )
+        #[cfg(windows)]
+        {
+            crate::speed_test::temp_path_windows(mount_point, id)
+        }
+        #[cfg(not(windows))]
+        {
+            crate::speed_test::temp_path_unix(mount_point, id)
+        }
     }
 
     #[cfg_attr(not(windows), allow(dead_code))] // caller is Windows-gated today
@@ -1425,7 +1423,7 @@ impl DiskoriaApp {
         let Some((di, pi)) = self.speed_target_pair() else {
             return false;
         };
-        !self.drives[di].partitions[pi].is_bitlocker_locked()
+        !self.drives[di].partitions[pi].is_encryption_locked()
     }
 
     #[cfg_attr(not(windows), allow(dead_code))] // caller is Windows-gated today
@@ -1446,7 +1444,7 @@ impl DiskoriaApp {
             };
             let d = &self.drives[sel];
             let disk_number = d.disk_number;
-            let letter = d.partitions[pi].drive_letter.clone();
+            let letter = d.partitions[pi].mount_point.clone();
             let path = Self::speed_test_temp_path(&letter);
             let profile = speed_test::speed_profile_for_drive(d.media, d.bus);
             self.reset_speed_results_display();
@@ -1756,7 +1754,7 @@ impl DiskoriaApp {
         let still_vol = d
             .partitions
             .iter()
-            .any(|p| p.drive_letter.eq_ignore_ascii_case(&letter));
+            .any(|p| p.mount_point.eq_ignore_ascii_case(&letter));
         if !still_vol {
             if let Some(c) = &self.speed_test_cancel {
                 c.store(true, Ordering::SeqCst);
@@ -2036,7 +2034,7 @@ impl DiskoriaApp {
             let sel = self.active_page_selected_drive_idx();
             let d = &self.drives[sel];
             Some((
-                d.drive_letters_display(),
+                d.mounts_display(),
                 d.partition_style.as_str().to_string(),
             ))
         };
@@ -2746,7 +2744,7 @@ impl DiskoriaApp {
             .min(self.drives.len().saturating_sub(1));
         let (disk_number, device_id, drive_letters) = {
             let d = &self.drives[sel];
-            let letters: Vec<String> = d.partitions.iter().map(|p| p.drive_letter.clone()).collect();
+            let letters: Vec<String> = d.partitions.iter().map(|p| p.mount_point.clone()).collect();
             (d.disk_number, d.device_id.clone(), letters)
         };
         log::info!(

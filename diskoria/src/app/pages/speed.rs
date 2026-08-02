@@ -182,16 +182,14 @@ impl crate::app::DiskoriaApp {
             .map(|&(di, pi)| {
                 let d = &self.drives[di];
                 let p = &d.partitions[pi];
-                let letter = p
-                    .drive_letter
-                    .trim()
-                    .trim_end_matches('\\')
-                    .trim_end_matches(':');
-                let vol = if letter.is_empty() {
-                    "(no letter)".to_string()
-                } else {
-                    format!("{}:\\", letter)
-                };
+                let vol = crate::partition_info::display_mount(&p.mount_point)
+                    .unwrap_or_else(|| {
+                        if cfg!(windows) {
+                            "(no letter)".to_string()
+                        } else {
+                            "(not mounted)".to_string()
+                        }
+                    });
                 DriveEntry {
                     title: format!("{} — {}", vol, d.model.trim()),
                     chips: vec![
@@ -280,16 +278,18 @@ impl crate::app::DiskoriaApp {
         }
 
         match target {
-            Some((di, pi)) if self.drives[di].partitions[pi].is_bitlocker_locked() => {
+            Some((di, pi)) if self.drives[di].partitions[pi].is_encryption_locked() => {
                 ui.horizontal(|ui| {
                     let pad = (content_x + margin) - ui.min_rect().left();
                     if pad > 0.0 {
                         ui.add_space(pad);
                     }
                     ui.label(
-                        egui::RichText::new(
-                            "This volume is BitLocker-locked. Speed tests cannot run on locked volumes.",
-                        )
+                        egui::RichText::new(if cfg!(windows) {
+                            "This volume is BitLocker-locked. Speed tests cannot run on locked volumes."
+                        } else {
+                            "This volume is an encrypted (locked) container. Speed tests cannot run on locked volumes."
+                        })
                         .size(13.0)
                         .color(Color32::from_rgb(231, 76, 60)),
                     );
