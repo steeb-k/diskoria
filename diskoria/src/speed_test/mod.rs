@@ -76,11 +76,9 @@ pub fn speed_profile_for_drive(media: MediaKind, bus: BusKind) -> SpeedProfile {
     }
 }
 
-#[cfg(windows)]
-mod win {
-    use std::fs::OpenOptions;
+#[cfg(any(windows, target_os = "linux"))]
+mod imp {
     use std::io::{Read, Seek, SeekFrom, Write};
-    use std::os::windows::fs::OpenOptionsExt;
     use std::path::Path;
     use std::sync::mpsc;
     use std::sync::Arc;
@@ -95,10 +93,6 @@ mod win {
     const SEQ_BLOCK: usize = 1024 * 1024;
     const RAND_BLOCK: usize = 4096;
     const ALIGN: usize = 4096;
-
-    const FILE_FLAG_NO_BUFFERING: u32 = 0x2000_0000;
-    const FILE_FLAG_WRITE_THROUGH: u32 = 0x8000_0000;
-    const FILE_FLAG_SEQUENTIAL_SCAN: u32 = 0x0800_0000;
 
     fn report(
         ctx: &egui::Context,
@@ -144,43 +138,141 @@ mod win {
         }
     }
 
-    fn open_seq_write(path: &Path) -> Result<std::fs::File, String> {
-        OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .share_mode(0)
-            .custom_flags(FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_SEQUENTIAL_SCAN)
-            .open(path)
-            .map_err(|e| e.to_string())
+    /// The unbuffered/write-through open modes, per platform. Shared pass
+    /// logic above calls these; block sizes and the AlignedBuf keep every
+    /// access 4096-aligned, which O_DIRECT / FILE_FLAG_NO_BUFFERING require.
+    #[cfg(windows)]
+    mod sys {
+        use std::fs::OpenOptions;
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::path::Path;
+
+        const FILE_FLAG_NO_BUFFERING: u32 = 0x2000_0000;
+        const FILE_FLAG_WRITE_THROUGH: u32 = 0x8000_0000;
+        const FILE_FLAG_SEQUENTIAL_SCAN: u32 = 0x0800_0000;
+
+        pub fn open_seq_write(path: &Path) -> Result<std::fs::File, String> {
+            OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .share_mode(0)
+                .custom_flags(FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_SEQUENTIAL_SCAN)
+                .open(path)
+                .map_err(|e| e.to_string())
+        }
+
+        pub fn open_seq_read(path: &Path) -> Result<std::fs::File, String> {
+            OpenOptions::new()
+                .read(true)
+                .share_mode(1 | 2)
+                .custom_flags(FILE_FLAG_NO_BUFFERING | FILE_FLAG_SEQUENTIAL_SCAN)
+                .open(path)
+                .map_err(|e| e.to_string())
+        }
+
+        pub fn open_rand_write(path: &Path) -> Result<std::fs::File, String> {
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .share_mode(0)
+                .custom_flags(FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH)
+                .open(path)
+                .map_err(|e| e.to_string())
+        }
+
+        pub fn open_rand_read(path: &Path) -> Result<std::fs::File, String> {
+            OpenOptions::new()
+                .read(true)
+                .share_mode(1 | 2)
+                .custom_flags(FILE_FLAG_NO_BUFFERING)
+                .open(path)
+                .map_err(|e| e.to_string())
+        }
+
+        /// Best-effort free bytes on a volume root (e.g. `D:\`).
+        pub fn available_space(root: &str) -> Result<i64, std::io::Error> {
+            use std::ffi::OsStr;
+            use std::os::windows::ffi::OsStrExt;
+            use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+            let wide: Vec<u16> = OsStr::new(root)
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+            let mut free_bytes: u64 = 0;
+            let mut _total: u64 = 0;
+            let mut _total_free: u64 = 0;
+            let ok = unsafe {
+                GetDiskFreeSpaceExW(
+                    wide.as_ptr(),
+                    &mut free_bytes,
+                    &mut _total,
+                    &mut _total_free,
+                )
+            };
+            if ok == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(free_bytes as i64)
+        }
     }
 
-    fn open_seq_read(path: &Path) -> Result<std::fs::File, String> {
-        OpenOptions::new()
-            .read(true)
-            .share_mode(1 | 2)
-            .custom_flags(FILE_FLAG_NO_BUFFERING | FILE_FLAG_SEQUENTIAL_SCAN)
-            .open(path)
-            .map_err(|e| e.to_string())
-    }
+    /// Linux flavour: `O_DIRECT` for unbuffered I/O, `O_SYNC` standing in for
+    /// write-through; there is no sequential-scan hint worth mapping (the
+    /// kernel readahead handles it).
+    #[cfg(target_os = "linux")]
+    mod sys {
+        use std::fs::OpenOptions;
+        use std::os::unix::fs::OpenOptionsExt;
+        use std::path::Path;
 
-    fn open_rand_write(path: &Path) -> Result<std::fs::File, String> {
-        OpenOptions::new()
-            .read(true)
-            .write(true)
-            .share_mode(0)
-            .custom_flags(FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH)
-            .open(path)
-            .map_err(|e| e.to_string())
-    }
+        pub fn open_seq_write(path: &Path) -> Result<std::fs::File, String> {
+            OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .custom_flags(libc::O_DIRECT | libc::O_SYNC)
+                .open(path)
+                .map_err(|e| e.to_string())
+        }
 
-    fn open_rand_read(path: &Path) -> Result<std::fs::File, String> {
-        OpenOptions::new()
-            .read(true)
-            .share_mode(1 | 2)
-            .custom_flags(FILE_FLAG_NO_BUFFERING)
-            .open(path)
-            .map_err(|e| e.to_string())
+        pub fn open_seq_read(path: &Path) -> Result<std::fs::File, String> {
+            OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECT)
+                .open(path)
+                .map_err(|e| e.to_string())
+        }
+
+        pub fn open_rand_write(path: &Path) -> Result<std::fs::File, String> {
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .custom_flags(libc::O_DIRECT | libc::O_SYNC)
+                .open(path)
+                .map_err(|e| e.to_string())
+        }
+
+        pub fn open_rand_read(path: &Path) -> Result<std::fs::File, String> {
+            OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECT)
+                .open(path)
+                .map_err(|e| e.to_string())
+        }
+
+        /// Best-effort free bytes at a mount point.
+        pub fn available_space(root: &str) -> Result<i64, std::io::Error> {
+            let c = std::ffi::CString::new(root)
+                .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+            let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+            if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let frsize = if st.f_frsize > 0 { st.f_frsize } else { st.f_bsize } as i64;
+            Ok(st.f_bavail as i64 * frsize)
+        }
     }
 
     fn run_sequential_write_pass(
@@ -194,7 +286,7 @@ mod win {
         let mut buf = AlignedBuf::new(SEQ_BLOCK);
         rand::thread_rng().fill(buf.as_mut_slice());
 
-        let mut f = open_seq_write(path)?;
+        let mut f = sys::open_seq_write(path)?;
         let sw = Instant::now();
         let mut written: u64 = 0;
         let blocks = profile.test_file_size_mb;
@@ -260,7 +352,7 @@ mod win {
         tx: &mpsc::Sender<SpeedTestMsg>,
     ) -> Result<f64, String> {
         let mut buf = AlignedBuf::new(SEQ_BLOCK);
-        let mut f = open_seq_read(path)?;
+        let mut f = sys::open_seq_read(path)?;
         let sw = Instant::now();
         let mut read_b: u64 = 0;
 
@@ -333,7 +425,7 @@ mod win {
         let mut buf = AlignedBuf::new(RAND_BLOCK);
         rand::thread_rng().fill(buf.as_mut_slice());
         let mut rng = rand::thread_rng();
-        let mut f = open_rand_write(path)?;
+        let mut f = sys::open_rand_write(path)?;
         let max_blocks = file_size / RAND_BLOCK as u64;
         let sw = Instant::now();
         let mut written: u64 = 0;
@@ -408,7 +500,7 @@ mod win {
     ) -> Result<f64, String> {
         let mut buf = AlignedBuf::new(RAND_BLOCK);
         let mut rng = rand::thread_rng();
-        let mut f = open_rand_read(path)?;
+        let mut f = sys::open_rand_read(path)?;
         let max_blocks = file_size / RAND_BLOCK as u64;
         let sw = Instant::now();
         let mut read_b: u64 = 0;
@@ -479,11 +571,15 @@ mod win {
         ctx: &egui::Context,
     ) -> SpeedTestResult {
         let path = Path::new(&test_file_path);
-        let drive_root = path.parent().and_then(|p| p.to_str()).unwrap_or("C:\\");
+        let drive_root = path
+            .parent()
+            .and_then(|p| p.to_str())
+            .filter(|p| !p.is_empty())
+            .unwrap_or(if cfg!(windows) { "C:\\" } else { "/" });
         let required = (profile.test_file_size_mb as i64) * 1024 * 1024 * 2;
 
         if std::fs::metadata(drive_root).is_ok() {
-            if let Ok(free) = available_space(drive_root) {
+            if let Ok(free) = sys::available_space(drive_root) {
                 if free < required {
                     return SpeedTestResult {
                         sequential_read_mbps: -1.0,
@@ -561,32 +657,7 @@ mod win {
         }
     }
 
-    /// Best-effort free bytes on a volume root (e.g. `D:\`).
-    fn available_space(root: &str) -> Result<i64, std::io::Error> {
-        use std::ffi::OsStr;
-        use std::os::windows::ffi::OsStrExt;
-        use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 
-        let wide: Vec<u16> = OsStr::new(root)
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-        let mut free_bytes: u64 = 0;
-        let mut _total: u64 = 0;
-        let mut _total_free: u64 = 0;
-        let ok = unsafe {
-            GetDiskFreeSpaceExW(
-                wide.as_ptr(),
-                &mut free_bytes,
-                &mut _total,
-                &mut _total_free,
-            )
-        };
-        if ok == 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        Ok(free_bytes as i64)
-    }
 
     pub fn spawn_speed_test(
         test_file_path: String,
@@ -602,10 +673,10 @@ mod win {
     }
 }
 
-#[cfg(windows)]
-pub use win::spawn_speed_test;
+#[cfg(any(windows, target_os = "linux"))]
+pub use imp::spawn_speed_test;
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn spawn_speed_test(
     _test_file_path: String,
     _profile: SpeedProfile,
@@ -620,7 +691,7 @@ pub fn spawn_speed_test(
             random_4k_read_mbps: -1.0,
             random_4k_write_mbps: -1.0,
             completed: false,
-            error_message: Some("Speed test requires Windows.".to_string()),
+            error_message: Some("Speed test is not implemented on this platform.".to_string()),
         }));
     })
 }
@@ -662,5 +733,54 @@ mod temp_path_tests {
         assert_eq!(temp_path_unix("/", 7), "/Diskoria_SpeedTest_7.tmp");
         assert_eq!(temp_path_unix("/home", 7), "/home/Diskoria_SpeedTest_7.tmp");
         assert_eq!(temp_path_unix("/mnt/usb/", 7), "/mnt/usb/Diskoria_SpeedTest_7.tmp");
+    }
+}
+
+#[cfg(all(test, any(windows, target_os = "linux")))]
+mod hardware_tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{mpsc, Arc};
+
+    /// Real direct-I/O benchmark against the home filesystem with a tiny
+    /// profile. Not CI: does ~100 MB of writes. tmpfs would reject O_DIRECT,
+    /// so the file goes next to the user's data, like a real run.
+    #[test]
+    #[ignore = "does real disk I/O; run manually with --ignored"]
+    fn small_speed_run_on_home_fs() {
+        let base = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .expect("home dir");
+        let path = format!("{base}/Diskoria_SpeedTest_selftest.tmp");
+        let profile = SpeedProfile {
+            test_file_size_mb: 32,
+            random_4k_iterations: 256,
+            test_passes: 1,
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        spawn_speed_test(path.clone(), profile, cancel, tx, ctx)
+            .join()
+            .expect("worker join");
+
+        let mut done = None;
+        while let Ok(m) = rx.try_recv() {
+            if let SpeedTestMsg::Done(r) = m {
+                done = Some(r);
+            }
+        }
+        let r = done.expect("Done message");
+        assert!(r.completed, "error: {:?}", r.error_message);
+        assert!(r.sequential_write_mbps > 0.0);
+        assert!(r.sequential_read_mbps > 0.0);
+        assert!(r.random_4k_write_mbps > 0.0);
+        assert!(r.random_4k_read_mbps > 0.0);
+        assert!(!std::path::Path::new(&path).exists(), "temp file cleaned up");
+        println!(
+            "seq w/r = {:.0}/{:.0} MB/s, 4k w/r = {:.1}/{:.1} MB/s",
+            r.sequential_write_mbps, r.sequential_read_mbps,
+            r.random_4k_write_mbps, r.random_4k_read_mbps
+        );
     }
 }

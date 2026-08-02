@@ -9,12 +9,11 @@ use egui::{
     Align2, Color32, FontFamily, FontId, Frame, Id, Key,
     Pos2, Rect, ScrollArea, Sense, Stroke, StrokeKind, Ui, Vec2,
 };
-// Used only inside `#[cfg(windows)]` code (update modal, chart export UI, tray
-// wiring); gated so the Linux build stays warning-free until those paths are
-// un-gated by the port.
+use egui::{CornerRadius, LayerId, Order};
+// Used only by the `#[cfg(windows)]` monitoring-settings section today;
+// un-gated with the tray/monitoring phase of the port.
 #[cfg(windows)]
-use egui::{CornerRadius, LayerId, Modifiers, Order};
-#[cfg(windows)]
+use egui::Modifiers;
 use egui_plot::{Line, MarkerShape, Plot, PlotPoints, Points};
 use egui::text::{LayoutJob, TextFormat};
 
@@ -38,7 +37,6 @@ use crate::modal_confirm::{
 #[cfg(windows)]
 use crate::modal_confirm::{one_button_modal, OneButtonModalParams};
 use crate::smart_health::SmartHealth;
-#[cfg(windows)]
 use crate::speed_test;
 use crate::speed_test::SpeedTestMsg;
 use crate::theme::{
@@ -122,22 +120,13 @@ fn nav_mnemonic_prefix_and_char_width(
     Some((w_before, w_ch))
 }
 
-// The sector-map and speed-gap constants are consumed only by `#[cfg(windows)]`
-// draw code today; gated so the Linux build stays warning-free until the port
-// un-gates the test panels.
-#[cfg(windows)]
 const SECTOR_GRID_COLS: usize = 50;
-#[cfg(windows)]
 const SECTOR_CELL_GAP: f32 = 1.0;
-#[cfg(windows)]
 const SECTOR_MAP_PAD: f32 = 16.0;
 /// Space between sector grid and legend row inside the map card.
-#[cfg(windows)]
 const SECTOR_LEGEND_GAP: f32 = 10.0;
-#[cfg(windows)]
 const SECTOR_LEGEND_ROW_H: f32 = 22.0;
 /// Speed Test: spacing between Start/Stop, progress card, and results grid.
-#[cfg(windows)]
 const SPEED_PAGE_SECTION_GAP: f32 = 14.0;
 /// Speed Test: padding below the results grid before scroll end.
 const SPEED_PAGE_BOTTOM_PAD: f32 = 20.0;
@@ -341,9 +330,7 @@ pub struct DiskoriaApp {
 
     /// Pending performance-chart export awaiting the "include health report?"
     /// modal choice. `Some` shows the modal; the worker spawns on confirm/cancel.
-    #[cfg(windows)]
     pending_chart_export: Option<ChartExportRequest>,
-    #[cfg(windows)]
     chart_export_focus: Option<usize>,
 
     /// Health Status page state.
@@ -600,9 +587,7 @@ impl DiskoriaApp {
             destructive_start_confirm_focus: None,
             show_destructive_stop_confirm: false,
             destructive_stop_confirm_focus: None,
-            #[cfg(windows)]
             pending_chart_export: None,
-            #[cfg(windows)]
             chart_export_focus: None,
             health_report: None,
             health_report_drive: None,
@@ -1384,7 +1369,6 @@ impl DiskoriaApp {
         }
     }
 
-    #[cfg(windows)]
     fn reset_speed_results_display(&mut self) {
         self.speed_seq_read_mbps = -1.0;
         self.speed_seq_write_mbps = -1.0;
@@ -1395,7 +1379,6 @@ impl DiskoriaApp {
         self.speed_progress_op = "Ready".to_string();
     }
 
-    #[cfg_attr(not(windows), allow(dead_code))] // caller is Windows-gated today
     fn speed_test_temp_path(mount_point: &str) -> String {
         let id = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1411,7 +1394,6 @@ impl DiskoriaApp {
         }
     }
 
-    #[cfg_attr(not(windows), allow(dead_code))] // caller is Windows-gated today
     fn can_start_speed_test(&self) -> bool {
         if self.surface_test_running {
             return false;
@@ -1426,14 +1408,7 @@ impl DiskoriaApp {
         !self.drives[di].partitions[pi].is_encryption_locked()
     }
 
-    #[cfg_attr(not(windows), allow(dead_code))] // caller is Windows-gated today
     fn start_speed_test(&mut self, ctx: &egui::Context) {
-        #[cfg(not(windows))]
-        {
-            let _ = ctx;
-            self.speed_error_msg = Some("Speed test requires Windows.".to_string());
-        }
-        #[cfg(windows)]
         {
             if !self.can_start_speed_test() {
                 return;
@@ -1461,7 +1436,6 @@ impl DiskoriaApp {
         }
     }
 
-    #[cfg_attr(not(windows), allow(dead_code))] // caller is Windows-gated today
     fn stop_speed_test(&mut self) {
         if let Some(c) = &self.speed_test_cancel {
             c.store(true, Ordering::SeqCst);
@@ -1471,14 +1445,7 @@ impl DiskoriaApp {
         self.speed_test_cancel = None;
         self.speed_test_target = None;
         self.speed_progress_op = "Stopped".to_string();
-        #[cfg(windows)]
-        {
-            self.speed_focus = Some(2);
-        }
-        #[cfg(not(windows))]
-        {
-            self.speed_focus = Some(1);
-        }
+        self.speed_focus = Some(2);
     }
 
     // ── Pro-Monitoring ────────────────────────────────────────────────────────
@@ -1774,8 +1741,7 @@ impl DiskoriaApp {
     /// Performance-chart export prompt: "Include health report?" Confirm → HTML
     /// (chart embedded in a fresh Drive Health report), Cancel ("Chart only") →
     /// PNG, Esc → abort the whole export. Only drawn while a request is staged.
-    #[cfg(windows)]
-    fn draw_chart_export_confirm(&mut self, ctx: &egui::Context, dark: bool) {
+        fn draw_chart_export_confirm(&mut self, ctx: &egui::Context, dark: bool) {
         // The modal maps Esc to Cancel ("Chart only"); intercept it first so Esc
         // means a full abort instead.
         if ctx.input(|i| i.key_pressed(Key::Escape)) {
@@ -2211,10 +2177,7 @@ impl DiskoriaApp {
             return;
         }
 
-        #[cfg(windows)]
         let last_idle_slot = 2usize;
-        #[cfg(not(windows))]
-        let last_idle_slot = 1usize;
 
         let slots = if self.speed_test_running {
             1
@@ -2256,13 +2219,11 @@ impl DiskoriaApp {
         } else {
             bind_text_focus_slot(ctx, self.speed_focus, 0, self.speed_refresh_id);
             bind_combo_focus_slot(ctx, self.speed_focus, 1, self.speed_volume_combo_id);
-            #[cfg(windows)]
             bind_text_focus_slot(ctx, self.speed_focus, 2, Some(Self::speed_primary_id()));
 
             let (manual_id, is_combo_slot) = match self.speed_focus {
                 Some(0) => (self.speed_refresh_id, false),
                 Some(1) => (self.speed_volume_combo_id, true),
-                #[cfg(windows)]
                 Some(2) => (Some(Self::speed_primary_id()), false),
                 _ => (None, false),
             };
@@ -2608,7 +2569,6 @@ impl DiskoriaApp {
         }
     }
 
-    #[cfg_attr(not(windows), allow(dead_code))] // caller is Windows-gated today
     fn reset_sector_cells_for_new_test(&mut self) {
         self.test_result_overlay = None;
         self.fail_overlay_shown = false;
@@ -2633,7 +2593,6 @@ impl DiskoriaApp {
         self.surface_chart_bucket_idx = 0;
     }
 
-    #[cfg_attr(not(windows), allow(dead_code))] // caller is Windows-gated today
     fn start_surface_test(&mut self, ctx: &egui::Context) {
         if self.drives.is_empty() {
             log::debug!(target: "diskoria", "start_surface_test: skipped (no drives)");
@@ -3341,10 +3300,10 @@ impl DiskoriaApp {
             || self.show_stop_test_confirm
             || self.show_destructive_start_confirm
             || self.show_destructive_stop_confirm;
+        let base = base || self.pending_chart_export.is_some();
         #[cfg(windows)]
         {
             base
-                || self.pending_chart_export.is_some()
                 || self.show_update_alert
                 || self.update_check_busy
                 || self.update_download_busy
@@ -3355,7 +3314,7 @@ impl DiskoriaApp {
         }
     }
 
-    #[cfg_attr(not(windows), allow(dead_code))] // caller is Windows-gated today
+    #[cfg_attr(not(windows), allow(dead_code))] // callers live in the Windows-gated monitoring settings
     fn save_app_settings(&self) {
         // Sync per-window monitor-settings drafts into shared and persist.
         // Accent/theme fields already live in `shared.settings` and are saved
@@ -3874,8 +3833,7 @@ impl DiskoriaApp {
     }
 
     /// Sector heatmap + progress card for the destructive test.
-    #[cfg(windows)]
-    fn draw_destructive_test_panel(
+        fn draw_destructive_test_panel(
         &mut self,
         ui: &mut Ui,
         t: &Theme,
@@ -3906,7 +3864,7 @@ impl DiskoriaApp {
                 .fill(t.bg_pri)
                 .inner_margin(egui::Margin::same(SECTOR_MAP_PAD as i8))
                 .corner_radius(CornerRadius::same(8))
-                .stroke(Stroke::new(1.5, t.border))
+                .stroke(Stroke::new(1.5_f32, t.border))
                 .show(ui, |ui| {
                     let w = ui.available_width();
                     ui.label(egui::RichText::new("PROGRESS").size(11.0).color(t.txt_sec));
@@ -3976,7 +3934,6 @@ impl DiskoriaApp {
     /// Sector Test page — read-only sector scan UI.
     /// Shared tabbed card: "Sector Map" tab (heat grid) + "Performance Chart" tab (speed vs position).
     /// Used by both `draw_sector_test_panel` and `draw_destructive_test_panel`.
-    #[cfg(windows)]
     #[allow(clippy::too_many_lines)]
     fn draw_tabbed_map_card(
         &mut self,
@@ -4040,7 +3997,7 @@ impl DiskoriaApp {
 
         ui.painter().line_segment(
             [Pos2::new(left + tab_w, card_top + 8.0), Pos2::new(left + tab_w, card_top + TAB_H)],
-            Stroke::new(1.0, t.border),
+            Stroke::new(1.0_f32, t.border),
         );
 
         let active_rect = if active_tab == 0 { left_tab_rect } else { right_tab_rect };
@@ -4210,7 +4167,7 @@ impl DiskoriaApp {
                             plot_ui.points(
                                 Points::new(PlotPoints::from(raw_points_clone.clone()))
                                     .color(dot_color)
-                                    .radius(1.0)
+                                    .radius(1.0_f32)
                                     .shape(MarkerShape::Circle),
                             );
                         }
@@ -4218,7 +4175,7 @@ impl DiskoriaApp {
                             plot_ui.line(
                                 Line::new(PlotPoints::from(chart_points_clone.clone()))
                                     .color(accent)
-                                    .width(4.0),
+                                    .width(4.0_f32),
                             );
                         }
                     });
@@ -4245,7 +4202,7 @@ impl DiskoriaApp {
             let btn_bg = if btn_resp.hovered() { t.accent } else { t.bg_sec };
             let btn_fg = if btn_resp.hovered() { t.txt_on_accent } else { t.txt_sec };
             btn_painter.rect_filled(btn_rect, 6.0, btn_bg);
-            btn_painter.rect_stroke(btn_rect, 6.0, Stroke::new(1.0, t.border), StrokeKind::Middle);
+            btn_painter.rect_stroke(btn_rect, 6.0, Stroke::new(1.0_f32, t.border), StrokeKind::Middle);
             btn_painter.text(
                 btn_rect.center(),
                 Align2::CENTER_CENTER,
@@ -4288,8 +4245,7 @@ impl DiskoriaApp {
     }
 
     /// Sector map + progress/stats/time cards.
-    #[cfg(windows)]
-    fn draw_sector_test_panel(
+        fn draw_sector_test_panel(
         &mut self,
         ui: &mut Ui,
         t: &Theme,
@@ -4320,7 +4276,7 @@ impl DiskoriaApp {
                 .fill(t.bg_pri)
                 .inner_margin(egui::Margin::same(SECTOR_MAP_PAD as i8))
                 .corner_radius(CornerRadius::same(8))
-                .stroke(Stroke::new(1.5, t.border))
+                .stroke(Stroke::new(1.5_f32, t.border))
                 .show(ui, |ui| {
                     let w = ui.available_width();
                     ui.label(egui::RichText::new("PROGRESS").size(11.0).color(t.txt_sec));
@@ -4810,7 +4766,6 @@ fn nice_y_max(max_speed: f64) -> f64 {
 /// A staged performance-chart export, awaiting the user's "include health report?"
 /// choice in the modal. Carries everything the off-thread save+render needs so no
 /// app state is touched from the worker.
-#[cfg(windows)]
 struct ChartExportRequest {
     drive: crate::detected_drive::DetectedDrive,
     drive_label: String,
@@ -4822,7 +4777,6 @@ struct ChartExportRequest {
     total_gb: f64,
 }
 
-#[cfg(windows)]
 impl ChartExportRequest {
     /// Spawn the save-dialog + write worker. `include_report` chooses the HTML
     /// (chart embedded in a fresh Drive Health report) vs. plain PNG path.
@@ -5000,7 +4954,6 @@ pub(crate) fn render_performance_chart_png_bytes(
 }
 
 /// Render the performance chart to a PNG file (960x460) using plotters.
-#[cfg(windows)]
 fn export_performance_chart_png(
     path: &std::path::Path,
     drive_label: &str,
@@ -5016,7 +4969,6 @@ fn export_performance_chart_png(
     std::fs::write(path, bytes).map_err(|e| e.to_string())
 }
 
-#[cfg(windows)]
 fn sector_cell_color(cell: SectorCell, heat_min_ms: f64, heat_max_ms: f64) -> Color32 {
     match cell {
         SectorCell::Pending => Color32::from_rgb(60, 60, 60),
@@ -5282,11 +5234,11 @@ impl DiskoriaApp {
         if self.show_destructive_stop_confirm {
             self.draw_destructive_stop_confirm(ctx, dark);
         }
+        if self.pending_chart_export.is_some() {
+            self.draw_chart_export_confirm(ctx, dark);
+        }
         #[cfg(windows)]
         {
-            if self.pending_chart_export.is_some() {
-                self.draw_chart_export_confirm(ctx, dark);
-            }
             if self.show_update_staged_modal {
                 self.draw_update_staged_modal(ctx, dark);
             }

@@ -4,18 +4,13 @@
 use egui::{
     Align2, Color32, FontFamily, FontId, Id, Pos2, Rect, Vec2,
 };
-// Used only by the `#[cfg(windows)]` benchmark UI below; gated so the Linux
-// build stays warning-free until the port un-gates that code.
-#[cfg(windows)]
 use egui::{CornerRadius, Frame, Key, Modifiers, Sense, Stroke, StrokeKind};
 
 use crate::drive_selector::{self, ChipSpec, DriveEntry};
 use crate::theme::Theme;
-#[cfg(windows)]
 use crate::theme::CLOSE_HOVER_BG;
 
 use super::super::{paint_speed_metric_cell, SPEED_PAGE_BOTTOM_PAD};
-#[cfg(windows)]
 use super::super::SPEED_PAGE_SECTION_GAP;
 
 impl crate::app::DiskoriaApp {
@@ -321,7 +316,6 @@ impl crate::app::DiskoriaApp {
         ui.add_space(8.0);
 
         // Start / Stop (above progress — matches workflow: pick volume → run → see results below)
-        #[cfg(windows)]
         {
             const PRIMARY_BTN_H: f32 = 48.0;
             let (_, btn_alloc) = ui.allocate_space(Vec2::new(ui.available_width(), PRIMARY_BTN_H));
@@ -351,7 +345,7 @@ impl crate::app::DiskoriaApp {
                     ui.painter().rect_stroke(
                         btn_rect.expand(3.0),
                         4.0,
-                        Stroke::new(2.0, t.accent),
+                        Stroke::new(2.0_f32, t.accent),
                         StrokeKind::Outside,
                     );
                 }
@@ -408,7 +402,7 @@ impl crate::app::DiskoriaApp {
                     ui.painter().rect_stroke(
                         btn_rect.expand(3.0),
                         4.0,
-                        Stroke::new(2.0, t.accent),
+                        Stroke::new(2.0_f32, t.accent),
                         StrokeKind::Outside,
                     );
                 }
@@ -432,11 +426,9 @@ impl crate::app::DiskoriaApp {
             ui.advance_cursor_after_rect(btn_alloc);
         }
 
-        #[cfg(windows)]
         ui.add_space(SPEED_PAGE_SECTION_GAP);
 
         // Progress card
-        #[cfg(windows)]
         {
             let left = content_x + margin;
             let section_rect = Rect::from_min_size(
@@ -448,7 +440,7 @@ impl crate::app::DiskoriaApp {
                     .fill(t.bg_pri)
                     .inner_margin(egui::Margin::same(16))
                     .corner_radius(CornerRadius::same(8))
-                    .stroke(Stroke::new(1.5, t.border))
+                    .stroke(Stroke::new(1.5_f32, t.border))
                     .show(ui, |ui| {
                         let w = ui.available_width();
                         ui.label(egui::RichText::new("PROGRESS").size(11.0).color(t.txt_sec));
@@ -484,7 +476,6 @@ impl crate::app::DiskoriaApp {
             });
         }
 
-        #[cfg(windows)]
         ui.add_space(SPEED_PAGE_SECTION_GAP);
 
         // Results 2×2
@@ -561,19 +552,5 @@ impl crate::app::DiskoriaApp {
 
         ui.add_space(SPEED_PAGE_BOTTOM_PAD);
 
-        #[cfg(not(windows))]
-        {
-            ui.horizontal(|ui| {
-                let pad = (content_x + margin) - ui.min_rect().left();
-                if pad > 0.0 {
-                    ui.add_space(pad);
-                }
-                ui.label(
-                    egui::RichText::new("Speed test requires Windows.")
-                        .size(14.0)
-                        .color(t.txt_sec),
-                );
-            });
-        }
     }
 }

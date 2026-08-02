@@ -4,15 +4,11 @@
 use egui::{
     Align2, Color32, FontFamily, FontId, Id, Pos2, Rect, Vec2,
 };
-// Used only by the `#[cfg(windows)]` test-button block below; gated so the
-// Linux build stays warning-free until the port un-gates that block.
-#[cfg(windows)]
 use egui::{Key, Modifiers, Sense, Stroke, StrokeKind};
 
 use crate::detected_drive::DetectedDrive;
 use crate::drive_selector::{self, ChipSpec, DriveEntry};
 use crate::theme::Theme;
-#[cfg(windows)]
 use crate::theme::CLOSE_HOVER_BG;
 
 impl crate::app::DiskoriaApp {
@@ -188,7 +184,6 @@ impl crate::app::DiskoriaApp {
 
         self.draw_smart_health_card(ui, t, dark, content_x, margin, section_w);
 
-        #[cfg(windows)]
         {
             ui.add_space(12.0);
             const PRIMARY_BTN_H: f32 = 48.0;
@@ -219,7 +214,7 @@ impl crate::app::DiskoriaApp {
                     ui.painter().rect_stroke(
                         btn_rect.expand(3.0),
                         4.0,
-                        Stroke::new(2.0, t.accent),
+                        Stroke::new(2.0_f32, t.accent),
                         StrokeKind::Outside,
                     );
                 }
@@ -276,7 +271,7 @@ impl crate::app::DiskoriaApp {
                     ui.painter().rect_stroke(
                         btn_rect.expand(3.0),
                         4.0,
-                        Stroke::new(2.0, t.accent),
+                        Stroke::new(2.0_f32, t.accent),
                         StrokeKind::Outside,
                     );
                 }
@@ -302,19 +297,6 @@ impl crate::app::DiskoriaApp {
 
         ui.add_space(16.0);
 
-        if cfg!(not(windows)) {
-            ui.horizontal(|ui| {
-                let pad = (content_x + margin) - ui.min_rect().left();
-                if pad > 0.0 { ui.add_space(pad); }
-                ui.label(
-                    egui::RichText::new("Sector testing requires Windows.")
-                        .size(14.0)
-                        .color(t.txt_sec),
-                );
-            });
-        }
-
-        #[cfg(windows)]
         self.draw_sector_test_panel(ui, t, content_x, margin, section_w);
     }
 }
