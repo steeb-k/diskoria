@@ -31,32 +31,44 @@ pub fn send_toast(title: &str, body: &str) {
 /// a themed disk icon if the file cannot be written.
 #[cfg(target_os = "linux")]
 fn app_icon_arg() -> String {
-    static APP_PNG: &[u8] = include_bytes!("../../assets/applogo.png");
-    const FALLBACK: &str = "drive-harddisk";
+    use std::sync::OnceLock;
 
+    const FALLBACK: &str = "drive-harddisk";
+    static RESOLVED: OnceLock<String> = OnceLock::new();
+
+    RESOLVED
+        .get_or_init(|| match write_icon_png() {
+            Some(path) => path,
+            None => FALLBACK.to_string(),
+        })
+        .clone()
+}
+
+/// Decode the bundled app icon and write it out as PNG, returning its path.
+/// Written once per run (rather than only when missing) so a stale file from
+/// an older build is replaced.
+#[cfg(target_os = "linux")]
+fn write_icon_png() -> Option<String> {
+    // The window/app icon — not `applogo.png`, which is the in-app sidebar
+    // logo. Notification daemons do not decode ICO, so it is re-encoded as PNG.
+    static APP_ICO: &[u8] = include_bytes!("../../assets/appicon2.ico");
+
+    let img = image::load_from_memory_with_format(APP_ICO, image::ImageFormat::Ico)
+        .map_err(|e| log::warn!(target: "diskoria::toast", "app icon decode failed: {e}"))
+        .ok()?;
     let path = crate::paths::data_dir().join("appicon.png");
-    if path.is_file() {
-        return path.to_string_lossy().into_owned();
-    }
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    match std::fs::write(&path, APP_PNG) {
-        Ok(()) => {
-            // An elevated session writes it as root; the notification daemon
-            // reads it as the user, so hand ownership over like the rest of
-            // the data dir.
-            #[cfg(target_os = "linux")]
-            if let Some(uid) = crate::elevation::session_uid() {
-                let _ = std::os::unix::fs::chown(&path, Some(uid), None);
-            }
-            path.to_string_lossy().into_owned()
-        }
-        Err(e) => {
-            log::warn!(target: "diskoria::toast", "could not write notification icon: {e}");
-            FALLBACK.to_string()
-        }
+    img.save_with_format(&path, image::ImageFormat::Png)
+        .map_err(|e| log::warn!(target: "diskoria::toast", "app icon write failed: {e}"))
+        .ok()?;
+    // An elevated session writes it as root; the notification daemon reads it
+    // as the user, so hand ownership over like the rest of the data dir.
+    if let Some(uid) = crate::elevation::session_uid() {
+        let _ = std::os::unix::fs::chown(&path, Some(uid), None);
     }
+    Some(path.to_string_lossy().into_owned())
 }
 
 /// Send a desktop notification via the freedesktop session bus. Failure is
