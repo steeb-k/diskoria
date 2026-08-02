@@ -149,7 +149,26 @@ impl Renderer {
                 Icon::from_rgba(rgba.into_raw(), w, h).ok()
             });
 
-        let mut attrs = Window::default_attributes()
+        // app_id (Wayland) / WM_CLASS (X11). Without it compositors cannot tie
+        // the window to linux/diskoria.desktop — no icon in docks or alt-tab,
+        // and window rules cannot target it. Both are set: whichever backend
+        // is not in use ignores its attribute. Fully qualified because the two
+        // extension traits both spell the setter `with_name`.
+        #[cfg(target_os = "linux")]
+        let attrs = {
+            use winit::platform::wayland::WindowAttributesExtWayland;
+            use winit::platform::x11::WindowAttributesExtX11;
+            let a = WindowAttributesExtWayland::with_name(
+                Window::default_attributes(),
+                "diskoria",
+                "",
+            );
+            WindowAttributesExtX11::with_name(a, "diskoria", "Diskoria")
+        };
+        #[cfg(not(target_os = "linux"))]
+        let attrs = Window::default_attributes();
+
+        let mut attrs = attrs
             .with_decorations(false)
             .with_inner_size(LogicalSize::new(800_u32, 600_u32))
             .with_min_inner_size(LogicalSize::new(780_u32, 580_u32))
@@ -318,6 +337,15 @@ impl Renderer {
         }
 
         self.tex_mgr.update(&full_output.textures_delta);
+
+        // A hidden window still runs the egui pass above — that is what keeps
+        // drive enumeration and the monitor alive in tray-only mode — but must
+        // not reach the compositor. On Wayland "visible" *is* "has a committed
+        // buffer", so presenting here re-mapped the window a frame after
+        // `--minimized` hid it, and the app came up on screen anyway.
+        if !self.app.window_visible {
+            return;
+        }
 
         let ppp = full_output.pixels_per_point;
         let clipped = self.egui_ctx.tessellate(full_output.shapes, ppp);
@@ -501,20 +529,49 @@ fn raise_window(window: &winit::window::Window) {
     }
 }
 
+/// Whether the platform can keep a window alive but off-screen.
+///
+/// Wayland cannot: winit's `set_visible` is a documented no-op there and
+/// `is_visible()` returns `None`, because a Wayland window *is* its mapped
+/// surface. Hiding therefore means destroying the window and recreating it on
+/// demand — which is what every Wayland app with a tray does.
+#[cfg(not(windows))]
+fn window_hiding_supported() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_none()
+}
+
+#[cfg(windows)]
+fn window_hiding_supported() -> bool {
+    true
+}
+
 /// Show and bring a window to the foreground, best-effort.
 ///
-/// On X11 `focus_window()` maps to `_NET_ACTIVE_WINDOW` and generally works;
-/// Wayland compositors enforce focus-stealing prevention with no reliable
-/// escape hatch (winit's xdg-activation support needs a token we don't have
-/// from a plain second launch), so there `request_user_attention` at least
-/// pulses the taskbar/dock entry.
+/// On X11 `focus_window()` maps to `_NET_ACTIVE_WINDOW` and generally works.
+/// On Wayland a client cannot focus itself: activation requires a token from
+/// the surface the user actually clicked, and the StatusNotifierItem protocol
+/// gives a tray host no way to pass one, so `focus_window()` is a no-op there
+/// (KI-35). What *does* work is mapping a hidden window — compositors focus
+/// newly mapped windows — which covers the case that matters: raising Diskoria
+/// after it was closed to the tray. A same-frame hide/show "remap" of an
+/// already-visible window was tried and does not help (winit coalesces it, and
+/// re-mapping would also disturb a tiling layout), so a visible-but-unfocused
+/// window only gets an attention request.
 #[cfg(not(windows))]
 fn raise_window(window: &winit::window::Window) {
-    window.set_visible(true);
+    let was_visible = window.is_visible().unwrap_or(true);
     window.set_minimized(false);
+
+    if !was_visible {
+        window.set_visible(true);
+        window.focus_window();
+        return;
+    }
+
     window.focus_window();
     window.request_user_attention(Some(winit::window::UserAttentionType::Informational));
 }
+
 
 // ── winit ApplicationHandler ──────────────────────────────────────────────────
 
@@ -589,6 +646,51 @@ impl App {
         self.renderers.values_mut().next()
     }
 
+    /// Keep the tray alive while no window exists.
+    ///
+    /// Monitoring itself is a detached thread, so it keeps polling after the
+    /// last window goes away (which is what "close to tray" means on Wayland,
+    /// where a window cannot be hidden — only destroyed). Its messages are
+    /// normally drained by `DiskoriaApp::poll_monitor` during a frame; with no
+    /// frames to run, this drains them so tray temperatures and alerts still
+    /// update. Returns how long to wait before checking again.
+    #[cfg(any(windows, target_os = "linux"))]
+    fn pump_headless_monitor(&mut self) -> Option<std::time::Duration> {
+        if !self.renderers.is_empty() || self.tray.is_none() {
+            return None;
+        }
+        let (msgs, _connected) = self.shared.drain_monitor_rx();
+        for msg in msgs {
+            match msg {
+                crate::monitor::MonitorMsg::Snapshots(snaps) => {
+                    for snap in snaps {
+                        let _ = self.proxy.send_event(UserEvent::TrayIconUpdate {
+                            serial: snap.serial.clone(),
+                            temp_c: snap.temp_c,
+                        });
+                        self.shared.insert_snapshot(snap);
+                    }
+                }
+                crate::monitor::MonitorMsg::AlertFired(alert) => {
+                    let _ = self.proxy.send_event(UserEvent::DriveAlert {
+                        serial: alert.serial.clone(),
+                        is_critical: matches!(
+                            alert.level,
+                            crate::alert_engine::AlertLevel::Critical
+                        ),
+                    });
+                    let (title, body) = (
+                        format!("Diskoria \u{2014} {} ({:?})", alert.model, alert.level),
+                        alert.detail.clone(),
+                    );
+                    std::thread::spawn(move || crate::toast::send_toast(&title, &body));
+                }
+            }
+        }
+        // Nothing here is interactive; a lazy tick is plenty.
+        Some(std::time::Duration::from_secs(5))
+    }
+
     /// Re-run drive enumeration after a device-tree change. Uses any renderer's
     /// egui context to drive the worker's repaints; the per-window generation
     /// sync in `poll_drive_enumeration` then propagates the fresh list to every
@@ -634,7 +736,15 @@ impl ApplicationHandler<UserEvent> for App {
             // though no window is ever shown.
             #[cfg(any(windows, target_os = "linux"))]
             if self.start_minimized {
-                renderer.window.set_visible(false);
+                if window_hiding_supported() {
+                    renderer.window.set_visible(false);
+                } else {
+                    log::warn!(
+                        target: "diskoria",
+                        "--minimized: this compositor cannot start a window hidden \
+                         (Wayland has no way to unmap a window); showing it instead"
+                    );
+                }
                 renderer.window.request_redraw();
             }
             let id = renderer.window.id();
@@ -725,7 +835,8 @@ impl ApplicationHandler<UserEvent> for App {
         // between exit / drop-this-renderer / tray-minimize.  Set a flag
         // while the `&mut renderer` borrow is live, then act on it after
         // the borrow ends so we can mutate `self.renderers`.
-        enum CloseDisposition { None, Exit, DropThis, HideThis }
+        #[derive(Debug)]
+enum CloseDisposition { None, Exit, DropThis, HideThis }
         let mut disposition = CloseDisposition::None;
         // Set when we hid a window (collapsed to `None` so the outer match
         // doesn't double-handle it, but we still want to refresh the
@@ -756,11 +867,25 @@ impl ApplicationHandler<UserEvent> for App {
         match event {
             WindowEvent::CloseRequested => {
                 disposition = decide(can_hide_to_tray, window_count);
+                log::debug!(
+                    target: "diskoria",
+                    "close requested: windows={window_count} can_hide={can_hide_to_tray} \
+                     hiding_supported={} -> {:?}",
+                    window_hiding_supported(),
+                    disposition
+                );
                 if matches!(disposition, CloseDisposition::DropThis) {
                     renderer.app.cancel_all_tests();
                 } else if matches!(disposition, CloseDisposition::HideThis) {
-                    renderer.window.set_visible(false);
-                    disposition = CloseDisposition::None;
+                    if window_hiding_supported() {
+                        renderer.window.set_visible(false);
+                        disposition = CloseDisposition::None;
+                    } else {
+                        // Wayland: destroy it instead. The tray keeps the
+                        // process alive and re-creates a window on demand.
+                        renderer.app.cancel_all_tests();
+                        disposition = CloseDisposition::DropThis;
+                    }
                     did_hide = true;
                 }
             }
@@ -772,8 +897,13 @@ impl ApplicationHandler<UserEvent> for App {
                     if matches!(disposition, CloseDisposition::DropThis) {
                         renderer.app.cancel_all_tests();
                     } else if matches!(disposition, CloseDisposition::HideThis) {
-                        renderer.window.set_visible(false);
-                        disposition = CloseDisposition::None;
+                        if window_hiding_supported() {
+                            renderer.window.set_visible(false);
+                            disposition = CloseDisposition::None;
+                        } else {
+                            renderer.app.cancel_all_tests();
+                            disposition = CloseDisposition::DropThis;
+                        }
                         did_hide = true;
                     }
                 }
@@ -820,6 +950,18 @@ impl ApplicationHandler<UserEvent> for App {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::ShowWindowRequested => {
+                if self.renderers.is_empty() {
+                    // Nothing to raise (every window was dropped) — the intent
+                    // is "show me Diskoria", so make one.
+                    log::debug!(target: "diskoria", "show requested with no windows; opening one");
+                    self.user_event(event_loop, UserEvent::OpenNewWindow);
+                    return;
+                }
+                log::debug!(
+                    target: "diskoria",
+                    "show requested; raising {} window(s)",
+                    self.renderers.len()
+                );
                 for r in self.renderers.values() {
                     raise_window(&r.window);
                 }
@@ -1205,6 +1347,14 @@ impl ApplicationHandler<UserEvent> for App {
                 let poll_at = std::time::Instant::now() + wait;
                 wake_at = Some(wake_at.map_or(poll_at, |w| w.min(poll_at)));
             }
+        }
+
+        // Tray-only (no windows): nothing paints, so drain the monitor here and
+        // keep a slow tick going.
+        #[cfg(any(windows, target_os = "linux"))]
+        if let Some(wait) = self.pump_headless_monitor() {
+            let at = std::time::Instant::now() + wait;
+            wake_at = Some(wake_at.map_or(at, |w: std::time::Instant| w.min(at)));
         }
 
         // Schedule the next wake-up. With a pending deadline, wake then; with

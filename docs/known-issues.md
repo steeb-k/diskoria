@@ -132,11 +132,25 @@ single icon (hottest drive's thermometer) with per-drive temperatures in the
 tooltip. Multiple SNI items are technically possible but most desktops collapse
 or hide extra items. Alert flashing maps to the SNI `NeedsAttention` status.
 
-### KI-35 — Raise-on-second-launch is best-effort under Wayland `linux`
+### KI-35 — A *visible* window cannot be focused on Wayland `linux`
 `raise_window` uses `focus_window()` + `request_user_attention`. X11 honors it;
-Wayland compositors enforce focus-stealing prevention and winit's
-xdg-activation support has no token from a plain second launch, so the window
-may only pulse in the taskbar.
+on Wayland a client cannot focus itself at all — activation needs a token from
+the surface the user clicked, and neither a second launch nor a
+StatusNotifierItem host provides one. What does work is *mapping* a window:
+compositors focus newly mapped windows, so raising after close-to-tray (where
+the window was destroyed, see KI-39) creates one and it gets focus. A
+same-frame hide/show "remap" of an already-visible window was tried and does
+not work (winit coalesces it) and would disturb a tiling layout anyway.
+
+### KI-39 — Wayland cannot hide a window; close-to-tray destroys it `linux`
+winit's Wayland `set_visible` is a documented no-op and `is_visible()` returns
+`None` — a Wayland window *is* its mapped surface. Close-to-tray therefore
+drops the window (`window_hiding_supported()` in `lib.rs` picks the path) and
+the tray recreates one on demand, which is what Qt/Electron apps do too. Two
+consequences: `--minimized` cannot start hidden on Wayland (it logs a warning
+and shows the window), and with no window there are no frames, so
+`App::pump_headless_monitor` drains monitor messages on a 5 s tick to keep tray
+temperatures and alerts live.
 
 ### KI-36 — `--minimized` autostart runs unelevated; no elevate-on-open hand-off `linux`
 A polkit prompt at every login is unacceptable, so the autostart launch skips

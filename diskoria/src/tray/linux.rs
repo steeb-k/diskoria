@@ -88,12 +88,41 @@ impl ksni::Tray for SniTray {
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {
+        log::debug!(target: "diskoria::tray", "tray activated (left click)");
         let _ = self.proxy.send_event(UserEvent::ShowWindowRequested);
+    }
+
+    fn secondary_activate(&mut self, _x: i32, _y: i32) {
+        log::debug!(target: "diskoria::tray", "tray secondary-activated (middle click)");
+        let _ = self.proxy.send_event(UserEvent::OpenNewWindow);
     }
 
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
         use ksni::menu::*;
-        vec![
+        let mut items: Vec<ksni::MenuItem<Self>> = Vec::new();
+
+        // Per-drive status as disabled header items. The same text is in the
+        // ToolTip, but whether a panel renders tooltips is up to the shell
+        // (Quickshell/waybar configs often don't), while the menu is the one
+        // surface every SNI host shows.
+        for d in &self.drives {
+            items.push(
+                StandardItem {
+                    label: match d.temp_c {
+                        Some(t) => format!("{} — {t}°C", d.model.trim()),
+                        None => format!("{} — no reading", d.model.trim()),
+                    },
+                    enabled: false,
+                    ..Default::default()
+                }
+                .into(),
+            );
+        }
+        if !self.drives.is_empty() {
+            items.push(MenuItem::Separator);
+        }
+
+        items.extend(vec![
             StandardItem {
                 label: "Open Diskoria".into(),
                 activate: Box::new(|t: &mut SniTray| {
@@ -119,7 +148,8 @@ impl ksni::Tray for SniTray {
                 ..Default::default()
             }
             .into(),
-        ]
+        ]);
+        items
     }
 }
 
