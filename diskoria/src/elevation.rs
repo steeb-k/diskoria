@@ -65,10 +65,37 @@ fn pkexec_args(exe: &str, app_args: &[String], env_pairs: &[(String, String)]) -
 }
 
 fn passthrough_pairs() -> Vec<(String, String)> {
-    PASSTHROUGH_ENV
+    let mut pairs: Vec<(String, String)> = PASSTHROUGH_ENV
         .iter()
         .filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), v)))
-        .collect()
+        .collect();
+    // Wayland sessions often leave XAUTHORITY unset, but Xwayland still needs
+    // it for the X11 clipboard once we are root (root does not share the
+    // user's implicit cookie). Discover the usual locations.
+    if !pairs.iter().any(|(k, _)| k == "XAUTHORITY") {
+        if let Some(path) = discover_xauthority() {
+            pairs.push(("XAUTHORITY".to_string(), path));
+        }
+    }
+    pairs
+}
+
+fn discover_xauthority() -> Option<String> {
+    if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if name.starts_with("xauth") {
+                    return Some(e.path().to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+    let home = std::env::var("HOME").ok()?;
+    let default = std::path::Path::new(&home).join(".Xauthority");
+    default
+        .exists()
+        .then(|| default.to_string_lossy().into_owned())
 }
 
 /// Relaunch this binary elevated and wait for it.
@@ -101,20 +128,93 @@ pub fn relaunch_elevated() -> Result<i32, String> {
     }
 }
 
+/// The uid that launched us, when we are root *because of* pkexec/sudo.
+/// `None` when unelevated (we already are that user) or when root logged in
+/// directly. This is what makes session access possible: the D-Bus session
+/// bus authenticates by peer uid, so an elevated process must act as this
+/// user to reach the portal, notifications and the tray.
+pub fn session_uid() -> Option<u32> {
+    if !is_elevated() {
+        return None;
+    }
+    ["PKEXEC_UID", "SUDO_UID"]
+        .iter()
+        .find_map(|k| std::env::var(k).ok()?.trim().parse::<u32>().ok())
+        .filter(|uid| *uid != 0)
+}
+
+/// A `Command` that runs `program` as the invoking user when we are elevated,
+/// or plainly when we are not. `setpriv` (util-linux) is preferred; `sudo -u`
+/// is the fallback. The session environment is re-exported because `setpriv`
+/// keeps our env but the child needs to find the same bus/display.
+pub fn command_as_session_user(program: &str) -> std::process::Command {
+    let Some(uid) = session_uid() else {
+        return std::process::Command::new(program);
+    };
+    let have = |bin: &str| {
+        std::env::var("PATH").is_ok_and(|p| {
+            std::env::split_paths(&p).any(|d| d.join(bin).is_file())
+        })
+    };
+    if have("setpriv") {
+        let mut c = std::process::Command::new("setpriv");
+        c.args([
+            format!("--reuid={uid}"),
+            format!("--regid={uid}"),
+            "--init-groups".to_string(),
+            "--".to_string(),
+            program.to_string(),
+        ]);
+        c
+    } else if have("sudo") {
+        let mut c = std::process::Command::new("sudo");
+        c.args(["-n", "-u", &format!("#{uid}"), program]);
+        c
+    } else {
+        std::process::Command::new(program)
+    }
+}
+
+/// Drop **this thread's** credentials to the invoking user, keeping root as
+/// the saved uid so [`restore_thread_privileges`] can take it back.
+///
+/// Per-thread on purpose: `libc::setresuid` (the glibc wrapper) broadcasts to
+/// every thread, which would cost the disk workers their root. The raw syscall
+/// changes only the calling thread, and threads cloned from it inherit those
+/// credentials — which is how the tray's D-Bus worker ends up running as the
+/// user while the rest of the process stays privileged.
+///
+/// Returns `false` when there is nothing to do (unelevated) or the syscall
+/// failed; callers then proceed as-is.
+pub fn drop_thread_privileges_to_session_user() -> bool {
+    let Some(uid) = session_uid() else {
+        return false;
+    };
+    unsafe {
+        // gid first — after dropping uid we could not raise it again.
+        if libc::syscall(libc::SYS_setresgid, uid, uid, 0) != 0 {
+            return false;
+        }
+        libc::syscall(libc::SYS_setresuid, uid, uid, 0) == 0
+    }
+}
+
+/// Undo [`drop_thread_privileges_to_session_user`] on this thread.
+pub fn restore_thread_privileges() {
+    unsafe {
+        let _ = libc::syscall(libc::SYS_setresuid, 0, 0, 0);
+        let _ = libc::syscall(libc::SYS_setresgid, 0, 0, 0);
+    }
+}
+
 /// An elevated session writes root-owned files into the invoking user's XDG
 /// data dir (settings.txt, history.db + WAL sidecars). Re-own them to the
 /// user pkexec recorded, so later unelevated runs can still read and write
 /// them. Runs at every elevated startup — files created mid-session get
 /// healed on the next one.
 pub fn fix_data_dir_ownership() {
-    if !is_elevated() {
-        return;
-    }
-    let Some(uid) = std::env::var("PKEXEC_UID")
-        .ok()
-        .and_then(|v| v.trim().parse::<u32>().ok())
-    else {
-        return; // launched via sudo/root shell — leave ownership alone
+    let Some(uid) = session_uid() else {
+        return; // unelevated, or a direct root login — leave ownership alone
     };
     let dir = crate::paths::data_dir();
     let Ok(entries) = std::fs::read_dir(&dir) else {

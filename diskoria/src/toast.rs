@@ -2,9 +2,11 @@
 //!
 //! Windows: WinRT `ToastNotification` (Win10/11 action center), falling back
 //! to a `Shell_NotifyIconW` balloon tip.
-//! Linux: `org.freedesktop.Notifications` over the session bus (notify-rust).
-//! The pkexec relaunch passes `DBUS_SESSION_BUS_ADDRESS` through, so the
-//! elevated process still reaches the user's notification daemon.
+//! Linux: `org.freedesktop.Notifications` over the session bus (notify-rust)
+//! when running as the user. Elevated runs cannot connect in-process — the
+//! session bus authenticates by peer uid and refuses root even though the
+//! socket is reachable — so they post through `dbus-send`/`notify-send`
+//! running as the invoking user (see `elevation::command_as_session_user`).
 
 /// Send a Windows toast notification.
 ///
@@ -23,6 +25,15 @@ pub fn send_toast(title: &str, body: &str) {
 /// logged, not fatal — a missing daemon just means no popup.
 #[cfg(target_os = "linux")]
 pub fn send_toast(title: &str, body: &str) {
+    // Elevated: the in-process D-Bus connection would be refused (the session
+    // bus authenticates by peer uid), so post the notification through a
+    // helper running as the invoking user.
+    if crate::elevation::session_uid().is_some() {
+        if send_toast_as_session_user(title, body) {
+            return;
+        }
+        log::warn!(target: "diskoria::toast", "elevated notification failed; falling back");
+    }
     let result = notify_rust::Notification::new()
         .appname("Diskoria")
         .summary(title)
@@ -32,6 +43,43 @@ pub fn send_toast(title: &str, body: &str) {
     if let Err(e) = result {
         log::warn!(target: "diskoria::toast", "notification failed: {e}");
     }
+}
+
+/// `org.freedesktop.Notifications.Notify` via `dbus-send` as the invoking
+/// user. Returns whether the call succeeded.
+#[cfg(target_os = "linux")]
+fn send_toast_as_session_user(title: &str, body: &str) -> bool {
+    let ok = |mut c: std::process::Command| -> bool {
+        c.stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+
+    let mut c = crate::elevation::command_as_session_user("dbus-send");
+    c.args([
+        "--session",
+        "--type=method_call",
+        "--dest=org.freedesktop.Notifications",
+        "/org/freedesktop/Notifications",
+        "org.freedesktop.Notifications.Notify",
+        "string:Diskoria",
+        "uint32:0",
+        "string:drive-harddisk",
+        &format!("string:{title}"),
+        &format!("string:{body}"),
+        "array:string:",
+        "dict:string:variant:",
+        "int32:8000",
+    ]);
+    if ok(c) {
+        return true;
+    }
+    // Some desktops ship notify-send but no dbus-send.
+    let mut c = crate::elevation::command_as_session_user("notify-send");
+    c.args(["-a", "Diskoria", "-i", "drive-harddisk", title, body]);
+    ok(c)
 }
 
 #[cfg(not(any(windows, target_os = "linux")))]

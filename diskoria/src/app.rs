@@ -1519,7 +1519,13 @@ impl DiskoriaApp {
             self.alert_temp_critical,
             self.alert_wear_threshold,
         );
-        let drive_count = self.drives.len();
+        // Only internal drives are polled (see monitor::spawn_monitor_thread);
+        // logging the full list overstated it on machines with USB drives.
+        let drive_count = self
+            .drives
+            .iter()
+            .filter(|d| matches!(d.bus, BusKind::Nvme | BusKind::Sata | BusKind::Ufs))
+            .count();
         self.shared.set_monitor_running(rx, cancel);
         log::info!(
             target: "diskoria::monitor",

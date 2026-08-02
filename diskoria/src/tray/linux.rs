@@ -131,13 +131,21 @@ impl TrayManager {
     /// Spawn the SNI service. `None` when no StatusNotifierWatcher is on the
     /// bus (no tray on this desktop — e.g. stock GNOME without the extension).
     pub fn new(proxy: EventLoopProxy<UserEvent>) -> Option<Self> {
-        match (SniTray {
+        // Under pkexec the session bus refuses root, so hand ksni's worker
+        // thread the invoking user's credentials: threads cloned from this one
+        // inherit them, and the worker only ever talks D-Bus. Our own thread
+        // takes root back immediately afterwards.
+        let dropped = crate::elevation::drop_thread_privileges_to_session_user();
+        let spawned = (SniTray {
             proxy,
             drives: Vec::new(),
             alert: None,
         })
-        .spawn()
-        {
+        .spawn();
+        if dropped {
+            crate::elevation::restore_thread_privileges();
+        }
+        match spawned {
             Ok(handle) => Some(Self { handle }),
             Err(e) => {
                 log::warn!(target: "diskoria::tray", "no system tray available: {e}");

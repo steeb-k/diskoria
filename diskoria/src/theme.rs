@@ -248,7 +248,9 @@ mod linux_portal {
     });
 
     fn read_setting(key: &str) -> Option<String> {
-        let out = std::process::Command::new("dbus-send")
+        // Elevated runs must ask as the invoking user: the session bus
+        // authenticates by peer uid and drops root outright.
+        let out = crate::elevation::command_as_session_user("dbus-send")
             .args([
                 "--session",
                 "--print-reply=literal",
