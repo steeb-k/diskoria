@@ -18,6 +18,8 @@ mod autostart;
 mod chrome;
 mod demo;
 #[cfg(target_os = "linux")]
+mod compositor_focus;
+#[cfg(target_os = "linux")]
 mod device_events;
 #[cfg(target_os = "linux")]
 mod elevation;
@@ -569,6 +571,12 @@ fn raise_window(window: &winit::window::Window) {
     }
 
     window.focus_window();
+    // Wayland ignores the line above; ask the compositor's own IPC before
+    // settling for an attention hint.
+    #[cfg(target_os = "linux")]
+    if crate::compositor_focus::focus_own_window() {
+        return;
+    }
     window.request_user_attention(Some(winit::window::UserAttentionType::Informational));
 }
 

@@ -38,7 +38,12 @@ impl ksni::Tray for SniTray {
     }
 
     fn title(&self) -> String {
-        "Diskoria".into()
+        // Panels differ in what they surface on hover — some show ToolTip,
+        // some only Title — so the hottest reading goes in both.
+        match self.hottest() {
+            Some(t) => format!("Diskoria — {t}°C"),
+            None => "Diskoria".into(),
+        }
     }
 
     fn category(&self) -> ksni::Category {

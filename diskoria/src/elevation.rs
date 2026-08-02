@@ -37,6 +37,11 @@ const PASSTHROUGH_ENV: &[&str] = &[
     "DBUS_SESSION_BUS_ADDRESS",
     "HOME",
     "RUST_LOG",
+    // Compositor IPC sockets — the only way to raise our own window on
+    // Wayland (see `compositor_focus`).
+    "NIRI_SOCKET",
+    "SWAYSOCK",
+    "HYPRLAND_INSTANCE_SIGNATURE",
 ];
 
 pub fn is_elevated() -> bool {

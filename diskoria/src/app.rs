@@ -3441,11 +3441,11 @@ impl DiskoriaApp {
     }
 
     fn settings_window_slot_count(&self) -> usize {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         {
             1
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "linux")))]
         {
             0
         }
@@ -3858,7 +3858,7 @@ impl DiskoriaApp {
                                     self.draw_settings_monitoring(ui, ctx, &t, margin, content_x, content_w);
                                 }
                                 self.draw_settings_test_overlay(ui, &t, margin, content_x, content_w);
-                                #[cfg(windows)]
+                                #[cfg(any(windows, target_os = "linux"))]
                                 self.draw_settings_window(ui, &t, margin, content_x, content_w);
                                 #[cfg(any(windows, target_os = "linux"))]
                                 self.draw_settings_updates(ui, &t, margin, content_x, content_w);
@@ -5455,7 +5455,7 @@ impl DiskoriaApp {
     /// off), so a bare `diskoria.exe` quits on close the way users expect while
     /// an installed copy keeps monitoring from the tray. Windows-only: the tray
     /// subsystem doesn't exist on the non-Windows shell.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     fn draw_settings_window(
         &mut self,
         ui: &mut egui::Ui,
@@ -5516,7 +5516,7 @@ impl DiskoriaApp {
             ui.painter().rect_stroke(
                 toggle_rect.expand(3.0),
                 14.0,
-                Stroke::new(2.0, t.accent),
+                Stroke::new(2.0_f32, t.accent),
                 StrokeKind::Outside,
             );
         }
