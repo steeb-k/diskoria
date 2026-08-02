@@ -52,10 +52,35 @@ after — 42 ms with rayon pinned to one thread, so most of the win survives on 
 low-core PE box. rayon sizes its pool from `available_parallelism`, so no cap is
 configured.
 
-**Measuring it:** `DISKORIA_FRAME_STATS=1` logs a per-frame breakdown (UI pass,
-tessellate, rasterize, present, total, primitive count, overdraw factor). Free
-when unset. Rendering changes should be checked for *pixel identity*, not just
-speed — capture the same demo page before and after and diff the images.
+**Damage tracking.** A frame only redraws what changed. Each clipped primitive
+is fingerprinted **per triangle** — egui batches a whole page into a handful of
+meshes, so a primitive-level diff reports "everything changed" the moment one
+label ticks over — and the diff against last frame gives the damaged rectangles,
+in both the old and the new position. Those are merged until disjoint (a
+translucent primitive drawn twice would blend twice) and capped, then only the
+damaged spans are cleared, rasterized, and handed to
+`Buffer::present_with_damage`, which on Windows becomes per-rect `BitBlt`.
+
+A frame falls back to a full repaint when it cannot be trusted to a diff: first
+frame, resize, theme change, a *replaced* texture (an appended font-atlas patch
+is fine — existing glyphs keep their pixels), or `Buffer::age() == 0`, meaning
+softbuffer handed back a buffer with undefined contents. Because the buffer may
+be several frames old, `damage_history` keeps each frame's *own* damage and the
+last `age - 1` frames are replayed; storing the *applied* damage instead makes
+one full repaint propagate forever.
+
+Typical steady state on the Drive Health page: tens of thousands of frames where
+nothing changed and painting is skipped outright, a partial redraw per second at
+~1 ms, and a full repaint only when something structural happens (~16 ms).
+
+**Measuring and verifying:** `DISKORIA_FRAME_STATS=1` logs a per-frame breakdown
+(UI pass, tessellate, rasterize, present, total, primitive count, overdraw,
+damage rectangles, buffer age). `DISKORIA_FULL_REPAINT=1` disables damage
+tracking to A/B a suspected artifact. `DISKORIA_DAMAGE_VERIFY=1` re-renders each
+frame in full into a scratch buffer and logs any pixel that differs from what
+damage tracking produced — the failure mode of partial redraw is a stale pixel
+that depends on the *sequence* of frames, which comparing two separate runs
+cannot catch. All three are free when unset.
 
 **Gamma note (KI-5):** the blend approximates gamma 2.0 (square / sqrt) rather
 than true sRGB ~2.2 (`lib.rs:348-358`). Acceptable, but not color-exact.

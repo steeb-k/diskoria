@@ -126,9 +126,243 @@ use rayon::prelude::*;
 
 use crate::tex_mgr::TextureManager;
 
+
+// ── Damage tracking ───────────────────────────────────────────────────────────
+
+/// An inclusive rectangle in physical pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RectPx {
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+}
+
+impl RectPx {
+    fn is_empty(&self) -> bool {
+        self.x1 < self.x0 || self.y1 < self.y0
+    }
+
+    fn union(self, o: Self) -> Self {
+        Self {
+            x0: self.x0.min(o.x0),
+            y0: self.y0.min(o.y0),
+            x1: self.x1.max(o.x1),
+            y1: self.y1.max(o.y1),
+        }
+    }
+
+    /// Overlapping *or touching*: merging both keeps damage regions disjoint,
+    /// which matters because a translucent primitive drawn twice blends twice.
+    fn touches(&self, o: &Self) -> bool {
+        self.x0 <= o.x1 + 1 && o.x0 <= self.x1 + 1 && self.y0 <= o.y1 + 1 && o.y0 <= self.y1 + 1
+    }
+
+    fn clamped(self, w: u32, h: u32) -> Self {
+        Self {
+            x0: self.x0.max(0),
+            y0: self.y0.max(0),
+            x1: self.x1.min(w as i32 - 1),
+            y1: self.y1.min(h as i32 - 1),
+        }
+    }
+}
+
+/// Damage regions are merged until disjoint, then capped: past a handful of
+/// rects the per-rect overhead beats the pixels saved, and one bounding box is
+/// simpler to reason about than fifty slivers.
+const MAX_DAMAGE_RECTS: usize = 8;
+
+fn merge_damage(mut rects: Vec<RectPx>) -> Vec<RectPx> {
+    rects.retain(|r| !r.is_empty());
+    let mut merged = true;
+    while merged {
+        merged = false;
+        'outer: for i in 0..rects.len() {
+            for j in (i + 1)..rects.len() {
+                if rects[i].touches(&rects[j]) {
+                    rects[i] = rects[i].union(rects[j]);
+                    rects.remove(j);
+                    merged = true;
+                    break 'outer;
+                }
+            }
+        }
+    }
+    if rects.len() > MAX_DAMAGE_RECTS {
+        let all = rects.iter().copied().reduce(RectPx::union);
+        rects = all.into_iter().collect();
+    }
+    rects
+}
+
+/// `DISKORIA_FULL_REPAINT=1` disables damage tracking, for comparing a
+/// suspected artifact against a known-good full redraw.
+fn force_full_repaints() -> bool {
+    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var_os("DISKORIA_FULL_REPAINT").is_some())
+}
+
+/// `DISKORIA_DAMAGE_VERIFY=1` re-renders every frame in full into a scratch
+/// buffer and compares it against what damage tracking actually produced,
+/// logging any mismatch.
+///
+/// This is the check that matters for partial redraw: the failure mode is a
+/// stale pixel nobody notices, and it depends on the *sequence* of frames, so
+/// comparing two separate runs cannot catch it. Doubles the work while on.
+fn verify_damage() -> bool {
+    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var_os("DISKORIA_DAMAGE_VERIFY").is_some())
+}
+
+#[inline]
+fn mix64(mut x: u64) -> u64 {
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+    x ^ (x >> 33)
+}
+
+/// One triangle's fingerprint and the pixels it covers.
+///
+/// Damage is tracked per *triangle*, not per primitive: egui batches an entire
+/// page into a handful of meshes, so a primitive-level diff reports "the whole
+/// page changed" the moment one label ticks over, which is no better than
+/// repainting everything.
+#[derive(Clone, Copy)]
+struct TriPrint {
+    hash: u64,
+    area: RectPx,
+}
+
+/// A clipped primitive's identity plus its triangles.
+#[derive(Clone, Default)]
+struct PrimPrint {
+    /// Texture and clip rect — if either changes the whole primitive is
+    /// suspect, since every triangle in it may sample or clip differently.
+    key: u64,
+    tris: Vec<TriPrint>,
+}
+
+impl PrimPrint {
+    /// Every pixel this primitive can touch.
+    fn area(&self) -> Option<RectPx> {
+        self.tris.iter().map(|t| t.area).reduce(RectPx::union)
+    }
+}
+
+/// Fingerprint one clipped primitive, triangle by triangle.
+fn prim_print(prim: &egui::ClippedPrimitive, ppp: f32, w: u32, h: u32) -> PrimPrint {
+    let clip = prim.clip_rect;
+    let clip_px = RectPx {
+        x0: (clip.min.x * ppp).floor() as i32,
+        y0: (clip.min.y * ppp).floor() as i32,
+        x1: (clip.max.x * ppp).ceil() as i32,
+        y1: (clip.max.y * ppp).ceil() as i32,
+    };
+
+    let mut key = mix64(0x9e37_79b9_7f4a_7c15);
+    for v in [clip.min.x, clip.min.y, clip.max.x, clip.max.y] {
+        key = mix64(key ^ v.to_bits() as u64);
+    }
+
+    let egui::epaint::Primitive::Mesh(mesh) = &prim.primitive else {
+        // Not something this renderer draws; make it always-changed so it can
+        // never leave stale pixels behind.
+        return PrimPrint {
+            key: mix64(key ^ 0xdead_beef),
+            tris: vec![TriPrint {
+                hash: mix64(key),
+                area: clip_px.clamped(w, h),
+            }],
+        };
+    };
+    key = mix64(key ^ format!("{:?}", mesh.texture_id).len() as u64);
+    key = mix64(key ^ mesh.indices.len() as u64);
+
+    let verts = &mesh.vertices;
+    let mut tris = Vec::with_capacity(mesh.indices.len() / 3);
+    for tri in mesh.indices.chunks_exact(3) {
+        let (i0, i1, i2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
+        let (Some(v0), Some(v1), Some(v2)) = (verts.get(i0), verts.get(i1), verts.get(i2)) else {
+            continue;
+        };
+        let mut hash = mix64(0x517c_c1b7_2722_0a95);
+        let (mut min_x, mut min_y) = (f32::MAX, f32::MAX);
+        let (mut max_x, mut max_y) = (f32::MIN, f32::MIN);
+        for v in [v0, v1, v2] {
+            hash = mix64(hash ^ ((v.pos.x.to_bits() as u64) << 32 | v.pos.y.to_bits() as u64));
+            hash = mix64(hash ^ ((v.uv.x.to_bits() as u64) << 32 | v.uv.y.to_bits() as u64));
+            hash = mix64(hash ^ u32::from_le_bytes(v.color.to_array()) as u64);
+            min_x = min_x.min(v.pos.x);
+            min_y = min_y.min(v.pos.y);
+            max_x = max_x.max(v.pos.x);
+            max_y = max_y.max(v.pos.y);
+        }
+        // One pixel of slack each way covers the edge epsilon and rounding.
+        let area = RectPx {
+            x0: (min_x * ppp).floor() as i32 - 1,
+            y0: (min_y * ppp).floor() as i32 - 1,
+            x1: (max_x * ppp).ceil() as i32 + 1,
+            y1: (max_y * ppp).ceil() as i32 + 1,
+        };
+        let area = RectPx {
+            x0: area.x0.max(clip_px.x0),
+            y0: area.y0.max(clip_px.y0),
+            x1: area.x1.min(clip_px.x1),
+            y1: area.y1.min(clip_px.y1),
+        }
+        .clamped(w, h);
+        if !area.is_empty() {
+            tris.push(TriPrint { hash, area });
+        }
+    }
+
+    PrimPrint { key, tris }
+}
+
+/// Rectangles to redraw: every triangle whose fingerprint changed, in both its
+/// old and its new position.
+fn frame_damage(prev: &[PrimPrint], cur: &[PrimPrint]) -> Vec<RectPx> {
+    let mut out = Vec::new();
+    for i in 0..prev.len().max(cur.len()) {
+        match (prev.get(i), cur.get(i)) {
+            (Some(p), Some(c)) if p.key == c.key && p.tris.len() == c.tris.len() => {
+                for (pt, ct) in p.tris.iter().zip(&c.tris) {
+                    if pt.hash != ct.hash {
+                        out.push(pt.area);
+                        out.push(ct.area);
+                    }
+                }
+            }
+            (p, c) => {
+                // Different texture, clip rect or triangle count: the whole
+                // primitive is repainted, old position and new.
+                out.extend(p.and_then(PrimPrint::area));
+                out.extend(c.and_then(PrimPrint::area));
+            }
+        }
+    }
+    out
+}
+
 // ── Renderer ──────────────────────────────────────────────────────────────────
 
 struct Renderer {
+    /// Per-primitive fingerprints from the previous frame; the diff against
+    /// this frame's is the damage (see `frame_damage`).
+    prev_prims: Vec<PrimPrint>,
+    /// Damage applied in recent frames, newest first. softbuffer can hand back
+    /// a buffer that is several frames old (`Buffer::age`), in which case
+    /// everything drawn since then has to be drawn again.
+    damage_history: Vec<Vec<RectPx>>,
+    /// Set when the next frame cannot be trusted to a diff — first frame,
+    /// resize, theme change, or a texture-atlas update that can repaint
+    /// pixels without changing any mesh.
+    force_full_repaint: bool,
+    last_bg: u32,
+    last_size: (u32, u32),
     window: Arc<Window>,
     surface: softbuffer::Surface<Arc<Window>, Arc<Window>>,
     egui_ctx: egui::Context,
@@ -232,6 +466,11 @@ impl Renderer {
         let app = DiskoriaApp::new(&egui_ctx, system_dark, hwnd, shared);
 
         Renderer {
+            prev_prims: Vec::new(),
+            damage_history: Vec::new(),
+            force_full_repaint: true,
+            last_bg: 0,
+            last_size: (0, 0),
             window,
             surface,
             egui_ctx,
@@ -367,53 +606,210 @@ impl Renderer {
 
         let bg = Theme::new(self.app.dark, self.app.shared.accent_color()).bg_pri;
         let bg32 = to_bgra(bg.r(), bg.g(), bg.b(), 255);
-        // Allocated zeroed (the allocator can hand back lazily-zeroed pages)
-        // rather than pre-filled with the background: each band paints its own
-        // rows below, so the clear is parallel too.
-        let mut pixels: Vec<u32> = vec![0u32; (w * h) as usize];
+        // Draw straight into the surface buffer — the scratch `Vec` this used
+        // to fill and then `copy_from_slice` was a whole extra frame's worth of
+        // memory traffic (33 MB at 4K).
+        if self
+            .surface
+            .resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap())
+            .is_err()
+        {
+            return;
+        }
+        let Ok(mut buf) = self.surface.buffer_mut() else {
+            return;
+        };
 
-        // Rasterize in horizontal bands, one rayon task each. A software
-        // renderer's cost is linear in pixels visited, and a HiDPI frame is
-        // several million of them; splitting by rows is the one change that
-        // scales with the machine rather than the display. Bands are disjoint
-        // slices of the framebuffer, so there is no locking and no change to
-        // drawing order.
+        // What actually needs redrawing this frame.
+        //
+        // Cost here is pixels visited, so a hover highlight repainting the
+        // whole window is the difference between 1 ms and a full frame — the
+        // gap widens with resolution, which is why this exists at all.
+        let prints: Vec<PrimPrint> = clipped
+            .iter()
+            .map(|p| prim_print(p, ppp, w, h))
+            .collect();
+
+        let full_rect = RectPx { x0: 0, y0: 0, x1: w as i32 - 1, y1: h as i32 - 1 };
+        let buffer_age = buf.age();
+        let size_changed = self.last_size != (w, h);
+        let bg_changed = self.last_bg != bg32;
+        // Only a *replaced* texture can change pixels that are already on
+        // screen, and that cannot be diffed from the meshes — repaint
+        // everything. egui appends newly rasterized glyphs to the font atlas
+        // most frames (`pos: Some(..)`), which leaves existing glyphs exactly
+        // where they were; any mesh that starts using them has a changed
+        // fingerprint and is damaged on its own account.
+        let textures_changed = full_output
+            .textures_delta
+            .set
+            .iter()
+            .any(|(_, delta)| delta.pos.is_none())
+            || !full_output.textures_delta.free.is_empty();
+        let forced_flag = self.force_full_repaint;
+        let force_full = self.force_full_repaint
+            || size_changed
+            || bg_changed
+            || textures_changed
+            || buffer_age == 0
+            || force_full_repaints();
+
+        // This frame's own changes. History holds *these*, not the rectangles
+        // finally redrawn: a catch-up region belongs to the frame that
+        // originally changed, and folding applied damage back in would make one
+        // full repaint propagate forever.
+        let own_damage: Vec<RectPx> = if force_full {
+            vec![full_rect]
+        } else {
+            merge_damage(
+                frame_damage(&self.prev_prims, &prints)
+                    .into_iter()
+                    .map(|r| r.clamped(w, h))
+                    .collect(),
+            )
+        };
+        let raw_damage = own_damage.len();
+
+        // The buffer handed to us is `age` frames old, so it also needs
+        // whatever the frames in between changed.
+        let mut to_draw = own_damage.clone();
+        for past in self
+            .damage_history
+            .iter()
+            .take(buffer_age.saturating_sub(1) as usize)
+        {
+            to_draw.extend_from_slice(past);
+        }
+        let damage = merge_damage(to_draw);
+
+        self.prev_prims = prints;
+        self.last_size = (w, h);
+        self.last_bg = bg32;
+        self.force_full_repaint = false;
+        self.damage_history.insert(0, own_damage);
+        self.damage_history.truncate(4);
+
+        if stats && force_full {
+            log::info!(
+                target: "diskoria::frame",
+                "full repaint: first/forced={forced_flag} resized={size_changed} \
+                 theme={bg_changed} textures={textures_changed} buffer_age={buffer_age}"
+            );
+        }
+
+        if damage.is_empty() {
+            // Nothing changed and the buffer still holds the last frame.
+            if stats {
+                log::info!(target: "diskoria::frame", "{w}x{h}: nothing damaged, frame skipped");
+            }
+            return;
+        }
+
+        // Rasterize in horizontal bands, one rayon task each, restricted to the
+        // damaged rectangles. Bands are disjoint slices of the framebuffer, and
+        // every band walks the primitive list in the same order, so
+        // painter's-algorithm ordering is preserved. Damage rects are merged
+        // until disjoint so no pixel is blended twice.
         //
         // 32 rows keeps tasks small enough for rayon to balance a frame whose
         // work sits mostly in a few large panels.
         const BAND_ROWS: u32 = 32;
         let tex_mgr = &self.tex_mgr;
-        let px_tested: u64 = pixels
+        let damage_ref = &damage;
+        let px_tested: u64 = buf
             .par_chunks_mut((BAND_ROWS * w) as usize)
             .enumerate()
             .map(|(band_idx, band)| {
                 let band_y0 = band_idx as i32 * BAND_ROWS as i32;
                 let rows = (band.len() / w as usize) as i32;
-                band.fill(bg32);
-                rasterize_band(band, band_y0, band_y0 + rows - 1, w, &clipped, ppp, tex_mgr)
+                let band_y1 = band_y0 + rows - 1;
+                let mut tested = 0u64;
+                for d in damage_ref {
+                    if d.y1 < band_y0 || d.y0 > band_y1 {
+                        continue;
+                    }
+                    let rect = RectPx {
+                        x0: d.x0,
+                        y0: d.y0.max(band_y0),
+                        x1: d.x1,
+                        y1: d.y1.min(band_y1),
+                    };
+                    // Clear only the damaged span of each row: the rest of the
+                    // row is still valid from an earlier frame.
+                    for py in rect.y0..=rect.y1 {
+                        let row = ((py - band_y0) as usize) * w as usize;
+                        band[row + rect.x0 as usize..=row + rect.x1 as usize].fill(bg32);
+                    }
+                    tested += rasterize_band(band, band_y0, rect, w, &clipped, ppp, tex_mgr);
+                }
+                tested
             })
             .sum();
+
+        if verify_damage() {
+            let mut reference: Vec<u32> = vec![bg32; (w * h) as usize];
+            let full = RectPx { x0: 0, y0: 0, x1: w as i32 - 1, y1: h as i32 - 1 };
+            reference
+                .par_chunks_mut((BAND_ROWS * w) as usize)
+                .enumerate()
+                .for_each(|(band_idx, band)| {
+                    let band_y0 = band_idx as i32 * BAND_ROWS as i32;
+                    let rows = (band.len() / w as usize) as i32;
+                    let rect = RectPx {
+                        x0: 0,
+                        y0: band_y0,
+                        x1: w as i32 - 1,
+                        y1: (band_y0 + rows - 1).min(full.y1),
+                    };
+                    band.fill(bg32);
+                    rasterize_band(band, band_y0, rect, w, &clipped, ppp, tex_mgr);
+                });
+            let mismatched = buf
+                .iter()
+                .zip(&reference)
+                .filter(|(a, b)| a != b)
+                .count();
+            if mismatched > 0 {
+                let first = buf
+                    .iter()
+                    .zip(&reference)
+                    .position(|(a, b)| a != b)
+                    .unwrap_or(0);
+                log::error!(
+                    target: "diskoria::frame",
+                    "DAMAGE MISMATCH: {mismatched} px differ from a full repaint \
+                     (first at {},{}); damage was {:?}",
+                    first as u32 % w,
+                    first as u32 / w,
+                    damage,
+                );
+            }
+        }
 
         let t_raster = t_before_raster.elapsed();
         let t_before_present = std::time::Instant::now();
 
-        if self
-            .surface
-            .resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap())
-            .is_ok()
-        {
-            if let Ok(mut buf) = self.surface.buffer_mut() {
-                buf.copy_from_slice(&pixels);
-                let _ = buf.present();
-            }
-        }
+        let present_rects: Vec<softbuffer::Rect> = damage
+            .iter()
+            .filter_map(|r| {
+                Some(softbuffer::Rect {
+                    x: r.x0.max(0) as u32,
+                    y: r.y0.max(0) as u32,
+                    width: NonZeroU32::new((r.x1 - r.x0 + 1).max(0) as u32)?,
+                    height: NonZeroU32::new((r.y1 - r.y0 + 1).max(0) as u32)?,
+                })
+            })
+            .collect();
+        let _ = buf.present_with_damage(&present_rects);
 
         if stats {
             let t_present = t_before_present.elapsed();
             log::info!(
                 target: "diskoria::frame",
                 "{w}x{h} ({} px): ui {:.1}ms, tessellate {:.1}ms, rasterize {:.1}ms, \
-                 present {:.1}ms, total {:.1}ms ({} prims, {:.1}x overdraw)",
+                 present {:.1}ms, total {:.1}ms ({} prims, {:.1}x overdraw, \
+                 {} damage rect(s) (from {raw_damage} raw) = {:.1}% of the window{}, \
+                 buffer age {})",
                 w as u64 * h as u64,
                 t_ui.as_secs_f64() * 1000.0,
                 t_tess.as_secs_f64() * 1000.0,
@@ -422,6 +818,15 @@ impl Renderer {
                 t_start.elapsed().as_secs_f64() * 1000.0,
                 clipped.len(),
                 px_tested as f64 / (w as f64 * h as f64),
+                damage.len(),
+                damage
+                    .iter()
+                    .map(|r| ((r.x1 - r.x0 + 1) as f64) * ((r.y1 - r.y0 + 1) as f64))
+                    .sum::<f64>()
+                    / (w as f64 * h as f64)
+                    * 100.0,
+                if force_full { ", full" } else { "" },
+                buffer_age,
             );
         }
 
@@ -1721,7 +2126,7 @@ pub fn run() {
 fn rasterize_band(
     band: &mut [u32],
     band_y0: i32,
-    band_y1: i32,
+    rect: RectPx,
     w: u32,
     clipped: &[egui::ClippedPrimitive],
     ppp: f32,
@@ -1761,10 +2166,10 @@ for prim in clipped {
                 let max_x = p0.0.max(p1.0).max(p2.0).ceil() as i32;
                 let max_y = p0.1.max(p1.1).max(p2.1).ceil() as i32;
 
-                let x0 = min_x.max(clip_x0).max(0);
-                let y0 = min_y.max(clip_y0).max(band_y0);
-                let x1 = max_x.min(clip_x1).min(w as i32 - 1);
-                let y1 = max_y.min(clip_y1).min(band_y1);
+                let x0 = min_x.max(clip_x0).max(rect.x0);
+                let y0 = min_y.max(clip_y0).max(rect.y0);
+                let x1 = max_x.min(clip_x1).min(rect.x1);
+                let y1 = max_y.min(clip_y1).min(rect.y1);
 
                 let denom = (p1.1 - p2.1) * (p0.0 - p2.0) + (p2.0 - p1.0) * (p0.1 - p2.1);
                 if denom.abs() < 0.001 {
