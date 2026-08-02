@@ -158,6 +158,9 @@ pub struct DiskoriaApp {
     /// enable the custom accent and repaint everything purple (known-issues
     /// KI-29). Only a real edit may commit.
     accent_hex_edited: bool,
+    /// Last 10%-boundary already logged for the running sector scan, so a
+    /// 1000-block run produces ten log lines rather than thousands.
+    surface_logged_decile: u8,
     /// Settings page (`active_nav == 4`): manual keyboard focus slots (see example app).
     settings_focus: Option<usize>,
     /// Cached "Launch at startup" state for the Settings toggle. `None` until the
@@ -478,6 +481,7 @@ impl DiskoriaApp {
             accent_custom_hex: s.accent_custom_hex.clone(),
             accent_custom_te_id: None,
             accent_hex_edited: false,
+            surface_logged_decile: u8::MAX,
             settings_focus: None,
             #[cfg(any(windows, target_os = "linux"))]
             startup_enabled: None,
@@ -1368,7 +1372,7 @@ impl DiskoriaApp {
     fn speed_volume_pairs(drives: &[DetectedDrive]) -> Vec<(usize, usize)> {
         let mut v = Vec::new();
         for (di, d) in drives.iter().enumerate() {
-            for pi in 0..d.partitions.len() {
+            for pi in crate::partition_info::benchmarkable_partitions(&d.partitions) {
                 v.push((di, pi));
             }
         }
@@ -1389,7 +1393,7 @@ impl DiskoriaApp {
     pub(crate) fn speed_target_pair(&self) -> Option<(usize, usize)> {
         speed_target(
             self.drives.len(),
-            |i| self.drives[i].partitions.len(),
+            |i| crate::partition_info::benchmarkable_partitions(&self.drives[i].partitions),
             self.selected_drive,
             self.selected_speed_partition,
         )
@@ -1415,7 +1419,9 @@ impl DiskoriaApp {
         self.speed_progress_op = "Ready".to_string();
     }
 
-    fn speed_test_temp_path(mount_point: &str) -> String {
+    /// `None` when the volume has no usable path (not mounted) — the caller
+    /// must not start a benchmark it cannot place a file for (KI-38).
+    fn speed_test_temp_path(mount_point: &str) -> Option<String> {
         let id = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
@@ -1456,7 +1462,15 @@ impl DiskoriaApp {
             let d = &self.drives[sel];
             let disk_number = d.disk_number;
             let letter = d.partitions[pi].mount_point.clone();
-            let path = Self::speed_test_temp_path(&letter);
+            // Last line of defence: the target selection already requires a
+            // mounted volume, so a missing path means the mount vanished
+            // between the click and here.
+            let Some(path) = Self::speed_test_temp_path(&letter) else {
+                self.speed_error_msg = Some(
+                    "That volume is no longer mounted — nothing to benchmark.".to_string(),
+                );
+                return;
+            };
             let profile = speed_test::speed_profile_for_drive(d.media, d.bus);
             self.reset_speed_results_display();
             self.speed_progress_op = "Starting…".to_string();
@@ -2417,15 +2431,12 @@ impl DiskoriaApp {
                             d.list.iter().map(|dd| dd.serial.clone()).collect();
                         old != serials_new
                     });
-                    #[cfg(not(windows))]
-                    let _ = serials_changed;
                     self.shared.drives_write(|d| {
                         d.list = drives;
                         d.loading = false;
                         d.error = None;
                         d.generation = d.generation.wrapping_add(1);
                     });
-                    #[cfg(windows)]
                     if serials_changed {
                         self.shared.mark_drive_icons_dirty();
                     }
@@ -2670,6 +2681,7 @@ impl DiskoriaApp {
             cancel,
             tx,
         );
+        self.surface_logged_decile = u8::MAX;
         log::debug!(target: "diskoria", "start_surface_test: worker spawned, running=true");
         self.sector_focus = Some(0);
         ctx.request_repaint();
@@ -3286,16 +3298,26 @@ impl DiskoriaApp {
                 }
             }
         }
-        if !batch.is_empty() {
-            log::debug!(
-                target: "diskoria",
-                "poll_surface_test: batch len={}",
-                batch.len()
-            );
-        }
         for msg in batch {
             match msg {
                 SurfaceTestMsg::Progress(p) => {
+                    // A scan emits a progress message per UI block (1000 of
+                    // them) and is polled every frame on top of that — logging
+                    // either would bury everything else. One line per 10% is
+                    // enough to see a run advancing; `trace` has the detail.
+                    let decile = (p.progress_percent / 10.0) as u8;
+                    if decile != self.surface_logged_decile {
+                        self.surface_logged_decile = decile;
+                        log::debug!(
+                            target: "diskoria",
+                            "surface scan: {:.0}% ({} good, {} bad, {} slow sectors, {:.0} MB/s)",
+                            p.progress_percent,
+                            p.good_sectors,
+                            p.bad_sectors,
+                            p.slow_sectors,
+                            p.average_speed_mbps
+                        );
+                    }
                     log::trace!(
                         target: "diskoria",
                         "poll_surface_test: Progress pct={:.3} block={} bytes_scanned={}",
@@ -6040,58 +6062,96 @@ impl DiskoriaApp {
 /// Pure core of [`DiskoriaApp::speed_target_pair`] — kept free of `DiskoriaApp`
 /// so the KI-15 rule ("clamp the partition, never move the drive") is unit
 /// testable. `volumes_on(i)` is the mounted-volume count of drive `i`.
+/// `eligible_on(drive)` yields the partition indices that can actually host
+/// the benchmark file — mounted, unlocked volumes (see
+/// `partition_info::benchmarkable_partitions`). Anything else has nowhere to
+/// write: an unmounted partition has no path, and using its empty mount point
+/// silently benchmarked whatever filesystem the resulting relative path landed
+/// on (KI-38).
 fn speed_target(
     drive_count: usize,
-    volumes_on: impl Fn(usize) -> usize,
+    eligible_on: impl Fn(usize) -> Vec<usize>,
     selected_drive: usize,
     partition: usize,
 ) -> Option<(usize, usize)> {
     let di = selected_drive.min(drive_count.checked_sub(1)?);
-    let volumes = volumes_on(di);
-    (volumes > 0).then(|| (di, partition.min(volumes - 1)))
+    let eligible = eligible_on(di);
+    if eligible.is_empty() {
+        return None;
+    }
+    // Keep the user's pick when it is still usable; otherwise fall back to the
+    // drive's first eligible volume. The *drive* is never changed (KI-15).
+    let pi = if eligible.contains(&partition) {
+        partition
+    } else {
+        eligible[0]
+    };
+    Some((di, pi))
 }
 
 #[cfg(test)]
 mod tests {
     use super::speed_target;
 
-    /// `speed_target(&[2, 0, 1], sel, part)` — three drives with 2, 0 and 1
-    /// mounted volumes respectively.
-    fn target(counts: &[usize], selected_drive: usize, partition: usize) -> Option<(usize, usize)> {
-        speed_target(counts.len(), |i| counts[i], selected_drive, partition)
+    /// `target(&[&[0, 1], &[], &[2]], sel, part)` — three drives whose
+    /// benchmarkable (mounted, unlocked) partition indices are listed.
+    fn target(
+        eligible: &[&[usize]],
+        selected_drive: usize,
+        partition: usize,
+    ) -> Option<(usize, usize)> {
+        speed_target(
+            eligible.len(),
+            |i| eligible[i].to_vec(),
+            selected_drive,
+            partition,
+        )
     }
 
     #[test]
     fn keeps_the_selected_drive_when_it_has_a_volume() {
-        assert_eq!(target(&[2, 0, 1], 0, 1), Some((0, 1)));
-        assert_eq!(target(&[2, 0, 1], 2, 0), Some((2, 0)));
+        assert_eq!(target(&[&[0, 1], &[], &[0]], 0, 1), Some((0, 1)));
+        assert_eq!(target(&[&[0, 1], &[], &[0]], 2, 0), Some((2, 0)));
+    }
+
+    /// KI-38: an unmounted partition is not a benchmark target — the page must
+    /// report "no mounted volume" instead of writing to whatever path an empty
+    /// mount point produces.
+    #[test]
+    fn unmounted_partitions_are_never_targets() {
+        // Drive 0 has partitions 0..3 but only #2 is mounted.
+        assert_eq!(target(&[&[2]], 0, 0), Some((0, 2)));
+        assert_eq!(target(&[&[2]], 0, 1), Some((0, 2)));
+        assert_eq!(target(&[&[2]], 0, 2), Some((0, 2)));
+        // Nothing mounted at all → no target.
+        assert_eq!(target(&[&[]], 0, 0), None);
     }
 
     /// The KI-15 regression: a partition-less selection must *not* be silently
     /// repointed at another drive that happens to have a volume.
     #[test]
     fn partitionless_selection_yields_no_target_instead_of_jumping() {
-        assert_eq!(target(&[2, 0, 1], 1, 0), None);
+        assert_eq!(target(&[&[0, 1], &[], &[0]], 1, 0), None);
     }
 
     #[test]
-    fn partition_is_clamped_to_the_selected_drive() {
-        // Stale partition index from a drive that had more volumes.
-        assert_eq!(target(&[2, 0, 1], 0, 7), Some((0, 1)));
-        assert_eq!(target(&[2, 0, 1], 2, 7), Some((2, 0)));
+    fn stale_partition_falls_back_to_the_first_eligible_one() {
+        // Stale index from a drive that had more volumes.
+        assert_eq!(target(&[&[0, 1], &[], &[0]], 0, 7), Some((0, 0)));
+        assert_eq!(target(&[&[0, 1], &[], &[0]], 2, 7), Some((2, 0)));
     }
 
     #[test]
     fn drive_index_past_the_end_is_clamped_not_wrapped() {
-        assert_eq!(target(&[2, 0, 1], 9, 0), Some((2, 0)));
-        // …and clamping onto a partition-less last drive still yields no target.
-        assert_eq!(target(&[1, 0], 9, 0), None);
+        assert_eq!(target(&[&[0, 1], &[], &[0]], 9, 0), Some((2, 0)));
+        // …and clamping onto a volume-less last drive still yields no target.
+        assert_eq!(target(&[&[0], &[]], 9, 0), None);
     }
 
     #[test]
     fn no_drives_and_no_volumes_anywhere_yield_no_target() {
         assert_eq!(target(&[], 0, 0), None);
-        assert_eq!(target(&[0, 0], 0, 0), None);
-        assert_eq!(target(&[0, 0], 1, 3), None);
+        assert_eq!(target(&[&[], &[]], 0, 0), None);
+        assert_eq!(target(&[&[], &[]], 1, 3), None);
     }
 }

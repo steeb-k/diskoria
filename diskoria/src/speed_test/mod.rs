@@ -701,20 +701,29 @@ pub fn spawn_speed_test(
 /// host's at compile time. `mount` accepts the platform's raw mount value:
 /// a drive letter in the `C`/`C:`/`C:\` spellings, or a mount-point path.
 #[cfg_attr(not(windows), allow(dead_code))] // host dispatch picks one flavour; both stay tested
-pub(crate) fn temp_path_windows(mount: &str, id: u128) -> String {
+pub(crate) fn temp_path_windows(mount: &str, id: u128) -> Option<String> {
+    if mount.trim().is_empty() {
+        return None;
+    }
     let clean = mount.trim_end_matches('\\');
     let root = if clean.ends_with(':') {
         format!("{clean}\\")
     } else {
         format!("{}:\\", clean.trim_end_matches(':'))
     };
-    format!("{root}Diskoria_SpeedTest_{id}.tmp")
+    Some(format!("{root}Diskoria_SpeedTest_{id}.tmp"))
 }
 
 #[cfg_attr(windows, allow(dead_code))] // host dispatch picks one flavour; both stay tested
-pub(crate) fn temp_path_unix(mount: &str, id: u128) -> String {
+pub(crate) fn temp_path_unix(mount: &str, id: u128) -> Option<String> {
+    let mount = mount.trim();
+    // An empty mount point is not "the root filesystem" — it means the volume
+    // is not mounted, and there is nowhere to put the test file (KI-38).
+    if mount.is_empty() || !mount.starts_with('/') {
+        return None;
+    }
     let root = mount.trim_end_matches('/');
-    format!("{root}/Diskoria_SpeedTest_{id}.tmp")
+    Some(format!("{root}/Diskoria_SpeedTest_{id}.tmp"))
 }
 
 #[cfg(test)]
@@ -723,16 +732,29 @@ mod temp_path_tests {
 
     #[test]
     fn windows_flavours_normalize_to_letter_root() {
-        assert_eq!(temp_path_windows("C", 7), r"C:\Diskoria_SpeedTest_7.tmp");
-        assert_eq!(temp_path_windows("C:", 7), r"C:\Diskoria_SpeedTest_7.tmp");
-        assert_eq!(temp_path_windows(r"C:\", 7), r"C:\Diskoria_SpeedTest_7.tmp");
+        assert_eq!(temp_path_windows("C", 7).as_deref(), Some(r"C:\Diskoria_SpeedTest_7.tmp"));
+        assert_eq!(temp_path_windows("C:", 7).as_deref(), Some(r"C:\Diskoria_SpeedTest_7.tmp"));
+        assert_eq!(temp_path_windows(r"C:\", 7).as_deref(), Some(r"C:\Diskoria_SpeedTest_7.tmp"));
     }
 
     #[test]
     fn unix_mounts_including_root() {
-        assert_eq!(temp_path_unix("/", 7), "/Diskoria_SpeedTest_7.tmp");
-        assert_eq!(temp_path_unix("/home", 7), "/home/Diskoria_SpeedTest_7.tmp");
-        assert_eq!(temp_path_unix("/mnt/usb/", 7), "/mnt/usb/Diskoria_SpeedTest_7.tmp");
+        assert_eq!(temp_path_unix("/", 7).as_deref(), Some("/Diskoria_SpeedTest_7.tmp"));
+        assert_eq!(temp_path_unix("/home", 7).as_deref(), Some("/home/Diskoria_SpeedTest_7.tmp"));
+        assert_eq!(
+            temp_path_unix("/mnt/usb/", 7).as_deref(),
+            Some("/mnt/usb/Diskoria_SpeedTest_7.tmp")
+        );
+    }
+
+    /// KI-38: an unmounted volume must yield no path at all — never a
+    /// relative one that resolves against some unrelated filesystem.
+    #[test]
+    fn unmounted_volumes_have_no_temp_path() {
+        assert_eq!(temp_path_unix("", 7), None);
+        assert_eq!(temp_path_unix("   ", 7), None);
+        assert_eq!(temp_path_unix("not-absolute", 7), None);
+        assert_eq!(temp_path_windows("", 7), None);
     }
 }
 

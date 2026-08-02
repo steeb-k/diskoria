@@ -75,21 +75,35 @@ fn format_bytes(bytes: i64) -> String {
     }
 }
 
-/// Largest non-system, non-locked partition by free space; else any unlocked; else first unlocked.
-pub fn best_speed_test_partition_index(partitions: &[PartitionInfo]) -> Option<usize> {
-    let best_non_system = partitions
-        .iter()
-        .enumerate()
-        .filter(|(_, p)| !p.is_system_partition && !p.is_encryption_locked())
-        .max_by_key(|(_, p)| p.free_space)
-        .map(|(i, _)| i);
-    if best_non_system.is_some() {
-        return best_non_system;
-    }
+/// Indices of the partitions the file-based benchmark can actually run on:
+/// mounted (there is a path to write the test file to) and not locked.
+///
+/// An unmounted partition is a real partition worth *listing* on the drive
+/// card, but it is not a benchmark target — it has no filesystem path, and
+/// treating its empty mount point as one made the benchmark write to whatever
+/// path that produced (KI-38).
+pub fn benchmarkable_partitions(partitions: &[PartitionInfo]) -> Vec<usize> {
     partitions
         .iter()
         .enumerate()
-        .filter(|(_, p)| !p.is_encryption_locked())
-        .max_by_key(|(_, p)| p.free_space)
+        .filter(|(_, p)| !p.mount_point.trim().is_empty() && !p.is_encryption_locked())
         .map(|(i, _)| i)
+        .collect()
+}
+
+/// Largest non-system benchmarkable partition by free space; else any
+/// benchmarkable one.
+pub fn best_speed_test_partition_index(partitions: &[PartitionInfo]) -> Option<usize> {
+    let eligible = benchmarkable_partitions(partitions);
+    let best_non_system = eligible
+        .iter()
+        .copied()
+        .filter(|i| !partitions[*i].is_system_partition)
+        .max_by_key(|i| partitions[*i].free_space);
+    if best_non_system.is_some() {
+        return best_non_system;
+    }
+    eligible
+        .into_iter()
+        .max_by_key(|i| partitions[*i].free_space)
 }

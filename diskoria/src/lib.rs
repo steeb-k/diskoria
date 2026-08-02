@@ -1442,8 +1442,13 @@ fn spawn_new_window_watcher(
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 pub fn run() {
+    // egui-winit initializes *both* clipboard backends on Linux and warns when
+    // the X11 one is unreachable — expected in a pure-Wayland session, where
+    // the smithay backend it prefers is the one actually in use. Quiet by
+    // default; `RUST_LOG` still overrides.
     let _ = env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("diskoria=debug,warn"),
+        env_logger::Env::default()
+            .default_filter_or("diskoria=debug,warn,egui_winit::clipboard=error"),
     )
     .format_timestamp_millis()
     .try_init();

@@ -151,6 +151,21 @@ Stock GNOME ships no StatusNotifierWatcher; ksni then logs "no system tray
 available" and Diskoria runs without a tray (close-to-tray disables itself).
 KDE, XFCE, LXQt and most others work out of the box. See `linux/README.md`.
 
+### KI-38 — Benchmark accepted an unmounted volume as a target `bug` `linux`
+Found on the first real elevated Linux run: the Benchmark page let a test
+start against a partition with no mount point. `speed_volume_pairs` /
+`speed_target` counted **every** partition as a volume, which held on Windows
+(WMI only reports partitions that have a drive letter) but not on Linux, where
+enumeration lists unmounted partitions too. The empty mount point then flowed
+into the temp-path builder and produced a path on an unrelated filesystem —
+`/Diskoria_SpeedTest_<n>.tmp` on the root disk — so the benchmark measured the
+wrong drive and wrote a 1 GB file to `/` as root (deleted at the end of the
+run, which is why it left no trace). Fixed at three levels:
+`partition_info::benchmarkable_partitions` (mounted + unlocked) is now the
+single definition of a target, `speed_target` picks from those indices instead
+of clamping a count, and both temp-path builders return `None` for an empty or
+non-absolute mount so `start_speed_test` refuses rather than inventing a path.
+
 ## Resolved
 
 Condensed; see git history for full detail.

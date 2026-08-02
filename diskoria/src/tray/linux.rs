@@ -161,6 +161,7 @@ impl TrayManager {
             .filter(|d| matches!(d.bus, BusKind::Nvme | BusKind::Sata | BusKind::Ufs))
             .map(|d| (d.serial.clone(), d.model.clone()))
             .collect();
+        log::debug!(target: "diskoria::tray", "rebuild_drive_icons: {} monitored drive(s)", list.len());
         self.handle.update(|t| {
             // Keep temps for serials that survived the rebuild.
             let old: Vec<DriveTemp> = std::mem::take(&mut t.drives);
@@ -180,8 +181,18 @@ impl TrayManager {
     pub fn update_drive_icon(&mut self, serial: &str, temp_c: Option<i32>) {
         let serial = serial.to_string();
         self.handle.update(move |t| {
-            if let Some(d) = t.drives.iter_mut().find(|d| d.serial == serial) {
-                d.temp_c = temp_c;
+            match t.drives.iter_mut().find(|d| d.serial == serial) {
+                Some(d) => {
+                    log::debug!(target: "diskoria::tray", "icon temp {serial} = {temp_c:?}°C");
+                    d.temp_c = temp_c;
+                }
+                // Would leave the thermometer stuck gray — the symptom of the
+                // drive list never reaching the tray.
+                None => log::warn!(
+                    target: "diskoria::tray",
+                    "temperature for unknown serial {serial}; tray has {} drive(s)",
+                    t.drives.len()
+                ),
             }
         });
     }
