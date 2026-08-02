@@ -430,11 +430,11 @@ mod tests {
 
 // ── Background monitor thread ─────────────────────────────────────────────────
 
-#[cfg(windows)]
-pub use windows_impl::spawn_monitor_thread;
+#[cfg(any(windows, target_os = "linux"))]
+pub use imp::spawn_monitor_thread;
 
-#[cfg(windows)]
-mod windows_impl {
+#[cfg(any(windows, target_os = "linux"))]
+mod imp {
     use super::*;
     use crate::alert_engine::AlertCooldownTracker;
     use crate::detected_drive::{BusKind, DetectedDrive};
@@ -494,7 +494,18 @@ mod windows_impl {
                     }
 
                     let report = smart_reader::query_smart_detail(&drive.device_id, drive.bus);
-                    let snap = extract_snapshot(drive, &report);
+                    #[cfg_attr(windows, allow(unused_mut))]
+                    let mut snap = extract_snapshot(drive, &report);
+                    // Unelevated Linux (the `--minimized` autostart mode):
+                    // the SMART ioctls need root, but drive temperatures are
+                    // still readable via hwmon (drivetemp / nvme), which is
+                    // what the tray + temp alerts run on.
+                    #[cfg(target_os = "linux")]
+                    if matches!(report, smart_reader::SmartReport::Unavailable { .. }) {
+                        if let Some(t) = super::hwmon::temp_for_device(&drive.device_id) {
+                            snap.temp_c = Some(t);
+                        }
+                    }
 
                     // Load previous snapshot for delta-based alert checks.
                     let prev = history_db::load_last_snapshot(&conn, &drive.serial).ok().flatten();
@@ -538,5 +549,69 @@ mod windows_impl {
         });
 
         cancel
+    }
+}
+
+/// Unprivileged temperature fallback: the kernel's hwmon nodes. SATA drives
+/// get one from the `drivetemp` module, NVMe controllers expose one natively.
+#[cfg(target_os = "linux")]
+pub(crate) mod hwmon {
+    use std::path::Path;
+
+    fn read_temp_millic(dir: &Path) -> Option<i32> {
+        let s = std::fs::read_to_string(dir.join("temp1_input")).ok()?;
+        s.trim().parse::<i32>().ok().map(|mc| mc / 1000)
+    }
+
+    /// hwmonN children of `dir`, whether nested under an `hwmon` subdir
+    /// (SCSI/drivetemp: `device/hwmon/hwmonX`) or direct (NVMe:
+    /// `nvme0/hwmonX`).
+    fn hwmon_children(dir: &Path) -> Vec<std::path::PathBuf> {
+        let mut out = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if name == "hwmon" {
+                    if let Ok(inner) = std::fs::read_dir(e.path()) {
+                        out.extend(inner.flatten().map(|i| i.path()));
+                    }
+                } else if name.starts_with("hwmon") {
+                    out.push(e.path());
+                }
+            }
+        }
+        out
+    }
+
+    /// °C for `/dev/sdX` / `/dev/nvmeXnY`, via the device's own hwmon node.
+    pub fn temp_for_device(device_path: &str) -> Option<i32> {
+        let name = Path::new(device_path).file_name()?.to_string_lossy().into_owned();
+        let sys = std::fs::canonicalize(format!("/sys/block/{name}")).ok()?;
+        // Walk up the device chain looking for hwmon children.
+        let mut node = sys.join("device");
+        for _ in 0..6 {
+            for h in hwmon_children(&node) {
+                if let Some(t) = read_temp_millic(&h) {
+                    return Some(t);
+                }
+            }
+            if !node.pop() {
+                break;
+            }
+        }
+        None
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod hwmon_tests {
+    /// Diagnostic against this host's real sysfs; asserts only when a drive
+    /// exists. drivetemp may be unloaded for SATA — NVMe works out of the box.
+    #[test]
+    #[ignore = "reads real sysfs; run manually with --ignored --nocapture"]
+    fn print_hwmon_temps() {
+        for d in crate::drive_enumeration::enumerate_physical_disks().unwrap_or_default() {
+            println!("{} -> {:?} °C", d.device_id, super::hwmon::temp_for_device(&d.device_id));
+        }
     }
 }

@@ -13,7 +13,7 @@ mod about;
 mod app;
 mod app_settings;
 mod card;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 mod autostart;
 mod chrome;
 mod demo;
@@ -52,7 +52,7 @@ pub mod flyout;
 pub mod history_db;
 pub mod monitor;
 pub mod toast;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 pub mod tray;
 
 pub(crate) mod tex_mgr;
@@ -81,10 +81,10 @@ pub enum UserEvent {
     #[cfg(windows)]
     TrayIconEvent(tray_icon::TrayIconEvent),
     /// Update a drive's tray icon to reflect a new temperature.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     TrayIconUpdate { serial: String, temp_c: Option<i32> },
-    /// Flash a drive's tray icon to signal an alert condition.
-    #[cfg(windows)]
+    /// Flash (Windows) / flag (Linux SNI attention) a drive alert on the tray.
+    #[cfg(any(windows, target_os = "linux"))]
     DriveAlert { serial: String, is_critical: bool },
     /// Graceful shutdown requested (from tray context menu "Quit").
     QuitRequested,
@@ -528,7 +528,7 @@ struct App {
     #[cfg_attr(not(windows), allow(dead_code))]
     proxy: EventLoopProxy<UserEvent>,
     shared: Arc<SharedAppState>,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     tray: Option<crate::tray::TrayManager>,
     #[cfg(windows)]
     flyout: Option<crate::flyout::FlyoutRenderer>,
@@ -565,11 +565,12 @@ struct App {
     device_change_deadline: Option<std::time::Instant>,
     /// One-shot guard so the "still running in the tray" toast fires only the
     /// first time the last window is closed (hidden to tray) in a session.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     tray_toast_shown: bool,
-    /// `--minimized` was passed (the scheduled logon task launches Diskoria this
-    /// way): create the first window hidden so the app comes up tray-only.
-    #[cfg(windows)]
+    /// `--minimized` was passed (the logon task / autostart entry launches
+    /// Diskoria this way): create the first window hidden so the app comes up
+    /// tray-only.
+    #[cfg(any(windows, target_os = "linux"))]
     start_minimized: bool,
 }
 
@@ -621,7 +622,7 @@ impl ApplicationHandler<UserEvent> for App {
         if self.renderers.is_empty() {
             #[cfg_attr(not(windows), allow(unused_mut))]
             let mut renderer = Renderer::new(event_loop, self.shared.clone());
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             if self.shared.pro_edition {
                 renderer.app.event_proxy = Some(self.proxy.clone());
                 self.tray = crate::tray::TrayManager::new(self.proxy.clone());
@@ -631,7 +632,7 @@ impl ApplicationHandler<UserEvent> for App {
             // request a redraw so the first `draw()` runs — that kicks drive
             // enumeration and, in turn, the background monitor thread — even
             // though no window is ever shown.
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             if self.start_minimized {
                 renderer.window.set_visible(false);
                 renderer.window.request_redraw();
@@ -735,11 +736,12 @@ impl ApplicationHandler<UserEvent> for App {
         // (see `install_mode`). With it off the process exits, which stops
         // background monitoring until the next launch; that is the documented
         // trade-off shown under the Settings toggle.
-        #[cfg(windows)]
-        let can_hide_to_tray =
-            self.shared.pro_edition && self.shared.settings_snapshot().close_to_tray;
-        // No tray outside Windows, so hiding the last window would strand it.
-        #[cfg(not(windows))]
+        #[cfg(any(windows, target_os = "linux"))]
+        let can_hide_to_tray = self.shared.pro_edition
+            && self.shared.settings_snapshot().close_to_tray
+            && self.tray.is_some();
+        // No tray on other platforms, so hiding the last window would strand it.
+        #[cfg(not(any(windows, target_os = "linux")))]
         let can_hide_to_tray = false;
         let decide = |can_hide_to_tray: bool, window_count: usize| -> CloseDisposition {
             if window_count > 1 {
@@ -799,10 +801,11 @@ impl ApplicationHandler<UserEvent> for App {
         }
         // First time the last window is hidden to the tray this session, let the
         // user know the app keeps running there. Once per process (tray_toast_shown).
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         if did_hide && !self.tray_toast_shown {
             self.tray_toast_shown = true;
-            // WinRT toasts require an MTA thread; the winit loop is STA.
+            // Off the winit thread: WinRT toasts require an MTA thread, and the
+            // Linux path blocks on the session bus.
             std::thread::spawn(|| {
                 crate::toast::send_toast(
                     "Diskoria is still running",
@@ -810,7 +813,7 @@ impl ApplicationHandler<UserEvent> for App {
                 );
             });
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "linux")))]
         let _ = did_hide;
     }
 
@@ -898,17 +901,20 @@ impl ApplicationHandler<UserEvent> for App {
                     self.flyout = None;
                     self.context_menu = None;
                     self.drive_context_menu = None;
+                }
+                #[cfg(any(windows, target_os = "linux"))]
+                {
                     self.tray = None;
                 }
                 event_loop.exit();
             }
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             UserEvent::TrayIconUpdate { serial, temp_c } => {
                 if let Some(tray) = &mut self.tray {
                     tray.update_drive_icon(&serial, temp_c);
                 }
             }
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             UserEvent::DriveAlert { serial, is_critical } => {
                 if let Some(tray) = &mut self.tray {
                     tray.set_drive_alert(&serial, is_critical);
@@ -1121,9 +1127,12 @@ impl ApplicationHandler<UserEvent> for App {
         // dirty flag is a singleton on SharedAppState, so opening a
         // second window does not retrigger a rebuild and wipe the
         // monitor-driven temperature rendering.
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         {
-            let has_drives = self.primary()
+            let has_drives = self
+                .renderers
+                .values()
+                .next()
                 .map(|r| !r.app.drives.is_empty())
                 .unwrap_or(false);
 
@@ -1513,8 +1522,9 @@ pub fn run() {
     };
 
     // `--demo-toast`: fire one sample notification so the toast can be
-    // photographed. Backgrounded because WinRT needs a COM MTA context.
-    #[cfg(windows)]
+    // photographed. Backgrounded because WinRT needs a COM MTA context (and
+    // the Linux path blocks on the session bus).
+    #[cfg(any(windows, target_os = "linux"))]
     if demo::config().toast {
         std::thread::spawn(|| {
             let (title, body) = demo::sample_toast();
@@ -1548,7 +1558,7 @@ pub fn run() {
         renderers: HashMap::new(),
         proxy,
         shared,
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         tray: None,
         #[cfg(windows)]
         flyout: None,
@@ -1565,9 +1575,9 @@ pub fn run() {
         next_repaint: None,
         smoke_remaining,
         device_change_deadline: None,
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         tray_toast_shown: false,
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         start_minimized,
     };
     if let Err(e) = event_loop.run_app(&mut app) {

@@ -8,7 +8,6 @@ use egui::{
     Align2, Color32, FontId, Id, Pos2, Rect, RichText, Sense, Stroke,
     StrokeKind, UiBuilder, Vec2,
 };
-#[cfg(windows)]
 use egui_plot::{Line, Plot, PlotPoints};
 
 use crate::card::CardLayout;
@@ -1463,7 +1462,6 @@ impl DiskoriaApp {
         }
 
         // ── Pro-Monitoring: temperature history chart ─────────────────────────
-        #[cfg(windows)]
         if self.shared.pro_edition {
             let sel = self.selected_drive.min(self.drives.len().saturating_sub(1));
             if !self.drives.is_empty() {
@@ -1591,7 +1589,6 @@ impl DiskoriaApp {
 
 // ── Pro-Monitoring: temperature history chart ─────────────────────────────────
 
-#[cfg(windows)]
 #[allow(clippy::too_many_arguments)]
 fn draw_temperature_history(
     ui: &mut egui::Ui,
@@ -1643,7 +1640,7 @@ fn draw_temperature_history(
             let btn_resp = ui.add(
                 egui::Button::new(RichText::new(*label).color(fg).size(12.0))
                     .fill(bg)
-                    .stroke(Stroke::new(1.0, if selected { t.accent } else { t.border }))
+                    .stroke(Stroke::new(1.0_f32, if selected { t.accent } else { t.border }))
                     .min_size(Vec2::new(52.0, 24.0)),
             );
             let kb = focused && ui.input_mut(|inp| {
@@ -1655,7 +1652,7 @@ fn draw_temperature_history(
                 ui.painter().rect_stroke(
                     btn_resp.rect.expand(2.0),
                     4.0,
-                    Stroke::new(2.0, t.accent),
+                    Stroke::new(2.0_f32, t.accent),
                     StrokeKind::Outside,
                 );
             }
@@ -1770,7 +1767,7 @@ fn draw_temperature_history(
                     plot_ui.line(
                         Line::new(PlotPoints::from(seg))
                             .color(accent)
-                            .width(2.0),
+                            .width(2.0_f32),
                     );
                 }
             });

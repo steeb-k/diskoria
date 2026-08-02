@@ -11,8 +11,7 @@
 //! default, so installed builds start ON; the portable exe never creates it, so
 //! it starts OFF unless the user flips the in-app toggle.
 //!
-//! This module is Windows-only (mirrors `tray`/`flyout`); it is never referenced
-//! from the non-Windows shell.
+//! (Windows half of the `autostart` module.)
 
 use std::os::windows::process::CommandExt;
 use std::path::Path;

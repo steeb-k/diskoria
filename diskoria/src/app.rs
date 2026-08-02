@@ -9,11 +9,7 @@ use egui::{
     Align2, Color32, FontFamily, FontId, Frame, Id, Key,
     Pos2, Rect, ScrollArea, Sense, Stroke, StrokeKind, Ui, Vec2,
 };
-use egui::{CornerRadius, LayerId, Order};
-// Used only by the `#[cfg(windows)]` monitoring-settings section today;
-// un-gated with the tray/monitoring phase of the port.
-#[cfg(windows)]
-use egui::Modifiers;
+use egui::{CornerRadius, LayerId, Modifiers, Order};
 use egui_plot::{Line, MarkerShape, Plot, PlotPoints, Points};
 use egui::text::{LayoutJob, TextFormat};
 
@@ -167,8 +163,9 @@ pub struct DiskoriaApp {
     settings_focus: Option<usize>,
     /// Cached "Launch at startup" state for the Settings toggle. `None` until the
     /// Settings page is first drawn, then filled from `autostart::is_enabled()`
-    /// (the scheduled task is the source of truth). Set eagerly on toggle.
-    #[cfg(windows)]
+    /// (the scheduled task / autostart entry is the source of truth). Set
+    /// eagerly on toggle.
+    #[cfg(any(windows, target_os = "linux"))]
     startup_enabled: Option<bool>,
     pub(crate) scroll_focus_frames: u8,
     pub(crate) pending_scroll_rect: Option<Rect>,
@@ -389,36 +386,36 @@ pub struct DiskoriaApp {
     /// `--demo-alert` seeded an alert that still has to be announced. It cannot
     /// fire from `new()` because `event_proxy` is attached afterwards, so the
     /// first draw with a proxy consumes this. See `demo.rs`.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     demo_alert_pending: bool,
 
     // ── Pro-Monitoring ────────────────────────────────────────────────────────
     // Latest per-drive snapshots live on `SharedAppState` (see
     // `insert_snapshot`/`snapshot_for`) so multiple windows don't split the set.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     pub(crate) pending_alerts: Vec<crate::alert_engine::AlertEvent>,
     /// Per-drive alert suppression: serial → Instant until which alerts are silenced.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     alert_suppressions: std::collections::HashMap<String, std::time::Instant>,
     /// Temperature history master map (up to 7 days); chart filters per selected range.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     pub(crate) temp_history: std::collections::HashMap<String, Vec<[f64; 2]>>,
     /// Active history range tab: 0=1h 1=6h 2=12h 3=24h 4=7d.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     pub(crate) health_chart_range: usize,
     /// Proxy for sending tray icon update events back to the event loop.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     pub(crate) event_proxy: Option<winit::event_loop::EventLoopProxy<crate::UserEvent>>,
     // Pro-Monitoring settings (mirrored from app_settings for live UI editing)
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     pub(crate) monitoring_enabled: bool,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     pub(crate) poll_interval_mins: u8,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     pub(crate) alert_temp_warn: i32,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     pub(crate) alert_temp_critical: i32,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     pub(crate) alert_wear_threshold: u8,
 
     /// Process-wide shared state (settings, drives, accent, monitor).
@@ -483,7 +480,7 @@ impl DiskoriaApp {
             accent_custom_te_id: None,
             accent_hex_edited: false,
             settings_focus: None,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             startup_enabled: None,
             scroll_focus_frames: 0,
             pending_scroll_rect: None,
@@ -627,28 +624,28 @@ impl DiskoriaApp {
             update_staged_focus: None,
             // Corrected by `Renderer::paint` before the first draw that matters.
             window_visible: true,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             demo_alert_pending: false,
             // Pro-Monitoring
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             pending_alerts: Vec::new(),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             alert_suppressions: std::collections::HashMap::new(),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             temp_history: std::collections::HashMap::new(),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             health_chart_range: 3, // default to 24h tab
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             event_proxy: None,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             monitoring_enabled: s.monitoring_enabled,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             poll_interval_mins: s.poll_interval_mins,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             alert_temp_warn: s.alert_temp_warn,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             alert_temp_critical: s.alert_temp_critical,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             alert_wear_threshold: s.alert_wear_threshold,
             shared,
         };
@@ -811,7 +808,7 @@ impl DiskoriaApp {
             }
         }
 
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         if cfg.alert {
             self.pending_alerts.push(crate::demo::alert_event());
             self.demo_alert_pending = true;
@@ -829,7 +826,7 @@ impl DiskoriaApp {
     /// enters its alert state and the toast fires exactly as a real alert would
     /// drive them. `poll_monitor` cannot do this: with no monitor thread running
     /// it returns before it reaches the drain.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     fn poll_demo_alert(&mut self) {
         if !self.demo_alert_pending {
             return;
@@ -1450,7 +1447,7 @@ impl DiskoriaApp {
 
     // ── Pro-Monitoring ────────────────────────────────────────────────────────
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     fn start_monitor_if_not_running(&mut self, ctx: &egui::Context) {
         // The demo drives do not exist; polling them would read the host's real
         // disks under invented serials and write that into the history DB.
@@ -1494,7 +1491,7 @@ impl DiskoriaApp {
     }
 
     /// Load up to 7 days of temperature history from SQLite into `temp_history`.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     fn load_history_from_db(&mut self) {
         match crate::history_db::open_or_create() {
             Ok(conn) => {
@@ -1536,13 +1533,13 @@ impl DiskoriaApp {
 
     /// Suppress all alerts for `serial` for the given duration.
     /// Also clears any stale entries for other serials while we're here.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     pub fn suppress_drive_alerts(&mut self, serial: &str, secs: u64) {
         let until = std::time::Instant::now() + std::time::Duration::from_secs(secs);
         self.alert_suppressions.insert(serial.to_string(), until);
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     fn is_alert_suppressed(&self, serial: &str) -> bool {
         self.alert_suppressions
             .get(serial)
@@ -1550,7 +1547,7 @@ impl DiskoriaApp {
             .unwrap_or(false)
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     fn poll_monitor(&mut self, _ctx: &egui::Context) {
         let (msgs, still_connected) = self.shared.drain_monitor_rx();
         if !still_connected && !msgs.is_empty() {
@@ -2426,7 +2423,7 @@ impl DiskoriaApp {
         self.drives_error = None;
         self.drives_loading = false;
         self.smart_health_disk = None;
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         self.start_monitor_if_not_running(ctx);
         ctx.request_repaint();
     }
@@ -3314,7 +3311,6 @@ impl DiskoriaApp {
         }
     }
 
-    #[cfg_attr(not(windows), allow(dead_code))] // callers live in the Windows-gated monitoring settings
     fn save_app_settings(&self) {
         // Sync per-window monitor-settings drafts into shared and persist.
         // Accent/theme fields already live in `shared.settings` and are saved
@@ -3344,13 +3340,12 @@ impl DiskoriaApp {
             + 1
     }
 
-    #[cfg_attr(not(windows), allow(dead_code))] // caller is Windows-gated today
     fn settings_monitoring_slot_start(&self) -> usize {
         self.settings_theme_slot_count()
     }
 
     fn settings_monitoring_slot_count(&self) -> usize {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         {
             if self.shared.pro_edition {
                 // toggle(1) + poll segments(4) + (if enabled: warn+crit+wear sliders(3) + test buttons(2))
@@ -3359,7 +3354,7 @@ impl DiskoriaApp {
                 0
             }
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "linux")))]
         {
             0
         }
@@ -3419,11 +3414,11 @@ impl DiskoriaApp {
     }
 
     fn settings_startup_slot_count(&self) -> usize {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         {
             1
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "linux")))]
         {
             0
         }
@@ -3790,7 +3785,7 @@ impl DiskoriaApp {
                             4 => self.draw_about_page(ui, ctx, &t, margin, content_x, content_w),
                             5 => {
                                 self.draw_settings_theme(ui, ctx, &t, margin, content_x, content_w);
-                                #[cfg(windows)]
+                                #[cfg(any(windows, target_os = "linux"))]
                                 if self.shared.pro_edition {
                                     self.draw_settings_monitoring(ui, ctx, &t, margin, content_x, content_w);
                                 }
@@ -3799,7 +3794,7 @@ impl DiskoriaApp {
                                 self.draw_settings_window(ui, &t, margin, content_x, content_w);
                                 #[cfg(windows)]
                                 self.draw_settings_updates(ui, &t, margin, content_x, content_w);
-                                #[cfg(windows)]
+                                #[cfg(any(windows, target_os = "linux"))]
                                 self.draw_settings_startup(ui, &t, margin, content_x, content_w);
                             }
                             _ => {}
@@ -5066,7 +5061,7 @@ impl DiskoriaApp {
         // poll_drive_enumeration).  This ensures another window's settings
         // change — broadcast via SettingsChanged — actually takes effect
         // on the very next frame of each renderer.
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         {
             let s = self.shared.settings_snapshot();
             self.monitoring_enabled = s.monitoring_enabled;
@@ -5091,6 +5086,9 @@ impl DiskoriaApp {
             self.maybe_start_auto_update_check(ctx);
             self.poll_update_check(ctx);
             self.poll_update_download(ctx);
+        }
+        #[cfg(any(windows, target_os = "linux"))]
+        {
             self.poll_monitor(ctx);
             self.poll_demo_alert();
         }
@@ -5545,7 +5543,7 @@ impl DiskoriaApp {
     /// (`crate::autostart`), not a persisted setting — so an installed build
     /// (installer created the task) reads ON and a portable exe reads OFF with no
     /// mode-detection. The queried state is cached in `self.startup_enabled`.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     fn draw_settings_startup(
         &mut self,
         ui: &mut egui::Ui,
@@ -5612,7 +5610,7 @@ impl DiskoriaApp {
             ui.painter().rect_stroke(
                 toggle_rect.expand(3.0),
                 14.0,
-                Stroke::new(2.0, t.accent),
+                Stroke::new(2.0_f32, t.accent),
                 StrokeKind::Outside,
             );
         }
@@ -5623,7 +5621,7 @@ impl DiskoriaApp {
 
     // ── Pro-Monitoring settings section ───────────────────────────────────────
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     fn draw_settings_monitoring(
         &mut self,
         ui: &mut egui::Ui,
@@ -5682,7 +5680,7 @@ impl DiskoriaApp {
                 ui.painter().rect_stroke(
                     toggle_rect.expand(3.0),
                     14.0,
-                    Stroke::new(2.0, t.accent),
+                    Stroke::new(2.0_f32, t.accent),
                     StrokeKind::Outside,
                 );
             }
@@ -5707,7 +5705,7 @@ impl DiskoriaApp {
             let seg_top = row_rect.top() + (row_h - seg_h) / 2.0;
             let seg_rect = Rect::from_min_size(Pos2::new(seg_x, seg_top), Vec2::new(seg_total_w, seg_h));
             ui.painter().rect_filled(seg_rect, 6.0, t.bg_sec);
-            ui.painter().rect_stroke(seg_rect, 6.0, Stroke::new(1.0, t.border), StrokeKind::Middle);
+            ui.painter().rect_stroke(seg_rect, 6.0, Stroke::new(1.0_f32, t.border), StrokeKind::Middle);
             for (i, (label, mins)) in OPTS.iter().enumerate() {
                 let seg = Rect::from_min_size(
                     Pos2::new(seg_x + i as f32 * seg_w, seg_top),
@@ -5724,7 +5722,7 @@ impl DiskoriaApp {
                 let txt_col = if selected { t.txt_on_accent } else { t.txt_pri };
                 ui.painter().text(seg.center(), Align2::CENTER_CENTER, *label, FontId::proportional(12.0), txt_col);
                 if focused {
-                    ui.painter().rect_stroke(seg.expand(3.0), 6.0, Stroke::new(2.0, t.accent), StrokeKind::Outside);
+                    ui.painter().rect_stroke(seg.expand(3.0), 6.0, Stroke::new(2.0_f32, t.accent), StrokeKind::Outside);
                 }
                 let kb = page_keys && keyboard_activate(ui, focused);
                 if resp.clicked() || kb {
@@ -5789,7 +5787,7 @@ impl DiskoriaApp {
                 6.0, t.accent,
             );
             if focused {
-                ui.painter().rect_stroke(slider_rect.expand(3.0), 3.0, Stroke::new(2.0, t.accent), StrokeKind::Outside);
+                ui.painter().rect_stroke(slider_rect.expand(3.0), 3.0, Stroke::new(2.0_f32, t.accent), StrokeKind::Outside);
             }
             scroll_to_focused(&mut self.pending_scroll_rect, row_rect, focused, self.scroll_focus_frames > 0);
         }
@@ -5843,7 +5841,7 @@ impl DiskoriaApp {
                 6.0, crit_col,
             );
             if focused {
-                ui.painter().rect_stroke(slider_rect.expand(3.0), 3.0, Stroke::new(2.0, t.accent), StrokeKind::Outside);
+                ui.painter().rect_stroke(slider_rect.expand(3.0), 3.0, Stroke::new(2.0_f32, t.accent), StrokeKind::Outside);
             }
             scroll_to_focused(&mut self.pending_scroll_rect, row_rect, focused, self.scroll_focus_frames > 0);
         }
@@ -5894,7 +5892,7 @@ impl DiskoriaApp {
                 6.0, t.accent,
             );
             if focused {
-                ui.painter().rect_stroke(slider_rect.expand(3.0), 3.0, Stroke::new(2.0, t.accent), StrokeKind::Outside);
+                ui.painter().rect_stroke(slider_rect.expand(3.0), 3.0, Stroke::new(2.0_f32, t.accent), StrokeKind::Outside);
             }
             scroll_to_focused(&mut self.pending_scroll_rect, row_rect, focused, self.scroll_focus_frames > 0);
         }
@@ -5932,10 +5930,10 @@ impl DiskoriaApp {
             ui.painter().text(crit_rect.center(), Align2::CENTER_CENTER, "Critical", FontId::new(12.0, egui::FontFamily::Proportional), Color32::WHITE);
 
             if warn_focused {
-                ui.painter().rect_stroke(warn_rect.expand(3.0), 4.0, Stroke::new(2.0, t.accent), StrokeKind::Outside);
+                ui.painter().rect_stroke(warn_rect.expand(3.0), 4.0, Stroke::new(2.0_f32, t.accent), StrokeKind::Outside);
             }
             if crit_focused {
-                ui.painter().rect_stroke(crit_rect.expand(3.0), 4.0, Stroke::new(2.0, t.accent), StrokeKind::Outside);
+                ui.painter().rect_stroke(crit_rect.expand(3.0), 4.0, Stroke::new(2.0_f32, t.accent), StrokeKind::Outside);
             }
 
             let (drive_serial, drive_model) = self.drives.first()

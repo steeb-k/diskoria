@@ -12,9 +12,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Mutex, RwLock};
-// Only the `#[cfg(windows)]` monitor fields hold an `Arc` today; gated so the
-// Linux build stays warning-free until the port un-gates the monitor.
-#[cfg(windows)]
+// Only the monitor fields hold an `Arc` today.
+#[cfg(any(windows, target_os = "linux"))]
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -25,7 +24,7 @@ use crate::app_settings::{self, initial_accent_color, Settings};
 use crate::detected_drive::DetectedDrive;
 use crate::UserEvent;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 use crate::monitor::MonitorMsg;
 
 pub type DrivePollResult = Result<Vec<DetectedDrive>, String>;
@@ -61,10 +60,10 @@ pub struct SharedAppState {
     /// forever). `None` when no enumeration is in flight.
     drive_poll_started: Mutex<Option<Instant>>,
     /// Singleton receiver for the Pro-Monitoring background thread.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     monitor_rx: Mutex<Option<Receiver<MonitorMsg>>>,
     /// Cancellation flag for the monitor thread; `Some` iff thread is running.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     monitor_cancel: Mutex<Option<Arc<AtomicBool>>>,
     /// Latest health snapshot per drive serial, feeding the tray flyout.
     /// Shared because every open window competitively drains the single
@@ -72,7 +71,7 @@ pub struct SharedAppState {
     /// a message lands it in one common map, instead of splitting the set
     /// across per-window state (which left the tray flyout showing "-" for
     /// drives whose snapshot happened to go to the other window).
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     last_snapshots: Mutex<std::collections::HashMap<String, crate::monitor::HealthSnapshot>>,
     /// Set to `true` when the drive list changes; cleared by `about_to_wait`
     /// after the tray rebuilds its per-drive icons.  Singleton so that a
@@ -124,11 +123,11 @@ impl SharedAppState {
             }),
             drive_poll_rx: Mutex::new(None),
             drive_poll_started: Mutex::new(None),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             monitor_rx: Mutex::new(None),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             monitor_cancel: Mutex::new(None),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             last_snapshots: Mutex::new(std::collections::HashMap::new()),
             drive_icons_dirty: AtomicBool::new(false),
             #[cfg(windows)]
@@ -382,12 +381,12 @@ impl SharedAppState {
 
     // ── Monitor thread lifecycle ─────────────────────────────────────────────
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     pub fn monitor_is_running(&self) -> bool {
         self.monitor_cancel.lock().expect("monitor_cancel poisoned").is_some()
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     pub fn set_monitor_running(
         &self,
         rx: Receiver<MonitorMsg>,
@@ -399,7 +398,7 @@ impl SharedAppState {
 
     /// Flip the cancellation flag and drop the receiver.  Safe to call when
     /// no monitor is running.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     pub fn cancel_monitor(&self) {
         if let Some(c) = self.monitor_cancel.lock().expect("monitor_cancel poisoned").take() {
             c.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -410,7 +409,7 @@ impl SharedAppState {
     /// Non-blocking drain of the monitor receiver.  Returns `(msgs, still_connected)`.
     /// Store the latest snapshot for a drive (called from `poll_monitor` in
     /// whichever window drained it).
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     pub fn insert_snapshot(&self, snap: crate::monitor::HealthSnapshot) {
         self.last_snapshots
             .lock()
@@ -419,7 +418,7 @@ impl SharedAppState {
     }
 
     /// Clone of the latest snapshot for a drive, if any (read by the tray flyout).
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     pub fn snapshot_for(&self, serial: &str) -> Option<crate::monitor::HealthSnapshot> {
         self.last_snapshots
             .lock()
@@ -429,7 +428,7 @@ impl SharedAppState {
     }
 
     /// On disconnect, clears both `monitor_rx` and `monitor_cancel` internally.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     pub fn drain_monitor_rx(&self) -> (Vec<MonitorMsg>, bool) {
         let mut msgs = Vec::new();
         let mut connected = true;

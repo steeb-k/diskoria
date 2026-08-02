@@ -1,7 +1,10 @@
-//! Pro-Monitoring: Windows toast notifications.
+//! Pro-Monitoring: desktop notifications.
 //!
-//! Primary path: WinRT `ToastNotification` (Win10/11 action center).
-//! Fallback: `Shell_NotifyIconW` balloon tip.
+//! Windows: WinRT `ToastNotification` (Win10/11 action center), falling back
+//! to a `Shell_NotifyIconW` balloon tip.
+//! Linux: `org.freedesktop.Notifications` over the session bus (notify-rust).
+//! The pkexec relaunch passes `DBUS_SESSION_BUS_ADDRESS` through, so the
+//! elevated process still reaches the user's notification daemon.
 
 /// Send a Windows toast notification.
 ///
@@ -16,7 +19,22 @@ pub fn send_toast(title: &str, body: &str) {
     }
 }
 
-#[cfg(not(windows))]
+/// Send a desktop notification via the freedesktop session bus. Failure is
+/// logged, not fatal — a missing daemon just means no popup.
+#[cfg(target_os = "linux")]
+pub fn send_toast(title: &str, body: &str) {
+    let result = notify_rust::Notification::new()
+        .appname("Diskoria")
+        .summary(title)
+        .body(body)
+        .icon("drive-harddisk")
+        .show();
+    if let Err(e) = result {
+        log::warn!(target: "diskoria::toast", "notification failed: {e}");
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn send_toast(_title: &str, _body: &str) {}
 
 // ── WinRT path ────────────────────────────────────────────────────────────────
