@@ -36,8 +36,7 @@ display, no admin:
 - `history_db.rs` — insert/query/prune against an in-memory database
   (pre-existing).
 
-> Note: `rusqlite` is a Windows-only dependency, so the DB-backed tests compile
-> and run on Windows. The rest are platform-agnostic.
+> Note: `rusqlite` is an unconditional dependency since the linux-support work, so every unit test runs on both CI jobs.
 
 To confirm the suite actually catches regressions, break a parser (e.g. flip a
 byte offset in `parse_nvme_health_log`) and re-run — a test should fail.

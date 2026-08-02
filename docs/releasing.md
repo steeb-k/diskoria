@@ -82,3 +82,17 @@ no call-to-action headings. State what went wrong, then what it does now.
 gh release view <tag> --repo <repo> --json body --jq '.body'
 gh release edit <tag> --repo <repo> --notes-file <file>   # to correct it
 ```
+
+## Linux release assets
+
+`./scripts/build-portable.sh` builds and emits, under `releases/<ver>/`:
+
+- `diskoria-<ver>-linux-x86_64` — the bare binary. **This is the asset the
+  Linux self-updater downloads** (`update::pick_linux_url` matches on
+  `linux` + arch and skips archives/checksums), so upload it un-archived.
+- `diskoria-<ver>-portable-linux-x86_64.tar.gz` — binary + polkit policy +
+  `.desktop` + README, for humans downloading manually.
+
+Upload both to the same diskoria-binaries release as the Windows assets.
+No signing story exists for Linux yet; consider a `.sha256` sidecar (the
+updater ignores it).

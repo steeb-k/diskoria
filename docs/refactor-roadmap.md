@@ -118,11 +118,16 @@ Not started; capture here so it's ready.
    `draw_drive_health_page` (in `smart_health_page.rs`) can follow the same
    `pages/` pattern once the state consolidation above lands.
 
-5. **Trait-based platform backend (only when Linux work starts).** Introduce a
-   `StorageBackend` trait (enumerate drives, query SMART, run sector/speed
-   tests) with a Windows impl, so the Linux port fills in a second impl instead
-   of threading `#[cfg]` through call sites. Pair with the `paths` seam already
-   in place. Until then, keep the per-module `#[cfg(windows)]` + stub pattern.
+5. **Trait-based platform backend — resolved differently (linux-support).**
+   The port kept compile-time dispatch instead of a runtime `StorageBackend`
+   trait: nothing consumes platform polymorphism at runtime (demo mode bypasses
+   via seams, not a backend object), so a `dyn` handle threaded through
+   `DiskoriaApp`/`SharedAppState` would have bought nothing. Each storage
+   module became a directory — `mod.rs` holds the shared types, pure parsers
+   and (for the disk tests) the worker loops over tiny `BlockDev`/`RwBlockDev`
+   traits, with `windows.rs`/`linux.rs` transports re-exported behind the same
+   free-function signatures, so call sites never moved. The same shape covers
+   `tray/` and `autostart/`.
 
 ## Related known issues to fold in
 

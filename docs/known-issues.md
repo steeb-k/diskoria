@@ -8,7 +8,9 @@ lost. Each entry is tagged:
 - `fragile` — works today but depends on subtle, easily-broken invariants.
 - `cleanup` — code smell / duplication / stale comment; no functional impact.
 - `linux-blocker` — Windows-specific assumption that the planned Linux port must
-  address.
+  address. (Historical: the port landed on the `linux-support` branch; new
+  platform gaps use `linux`.)
+- `linux` — a deliberate parity gap or platform limitation of the Linux build.
 
 Line anchors are approximate — verify against the current file before acting.
 KI numbers are stable identifiers (referenced from commits/comments) — never
@@ -116,6 +118,38 @@ whenever an installed build seems to ignore the installer: **close the portable
 copy, including its tray icon, first.**
 
 ---
+
+### KI-33 — No hover flyout on Linux `linux`
+The per-drive tray flyout (`flyout.rs`) is Windows-only. Wayland offers no
+global window positioning and the StatusNotifierItem protocol exposes no icon
+geometry to anchor to, so the Linux tray carries the same information in its
+tooltip and actions in its D-Bus menu instead. An X11-only near-cursor popup
+would be possible later.
+
+### KI-34 — Single aggregated tray icon on Linux `linux`
+Windows shows one thermometer icon per internal drive; the Linux SNI item is a
+single icon (hottest drive's thermometer) with per-drive temperatures in the
+tooltip. Multiple SNI items are technically possible but most desktops collapse
+or hide extra items. Alert flashing maps to the SNI `NeedsAttention` status.
+
+### KI-35 — Raise-on-second-launch is best-effort under Wayland `linux`
+`raise_window` uses `focus_window()` + `request_user_attention`. X11 honors it;
+Wayland compositors enforce focus-stealing prevention and winit's
+xdg-activation support has no token from a plain second launch, so the window
+may only pulse in the taskbar.
+
+### KI-36 — `--minimized` autostart runs unelevated; no elevate-on-open hand-off `linux`
+A polkit prompt at every login is unacceptable, so the autostart launch skips
+the pkexec relaunch and monitors via hwmon only (temperatures, no SMART
+attributes). Opening a window from the tray keeps the unelevated session;
+health pages show permission-aware errors until the user relaunches normally.
+A hand-off (re-exec elevated on open, migrating the single-instance socket) is
+designed but not implemented.
+
+### KI-37 — GNOME needs an AppIndicator extension for the tray `linux`
+Stock GNOME ships no StatusNotifierWatcher; ksni then logs "no system tray
+available" and Diskoria runs without a tray (close-to-tray disables itself).
+KDE, XFCE, LXQt and most others work out of the box. See `linux/README.md`.
 
 ## Resolved
 

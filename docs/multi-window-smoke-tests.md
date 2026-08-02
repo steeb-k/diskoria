@@ -290,3 +290,13 @@ diagnose before moving forward.
 - Windows with the same title: intentional — the "any visible" shared
   flag is the source of truth for the launch-#2 decision, not
   `FindWindowW`.
+
+## Linux
+
+Run the same matrix on X11 and Wayland where it applies. Platform deltas:
+no hover flyout or per-drive tray icons (KI-33/KI-34 — use the SNI tooltip
+and menu), raise-on-second-launch may only pulse the taskbar under Wayland
+(KI-35), and stock GNOME needs the AppIndicator extension for any tray at
+all (KI-37). Also verify: pkexec prompt on normal launch (cancel degrades),
+resize from all 8 edges, dark/light follows the desktop, accent follows the
+system accent within a few seconds.

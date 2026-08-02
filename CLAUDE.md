@@ -5,7 +5,7 @@ depth. Keep new work consistent with the patterns below so features blend in.
 
 ## What Diskoria is
 
-A Windows desktop storage utility: **read-only sector scan**, **destructive
+A desktop storage utility (Windows + Linux): **read-only sector scan**, **destructive
 write+verify**, **file-based speed benchmark**, **SMART / NVMe / UFS health**,
 and a Pro **background monitoring** mode (tray + temperature history + alerts).
 
@@ -13,8 +13,12 @@ Rendering stack: **winit + egui + softbuffer** with a **hand-written CPU
 rasterizer** (no GPU/OpenGL — runs in Windows PE / recovery). The window is
 **frameless** with custom title bar, resize hit-testing, and chrome.
 
-Platform: Windows-first. Non-Windows is a **compile-only shell** (no disk
-enumeration/tests); keep it compiling but don't expect functionality there.
+Platform: Windows and Linux (the `linux-support` work). Storage, tests,
+monitoring, tray, notifications, autostart and self-update all run on both;
+platform code lives in per-module `windows.rs`/`linux.rs` submodules behind
+shared free-function contracts (see `docs/refactor-roadmap.md` item 5). Other
+unixes are a compile-only shell. Known Linux parity gaps are logged as
+`linux`-tagged entries in `docs/known-issues.md` (KI-33…KI-37).
 
 ## Repository map
 
@@ -26,8 +30,10 @@ diskoria/              Rust crate
   Cargo.toml, build.rs, app.manifest, .cargo/config.toml (crt-static)
   src/                 Application code (see "Code structure")
   tests/boot_smoke.rs  Ignored integration smoke (launches the real exe)
-scripts/               run-dev / build-release / build-portable / set-version
-                       + artifact-signing-metadata.json (Azure signing config)
+scripts/               run-dev.ps1|.sh / build-release.ps1 / build-portable.ps1|.sh
+                       / set-version.ps1 + artifact-signing-metadata.json
+linux/                 Linux desktop assets: polkit policy (pkexec), .desktop
+                       entry, README (privileges, tray, data locations)
 installer/             diskoria.iss — Inno Setup script (built by build-release.ps1
                        via ISCC; produces releases/<ver>/diskoria-<ver>-setup.exe).
                        Writes the startup scheduled task and the
@@ -104,14 +110,25 @@ assets/                appicon2.ico, trayicon.ico, applogo.png (embedded at comp
   guard, the monitor thread and the startup update check. Seams live in
   `shared_state::start_drive_enumeration`, `app::poll_smart_health`,
   `smart_health_page::spawn_health_poll_if_needed` and `app::apply_demo_seed`.
+- **`single_instance.rs`** (unix) — the `$XDG_RUNTIME_DIR/diskoria.sock`
+  single-instance guard; the primary decides raise-vs-new-window from its own
+  renderer state (no KI-6-style flag race). Windows keeps the named
+  mutex/events in `lib.rs`.
+- **`elevation.rs`** (Linux) — pkexec self-relaunch with an env trampoline
+  (DISPLAY/WAYLAND/D-Bus/XDG passthrough); skipped for smoke/demo/
+  `--no-elevate`/`--minimized`; declined auth degrades instead of exiting;
+  elevated startups re-own the XDG data dir to the invoking user.
+- **`device_events.rs`** (Linux) — NETLINK_KOBJECT_UEVENT block-device watcher
+  feeding the same debounced `DEVICE_CHANGE_PENDING` seam as `WM_DEVICECHANGE`.
 - **`install_mode.rs`** — installed build vs. portable exe. Like `autostart.rs`,
   OS state is the source of truth (no persisted flag): the installer writes
   `HKLM\Software\Diskoria\InstallDir`, and a build is "Installed" only when that
   value names the running exe's own directory. Drives the `close_to_tray` default
   (installed ON, portable OFF, applied in `app_settings::load_settings` when the
   settings file has no entry), the About page's Installed/Portable chip, and
-  `DiskoriaApp::updates_supported()` — **update checks are installed-only**,
-  because the asset the updater applies is the installer (known-issues KI-23).
+  `DiskoriaApp::updates_supported()` — **update checks are installed-only on
+  Windows** (the asset the updater applies there is the installer, KI-23);
+  the Linux portable binary self-replaces, so updates are always on there.
   The update flow (startup check → silent unless actionable → auto-download →
   stage → "Update now / on close" → apply in `App::exiting`) is documented in
   `docs/monitoring.md` § Updates.
@@ -128,18 +145,23 @@ assets/                appicon2.ico, trayicon.ico, applogo.png (embedded at comp
 ## Build / run / test
 
 ```
-.\scripts\run-dev.ps1                  # cargo run (needs elevation for disk I/O)
+.\scripts\run-dev.ps1                  # Windows: cargo run (needs elevation)
+./scripts/run-dev.sh                   # Linux: cargo run (app pkexec-relaunches;
+                                       #   --no-elevate skips the prompt)
 .\scripts\build-release.ps1 / .\scripts\build-portable.ps1
+./scripts/build-portable.sh            # Linux release: bare binary + portable tarball
 .\scripts\set-version.ps1              # interactive version bump
 
 cargo build                            # zero warnings is the bar — keep it there
 cargo clippy --all-targets             # also zero warnings
 DISKORIA_SKIP_RESOURCE=1 cargo test    # unit tests; the env flag avoids the
                                        # admin-manifest "requires elevation" on the
-                                       # test exe (see known-issues KI-10).
-                                       # CI sets the same flag — without it the
-                                       # test exe dies with os error 740 before
-                                       # running anything.
+                                       # test exe (see known-issues KI-10) — a
+                                       # Windows-only concern; plain `cargo test`
+                                       # works on Linux. Several #[ignore]d
+                                       # diagnostics inspect real hardware:
+                                       # `cargo test <name> -- --ignored --nocapture`
+                                       # (enumeration, hwmon, portal, speed run).
 cargo test --test boot_smoke -- --ignored   # launches the real exe, renders, exits 0
 DISKORIA_SMOKE=3 cargo run             # render N frames then exit (manual smoke)
 
@@ -161,13 +183,13 @@ Two workflows run on push + PR. Neither builds or publishes a release — that
 stays local and signed (`docs/releasing.md`).
 
 - `.github/workflows/ci.yml` — `cargo build` + `cargo test` against
-  `diskoria/Cargo.toml`, on **windows-latest**. Windows rather than Linux
-  because the crate has ~283 `cfg(windows)` sites and keeps `rusqlite`, `wmi`,
-  `tray-icon` and the `windows` crates behind `[target.'cfg(windows)']`, so a
-  Linux job would compile an unrepresentative slice. It sets
-  `DISKORIA_SKIP_RESOURCE=1` (KI-10) and passes `--locked`, which makes a stale
-  `Cargo.lock` a CI failure instead of a silent re-resolve. Currently 75 pass,
-  1 ignored (the boot smoke, which needs a real desktop).
+  `diskoria/Cargo.toml`, on **windows-latest and ubuntu-latest** (one job per
+  OS: the Windows job covers the Win32/WMI/IOCTL half, the Linux job the
+  sysfs/SG_IO/O_DIRECT half plus everything shared). Both set
+  `DISKORIA_SKIP_RESOURCE=1` (KI-10, harmless on Linux) and pass `--locked`,
+  which makes a stale `Cargo.lock` a CI failure instead of a silent
+  re-resolve. The #[ignore]d tests (boot smoke, hardware diagnostics) don't
+  run in CI.
 - `.github/workflows/cargo-deny.yml` — supply-chain checks. `deny.toml`'s
   `ignore` list is the open-advisory backlog and **removing an entry is how one
   gets fixed**; each carries what it is and how to clear it. Re-run
@@ -190,8 +212,12 @@ stays local and signed (`docs/releasing.md`).
 - **Background work** posts results over an `mpsc` channel and is drained in a
   `poll_*` method; call `ctx.request_repaint()` from the worker so unfocused
   windows update (see the repaint model in `gui-architecture.md`).
-- **Windows-only code** is `#[cfg(windows)]` with a non-Windows stub, so the
-  shell keeps compiling.
+- **Platform code**: storage/tray/autostart modules are directories with a
+  shared `mod.rs` (types + pure logic + parsers) and `windows.rs`/`linux.rs`
+  transports behind identical free-function signatures — extend both (or add a
+  stub) when touching them. Smaller items use `#[cfg(windows)]` /
+  `#[cfg(target_os = "linux")]` pairs; `#[cfg(any(windows, target_os =
+  "linux"))]` marks features live on both but absent on other unixes.
 - **Keep it warning-free.** `too_many_arguments` is allowed crate-wide (egui draw
   fns); everything else should be clean. Add unit tests for any new pure logic.
 - **When you find a bug/oddity**, log it in `docs/known-issues.md` (next `KI-`

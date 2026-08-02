@@ -253,3 +253,21 @@ both sites together.
 | `modal_confirm.rs`, `widgets.rs`, `toast.rs` | custom modal/widget/notification drawing |
 | `flyout.rs`, `tray.rs` | tray icons, hover flyout, context menus (Windows) |
 | `app.rs` | `DiskoriaApp`, page dispatch, all page draw functions |
+
+## Linux notes (linux-support)
+
+- **Resize**: the `WM_NCHITTEST` subclass is Windows-only; Linux uses an
+  egui-side edge hit-test (`chrome::handle_edge_resize`, same `theme.rs`
+  geometry) driving `ViewportCommand::BeginResize` →
+  `winit::Window::drag_resize_window`, with the same KI-2 release synthesis.
+- **Single instance**: a unix socket in `$XDG_RUNTIME_DIR`
+  (`single_instance.rs`); the primary decides raise-vs-new-window from its own
+  renderer state, so the KI-6 flag race has no unix counterpart. Raise is
+  best-effort under Wayland (KI-35).
+- **Device change**: a netlink uevent watcher (`device_events.rs`) feeds the
+  same debounced `DEVICE_CHANGE_PENDING` seam as `WM_DEVICECHANGE`.
+- **Theme/accent**: winit reports no system theme on X11/Wayland, so
+  `ThemePref::Auto` and the "System accent" option read the XDG settings
+  portal (`org.freedesktop.appearance` via `dbus-send`, cached in `theme.rs`).
+- The rendering pipeline (softbuffer + CPU rasterizer) is unchanged; frameless
+  windows have no shadow/rounding on some compositors.
