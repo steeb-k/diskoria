@@ -21,14 +21,17 @@ if [[ ${EUID} -ne 0 ]]; then
 fi
 
 invoker="${SUDO_USER:-root}"
+invoker_home="$(getent passwd "$invoker" | cut -d: -f6)"
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root/diskoria"
 
+# Root's PATH does not include the invoking user's rustup install — build
+# steps run as the user, with their ~/.cargo/bin prepended.
 run_as_user() {
     if [[ "$invoker" != "root" ]]; then
-        sudo -u "$invoker" env PATH="$PATH" "$@"
+        sudo -u "$invoker" env PATH="$invoker_home/.cargo/bin:$PATH" "$@"
     else
-        "$@"
+        PATH="$invoker_home/.cargo/bin:$PATH" "$@"
     fi
 }
 
