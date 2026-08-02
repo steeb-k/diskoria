@@ -461,10 +461,32 @@ mod device_tests {
     /// unmounting any mount points in `DISKORIA_TEST_MOUNTS` (colon-separated)
     /// first — exercising the umount pre-flight. DESTROYS the device contents;
     /// meant for a file-backed loop device (see scripts/test-elevated.sh).
+    /// Hard safety guard: the target must be a *file-backed loop device* —
+    /// this test overwrites every sector, and an env-var typo must never be
+    /// able to point it at real hardware. `DISKORIA_TEST_ALLOW_REAL=1`
+    /// overrides for someone deliberately wiping a scratch disk.
+    fn assert_loop_device(dev: &str) {
+        if std::env::var("DISKORIA_TEST_ALLOW_REAL").as_deref() == Ok("1") {
+            return;
+        }
+        let name = std::path::Path::new(dev)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let backing = format!("/sys/block/{name}/loop/backing_file");
+        assert!(
+            std::path::Path::new(&backing).exists(),
+            "REFUSING to run the destructive test against {dev}: not a file-backed \
+             loop device (no {backing}). Set DISKORIA_TEST_ALLOW_REAL=1 only if you \
+             genuinely intend to destroy that device's contents."
+        );
+    }
+
     #[test]
     #[ignore = "needs root + DISKORIA_TEST_DEVICE; run via scripts/test-elevated.sh"]
     fn write_verify_device_from_env() {
         let dev = std::env::var("DISKORIA_TEST_DEVICE").expect("set DISKORIA_TEST_DEVICE");
+        assert_loop_device(&dev);
         let mounts: Vec<String> = std::env::var("DISKORIA_TEST_MOUNTS")
             .map(|v| v.split(':').map(str::to_string).collect())
             .unwrap_or_default();

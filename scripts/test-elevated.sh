@@ -93,7 +93,18 @@ trap cleanup EXIT
 
 dd if=/dev/zero of="$img" bs=1M count=256 status=none
 loopdev="$(losetup --find --show "$img")"
-echo "loop device: $loopdev (256 MB file-backed)"
+# Safety: the disk tests must only ever see the throwaway loop device. The
+# destructive test additionally refuses non-loop devices on its own (see
+# destructive_test::device_tests::assert_loop_device), but belt and braces.
+case "$loopdev" in
+    /dev/loop*) ;;
+    *) echo "── FAIL: losetup returned unexpected device '$loopdev'; aborting disk tests"; exit 1 ;;
+esac
+if [[ "$(losetup -O BACK-FILE --noheadings "$loopdev" | xargs)" != "$img" ]]; then
+    echo "── FAIL: $loopdev is not backed by $img; aborting disk tests"
+    exit 1
+fi
+echo "loop device: $loopdev (256 MB, backed by $img — real drives are only read)"
 
 DISKORIA_TEST_DEVICE="$loopdev" \
     "$TEST_BIN" --ignored --nocapture --exact surface_test::device_tests::scan_device_from_env
