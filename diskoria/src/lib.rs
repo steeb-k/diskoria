@@ -241,6 +241,13 @@ impl Renderer {
     }
 
     fn paint(&mut self) {
+        // Per-stage frame timing, off unless DISKORIA_FRAME_STATS is set.
+        // Rendering is a hand-written CPU rasterizer, so "where did the frame
+        // go" is a question worth being able to answer on any machine.
+        static STATS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let stats = *STATS.get_or_init(|| std::env::var_os("DISKORIA_FRAME_STATS").is_some());
+        let t_start = std::time::Instant::now();
+
         let size = self.window.inner_size();
         let w = size.width;
         let h = size.height;
@@ -258,6 +265,7 @@ impl Renderer {
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
             self.app.draw(ctx);
         });
+        let t_ui = t_start.elapsed();
 
         self.egui_state
             .handle_platform_output(&self.window, full_output.platform_output);
@@ -349,8 +357,16 @@ impl Renderer {
             return;
         }
 
+        let t_before_tess = std::time::Instant::now();
         let ppp = full_output.pixels_per_point;
         let clipped = self.egui_ctx.tessellate(full_output.shapes, ppp);
+        let t_tess = t_before_tess.elapsed();
+        let t_before_raster = std::time::Instant::now();
+        // Pixels the rasterizer *visits*, counted per triangle so the metric
+        // itself costs nothing per pixel. Compared against the window area it
+        // gives the overdraw factor, which is what actually drives frame cost
+        // in a software renderer.
+        let mut px_tested: u64 = 0;
 
         let bg = Theme::new(self.app.dark, self.app.shared.accent_color()).bg_pri;
         let bg32 = to_bgra(bg.r(), bg.g(), bg.b(), 255);
@@ -399,6 +415,7 @@ impl Renderer {
                         continue;
                     }
 
+                    px_tested += ((y1 - y0 + 1).max(0) as u64) * ((x1 - x0 + 1).max(0) as u64);
                     for py in y0..=y1 {
                         for px in x0..=x1 {
                             let fx = px as f32 + 0.5;
@@ -464,6 +481,9 @@ impl Renderer {
             }
         }
 
+        let t_raster = t_before_raster.elapsed();
+        let t_before_present = std::time::Instant::now();
+
         if self
             .surface
             .resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap())
@@ -473,6 +493,23 @@ impl Renderer {
                 buf.copy_from_slice(&pixels);
                 let _ = buf.present();
             }
+        }
+
+        if stats {
+            let t_present = t_before_present.elapsed();
+            log::info!(
+                target: "diskoria::frame",
+                "{w}x{h} ({} px): ui {:.1}ms, tessellate {:.1}ms, rasterize {:.1}ms, \
+                 present {:.1}ms, total {:.1}ms ({} prims, {:.1}x overdraw)",
+                w as u64 * h as u64,
+                t_ui.as_secs_f64() * 1000.0,
+                t_tess.as_secs_f64() * 1000.0,
+                t_raster.as_secs_f64() * 1000.0,
+                t_present.as_secs_f64() * 1000.0,
+                t_start.elapsed().as_secs_f64() * 1000.0,
+                clipped.len(),
+                px_tested as f64 / (w as f64 * h as f64),
+            );
         }
 
         // Continuous repaints (animations, live test progress) are driven by
