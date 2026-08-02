@@ -77,9 +77,9 @@ pub fn draw_about_header_row(
             .layout(Layout::right_to_left(Align::Center)),
         |ui| {
             let icon = ICON_CLOUD_ARROW_DOWN.chars().next().unwrap_or('\u{f295}');
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             let enabled = app.update_check_button_enabled();
-            #[cfg(not(windows))]
+            #[cfg(not(any(windows, target_os = "linux")))]
             let enabled = false;
             let check_focused = app.about_focus == Some(0);
             let check_r = small_browse_style_button(
@@ -93,7 +93,7 @@ pub fn draw_about_header_row(
             // A permanently-greyed button reads as broken, so say why. Only for
             // the portable case — the transient busy/modal states explain
             // themselves through the spinner and dialog that caused them.
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             if !app.updates_supported() && check_r.hovered() {
                 if let Some(pos) = ui.ctx().pointer_latest_pos() {
                     crate::widgets::show_tooltip_text(
@@ -110,7 +110,7 @@ pub fn draw_about_header_row(
                     || i.consume_key(egui::Modifiers::NONE, egui::Key::Space)
             });
             if check_r.clicked() || kb {
-                #[cfg(windows)]
+                #[cfg(any(windows, target_os = "linux"))]
                 app.on_about_check_updates_clicked(ui.ctx());
             }
             if check_focused {

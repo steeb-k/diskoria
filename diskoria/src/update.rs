@@ -1,9 +1,11 @@
-//! GitHub Releases update check and Windows self-update (download → exit → replace exe → relaunch).
+//! GitHub Releases update check and self-update.
 //! Release assets are published on the **`diskoria-binaries`** repo (see [`crate::github_config`]).
-
-// Every caller of this module is `#[cfg(windows)]` today, so the whole feature
-// is dead code on Linux until the linux-support update phase un-gates it.
-#![cfg_attr(not(windows), allow(dead_code))]
+//!
+//! Windows: download the Inno installer (or a bare exe) → stage → run the
+//! installer silently / batch-replace the exe. Linux: download the bare
+//! portable binary next to the running one (same filesystem) → stage →
+//! atomic `rename` over `current_exe`, either immediately with a re-exec
+//! ("Update now") or from the exit hook ("Update on close").
 
 use semver::Version;
 use serde::Deserialize;
@@ -35,7 +37,33 @@ fn parse_version_tag(tag: &str) -> Option<Version> {
     Version::parse(s).ok()
 }
 
+/// Linux portable asset: a bare binary named for the platform (see
+/// `scripts/build-portable.sh` — `diskoria-<ver>-linux-x86_64`), never an
+/// archive or checksum sidecar.
+#[cfg_attr(windows, allow(dead_code))]
+fn pick_linux_url(assets: &[AssetJson]) -> Option<String> {
+    let is_other = |n: &str| {
+        [".tar.gz", ".tgz", ".tar.xz", ".zip", ".sha256", ".sig", ".asc", ".exe", ".pdb"]
+            .iter()
+            .any(|ext| n.ends_with(ext))
+    };
+    let linux: Vec<&AssetJson> = assets
+        .iter()
+        .filter(|a| {
+            let n = a.name.to_ascii_lowercase();
+            n.contains("linux") && !is_other(&n)
+        })
+        .collect();
+    // Prefer the running machine's architecture when the release names it.
+    linux
+        .iter()
+        .find(|a| a.name.to_ascii_lowercase().contains(std::env::consts::ARCH))
+        .or_else(|| linux.first())
+        .map(|a| a.browser_download_url.clone())
+}
+
 /// Prefer installer `.exe` with "setup" in the name, then any non-PDB `.exe`.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn pick_exe_url(assets: &[AssetJson]) -> Option<String> {
     let setup: Vec<_> = assets
         .iter()
@@ -90,8 +118,12 @@ pub fn check_for_update_blocking() -> Result<UpdateCheckResult, String> {
         return Ok(UpdateCheckResult::UpToDate);
     }
 
+    #[cfg(windows)]
     let url = pick_exe_url(&release.assets)
         .ok_or_else(|| "No Windows .exe found in this release.".to_string())?;
+    #[cfg(not(windows))]
+    let url = pick_linux_url(&release.assets)
+        .ok_or_else(|| "No Linux binary found in this release.".to_string())?;
 
     Ok(UpdateCheckResult::UpdateAvailable {
         version_display: release.tag_name.trim_start_matches('v').trim_start_matches('V').to_string(),
@@ -118,11 +150,31 @@ pub fn url_is_installer(url: &str) -> bool {
 /// `Diskoria_update_<n>.exe`, so an installer asset took the copy-over branch
 /// and clobbered `diskoria.exe` with the Inno setup stub (known-issues KI-22).
 pub fn update_temp_file_name(url: &str, nonce: u128) -> String {
+    #[cfg(windows)]
+    {
+        temp_file_name_windows(url, nonce)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = url;
+        temp_file_name_unix(nonce)
+    }
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn temp_file_name_windows(url: &str, nonce: u128) -> String {
     if url_is_installer(url) {
         format!("Diskoria_update_setup_{nonce}.exe")
     } else {
         format!("Diskoria_update_{nonce}.exe")
     }
+}
+
+/// Dotfile next to the running binary — the same filesystem, so the apply
+/// step is one atomic `rename`.
+#[cfg_attr(windows, allow(dead_code))]
+pub(crate) fn temp_file_name_unix(nonce: u128) -> String {
+    format!(".diskoria-update-{nonce}")
 }
 
 pub fn download_to_path(url: &str, dest: &std::path::Path) -> Result<(), String> {
@@ -207,7 +259,40 @@ exit /b 1
 }
 
 #[cfg(not(windows))]
+#[allow(dead_code)] // Linux applies via replace_exe/apply_update_now_and_restart instead
 pub fn spawn_apply_update_and_exit(_new_exe: &std::path::Path, _target_exe: &std::path::Path) {}
+
+/// Replace `target_exe` with the staged `new_exe` by atomic rename,
+/// mirroring the target's ownership and mode first (the process may be root
+/// via pkexec while the binary lives in a user-owned directory). Linux allows
+/// replacing a running executable's path — the old inode stays mapped.
+#[cfg(target_os = "linux")]
+pub fn replace_exe(new_exe: &std::path::Path, target_exe: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::PermissionsExt;
+
+    let meta = std::fs::metadata(target_exe)
+        .map_err(|e| format!("Cannot stat {}: {e}", target_exe.display()))?;
+    std::fs::set_permissions(new_exe, std::fs::Permissions::from_mode(meta.mode()))
+        .map_err(|e| format!("Cannot set update permissions: {e}"))?;
+    let _ = std::os::unix::fs::chown(new_exe, Some(meta.uid()), Some(meta.gid()));
+    std::fs::rename(new_exe, target_exe)
+        .map_err(|e| format!("Cannot replace {}: {e}", target_exe.display()))
+}
+
+/// "Update now": swap the binary and re-exec it in place (keeps the current
+/// privileges — no second pkexec prompt). Only returns on failure.
+#[cfg(target_os = "linux")]
+pub fn apply_update_now_and_restart(
+    new_exe: &std::path::Path,
+    target_exe: &std::path::Path,
+) -> Result<(), String> {
+    use std::os::unix::process::CommandExt;
+    replace_exe(new_exe, target_exe)?;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let err = std::process::Command::new(target_exe).args(args).exec();
+    Err(format!("Re-exec after update failed: {err}"))
+}
 
 /// Inno Setup switches for an unattended update install.
 ///
@@ -226,6 +311,7 @@ pub fn spawn_apply_update_and_exit(_new_exe: &std::path::Path, _target_exe: &std
 ///
 /// `keep_*` are read from live state rather than a stored preference for the
 /// same reason `autostart` and `install_mode` are: the OS is the source of truth.
+#[cfg_attr(not(windows), allow(dead_code))] // Inno-installer helper; tests cover it everywhere
 pub fn silent_install_args(keep_startup: bool, keep_desktop_icon: bool, relaunch: bool) -> Vec<String> {
     let tasks = format!(
         "{},{}",
@@ -284,6 +370,7 @@ pub fn spawn_run_installer_and_exit(installer: &std::path::Path) {
 }
 
 #[cfg(not(windows))]
+#[allow(dead_code)] // Linux applies via apply_update_now_and_restart instead
 pub fn spawn_run_installer_and_exit(_installer: &std::path::Path) {}
 
 #[cfg(test)]
@@ -314,19 +401,50 @@ mod tests {
     fn temp_name_preserves_the_setup_marker() {
         // The regression behind KI-22: the apply step matches on `contains("setup")`,
         // so an installer download must still carry the marker after renaming.
-        let installer = update_temp_file_name("https://x/diskoria-1.6.1-setup.exe", 42);
+        let installer = temp_file_name_windows("https://x/diskoria-1.6.1-setup.exe", 42);
         assert!(installer.to_ascii_lowercase().contains("setup"));
         assert!(installer.ends_with(".exe"));
 
-        let portable = update_temp_file_name("https://x/diskoria.exe", 42);
+        let portable = temp_file_name_windows("https://x/diskoria.exe", 42);
         assert!(!portable.to_ascii_lowercase().contains("setup"));
         assert!(portable.ends_with(".exe"));
 
         // Nonce keeps concurrent downloads from colliding.
         assert_ne!(
-            update_temp_file_name("https://x/diskoria.exe", 1),
-            update_temp_file_name("https://x/diskoria.exe", 2)
+            temp_file_name_windows("https://x/diskoria.exe", 1),
+            temp_file_name_windows("https://x/diskoria.exe", 2)
         );
+        assert_ne!(temp_file_name_unix(1), temp_file_name_unix(2));
+        assert!(temp_file_name_unix(1).starts_with('.'));
+    }
+
+    #[test]
+    fn pick_linux_url_prefers_bare_arch_binary() {
+        let assets = vec![
+            AssetJson {
+                name: "diskoria-1.7.0-setup.exe".into(),
+                browser_download_url: "https://x/setup.exe".into(),
+            },
+            AssetJson {
+                name: "diskoria-1.7.0-portable-linux-x86_64.tar.gz".into(),
+                browser_download_url: "https://x/tar".into(),
+            },
+            AssetJson {
+                name: "diskoria-1.7.0-linux-x86_64".into(),
+                browser_download_url: "https://x/bin".into(),
+            },
+            AssetJson {
+                name: "diskoria-1.7.0-linux-x86_64.sha256".into(),
+                browser_download_url: "https://x/sha".into(),
+            },
+        ];
+        assert_eq!(pick_linux_url(&assets).as_deref(), Some("https://x/bin"));
+        // No bare binary → nothing (archives are for humans, not the updater).
+        let only_tar = vec![AssetJson {
+            name: "diskoria-portable-linux-x86_64.tar.gz".into(),
+            browser_download_url: "https://x/tar".into(),
+        }];
+        assert_eq!(pick_linux_url(&only_tar), None);
     }
 
     #[test]
@@ -372,5 +490,32 @@ mod tests {
         );
         // The chosen asset must round-trip as an installer through the temp name.
         assert!(url_is_installer(&pick_exe_url(&assets).unwrap()));
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_apply_tests {
+    use super::replace_exe;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn replace_exe_swaps_content_and_preserves_mode() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("diskoria");
+        let staged = dir.path().join(".diskoria-update-1");
+        std::fs::write(&target, b"old").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(&staged, b"new").unwrap();
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        replace_exe(&staged, &target).expect("replace");
+
+        assert_eq!(std::fs::read(&target).unwrap(), b"new");
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o755,
+            "target keeps its executable mode"
+        );
+        assert!(!staged.exists(), "staged file consumed by the rename");
     }
 }

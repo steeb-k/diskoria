@@ -150,7 +150,7 @@ impl Theme {
 /// Both fail where there is no per-user accent at all — notably Windows PE,
 /// which has no DWM composition.
 #[cfg(windows)]
-pub fn windows_accent_color() -> Option<Color32> {
+pub fn os_accent_color() -> Option<Color32> {
     registry_accent_color().or_else(dwm_colorization_color)
 }
 
@@ -220,8 +220,119 @@ fn accent_from_argb(v: u32) -> Color32 {
     Color32::from_rgb(((v >> 16) & 0xFF) as u8, ((v >> 8) & 0xFF) as u8, (v & 0xFF) as u8)
 }
 
-#[cfg(not(windows))]
-pub fn windows_accent_color() -> Option<Color32> {
+/// Linux: the XDG desktop-settings portal (`org.freedesktop.appearance`),
+/// which KDE and GNOME both serve. Queried by shelling out to `dbus-send` —
+/// universally present wherever a session bus is — because pulling an async
+/// D-Bus runtime onto the UI thread for two scalar reads is not worth the
+/// hazard. Results are cached for a few seconds; the accent poll and the
+/// per-frame theme check both go through the cache.
+#[cfg(target_os = "linux")]
+mod linux_portal {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    use egui::Color32;
+
+    const CACHE_FOR: Duration = Duration::from_secs(3);
+
+    struct Cached {
+        read_at: Option<Instant>,
+        prefers_dark: Option<bool>,
+        accent: Option<Color32>,
+    }
+
+    static CACHE: Mutex<Cached> = Mutex::new(Cached {
+        read_at: None,
+        prefers_dark: None,
+        accent: None,
+    });
+
+    fn read_setting(key: &str) -> Option<String> {
+        let out = std::process::Command::new("dbus-send")
+            .args([
+                "--session",
+                "--print-reply=literal",
+                "--dest=org.freedesktop.portal.Desktop",
+                "/org/freedesktop/portal/desktop",
+                "org.freedesktop.portal.Settings.Read",
+                "string:org.freedesktop.appearance",
+                &format!("string:{key}"),
+            ])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// `variant variant uint32 1` → 1 = prefer dark, 2 = prefer light,
+    /// 0 = no preference.
+    pub(super) fn parse_color_scheme(reply: &str) -> Option<bool> {
+        let n: u32 = reply.split_whitespace().last()?.parse().ok()?;
+        match n {
+            1 => Some(true),
+            2 => Some(false),
+            _ => None,
+        }
+    }
+
+    /// `variant variant struct { double r double g double b }`, sRGB 0..1.
+    pub(super) fn parse_accent(reply: &str) -> Option<Color32> {
+        let mut chans = reply
+            .split_whitespace()
+            .filter_map(|t| t.parse::<f64>().ok());
+        let (r, g, b) = (chans.next()?, chans.next()?, chans.next()?);
+        let to8 = |v: f64| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        Some(Color32::from_rgb(to8(r), to8(g), to8(b)))
+    }
+
+    fn refresh_if_stale() {
+        let stale = {
+            let c = CACHE.lock().expect("portal cache poisoned");
+            c.read_at.is_none_or(|t| t.elapsed() > CACHE_FOR)
+        };
+        if !stale {
+            return;
+        }
+        let prefers_dark = read_setting("color-scheme")
+            .as_deref()
+            .and_then(parse_color_scheme);
+        let accent = read_setting("accent-color")
+            .as_deref()
+            .and_then(parse_accent);
+        let mut c = CACHE.lock().expect("portal cache poisoned");
+        c.read_at = Some(Instant::now());
+        c.prefers_dark = prefers_dark;
+        c.accent = accent;
+    }
+
+    pub fn prefers_dark() -> Option<bool> {
+        refresh_if_stale();
+        CACHE.lock().expect("portal cache poisoned").prefers_dark
+    }
+
+    pub fn accent_color() -> Option<Color32> {
+        refresh_if_stale();
+        CACHE.lock().expect("portal cache poisoned").accent
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn os_accent_color() -> Option<Color32> {
+    linux_portal::accent_color()
+}
+
+/// Linux only: the desktop's light/dark preference from the settings portal.
+/// winit cannot report a system theme on X11/Wayland, so `ThemePref::Auto`
+/// falls back to this when `ctx.system_theme()` is `None`.
+#[cfg(target_os = "linux")]
+pub fn os_prefers_dark() -> Option<bool> {
+    linux_portal::prefers_dark()
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+pub fn os_accent_color() -> Option<Color32> {
     None
 }
 
@@ -315,5 +426,38 @@ mod tests {
                 assert_eq!(Theme::new(dark, accent).txt_on_accent, text_on(accent));
             }
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod portal_tests {
+    use super::linux_portal::{parse_accent, parse_color_scheme};
+
+    #[test]
+    fn color_scheme_reply_parses() {
+        assert_eq!(parse_color_scheme("   variant       variant          uint32 1\n"), Some(true));
+        assert_eq!(parse_color_scheme("variant variant uint32 2"), Some(false));
+        // 0 = no preference; garbage = None.
+        assert_eq!(parse_color_scheme("variant variant uint32 0"), None);
+        assert_eq!(parse_color_scheme("error: no such interface"), None);
+    }
+
+    #[test]
+    fn accent_reply_parses_srgb_triplet() {
+        let reply = "   variant       variant          struct {\n            double 0.568627\n            double 0.254902\n            double 0.67451\n         }\n";
+        let c = parse_accent(reply).expect("accent");
+        assert_eq!((c.r(), c.g(), c.b()), (145, 65, 172));
+        assert_eq!(parse_accent("no numbers here"), None);
+    }
+
+    /// Diagnostic against the live session bus.
+    #[test]
+    #[ignore = "talks to the real session bus; run manually with --ignored --nocapture"]
+    fn print_live_portal_values() {
+        println!(
+            "prefers_dark={:?} accent={:?}",
+            super::os_prefers_dark(),
+            super::os_accent_color()
+        );
     }
 }

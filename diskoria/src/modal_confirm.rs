@@ -288,9 +288,6 @@ pub fn two_button_modal(
     inner.inner
 }
 
-// The one-button modal's only caller (the update flow) is Windows-gated today;
-// un-gated by the port's update phase.
-#[cfg_attr(not(windows), allow(dead_code))]
 pub struct OneButtonModalParams<'a> {
     pub overlay_id: Id,
     pub dialog_id: Id,
@@ -303,7 +300,6 @@ pub struct OneButtonModalParams<'a> {
 }
 
 /// Single OK button — Escape or OK dismisses. `button_focus` is `Some(0)` when OK is focused.
-#[cfg_attr(not(windows), allow(dead_code))]
 pub fn one_button_modal(
     ctx: &Context,
     t: &Theme,

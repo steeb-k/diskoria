@@ -1028,20 +1028,32 @@ impl ApplicationHandler<UserEvent> for App {
     /// the last window closing when `close_to_tray` is off. Hiding to the tray
     /// is not an exit, so a staged update simply waits.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-        #[cfg(windows)]
-        if let Some(installer) = self.shared.take_staged_update() {
+        #[cfg(any(windows, target_os = "linux"))]
+        if let Some(staged) = self.shared.take_staged_update() {
             log::info!(
                 target: "diskoria",
                 "applying staged update on exit: {}",
-                installer.display()
+                staged.display()
             );
             // Stop worker threads first so nothing holds a device handle while
-            // the installer swaps the exe.
+            // the update swaps the exe.
             for r in self.renderers.values_mut() {
                 r.app.cancel_all_tests();
             }
             // relaunch = false: the user was closing Diskoria, not restarting it.
-            crate::update::spawn_installer(&installer, false);
+            #[cfg(windows)]
+            crate::update::spawn_installer(&staged, false);
+            #[cfg(target_os = "linux")]
+            match std::env::current_exe() {
+                Ok(exe) => {
+                    if let Err(e) = crate::update::replace_exe(&staged, &exe) {
+                        log::warn!(target: "diskoria", "staged update failed: {e}");
+                    }
+                }
+                Err(e) => {
+                    log::warn!(target: "diskoria", "staged update: current_exe failed: {e}");
+                }
+            }
         }
         // Drop every renderer (window, softbuffer surface, egui-winit state —
         // including the smithay-clipboard worker on Wayland) while the event

@@ -81,12 +81,12 @@ pub struct SharedAppState {
     /// Set once the startup update check has been kicked off, so it fires a
     /// single time per process no matter how many windows draw (or how often
     /// the first one repaints).
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     auto_update_check_started: AtomicBool,
     /// A downloaded installer waiting to be run when the process exits. Lives
     /// here rather than on a window because the window that staged it may be
     /// closed long before the app quits, and `App::exiting` is what applies it.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     staged_update: Mutex<Option<std::path::PathBuf>>,
     /// Physical drives currently under test, keyed by the owning window's token
     /// → that drive's `DetectedDrive::lock_key()`. One test per physical drive
@@ -101,13 +101,13 @@ impl SharedAppState {
     pub fn new(event_proxy: EventLoopProxy<UserEvent>) -> Self {
         let settings = app_settings::load_settings();
         let accent_color = initial_accent_color(&settings);
-        let accent_os_available = crate::theme::windows_accent_color().is_some();
+        let accent_os_available = crate::theme::os_accent_color().is_some();
         if !accent_os_available {
             // One line to explain an accent that ignores the OS — the Settings
             // page says the same thing where the swatches would be (KI-30).
             log::info!(
                 target: "diskoria::theme",
-                "No Windows accent color available; \"Windows accent\" falls back to the palette"
+                "No OS accent color available; the system-accent option falls back to the palette"
             );
         }
         Self {
@@ -130,9 +130,9 @@ impl SharedAppState {
             #[cfg(any(windows, target_os = "linux"))]
             last_snapshots: Mutex::new(std::collections::HashMap::new()),
             drive_icons_dirty: AtomicBool::new(false),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             auto_update_check_started: AtomicBool::new(false),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             staged_update: Mutex::new(None),
             test_locks: Mutex::new(std::collections::HashMap::new()),
             pro_edition: true,
@@ -290,7 +290,7 @@ impl SharedAppState {
 
     /// Claim the once-per-process startup update check. Returns `true` exactly
     /// once — to the first caller — so only one window fires it.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     pub fn claim_auto_update_check(&self) -> bool {
         !self.auto_update_check_started.swap(true, Ordering::SeqCst)
     }
@@ -298,14 +298,14 @@ impl SharedAppState {
     // ── Staged update ────────────────────────────────────────────────────────
 
     /// Record a downloaded installer to run at process exit.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     pub fn stage_update(&self, installer: std::path::PathBuf) {
         *self.staged_update.lock().expect("staged_update poisoned") = Some(installer);
     }
 
     /// Take the staged installer, if any. Called once from `App::exiting`; also
     /// used by "Update now" so the exit hook doesn't launch a second copy.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     pub fn take_staged_update(&self) -> Option<std::path::PathBuf> {
         self.staged_update
             .lock()

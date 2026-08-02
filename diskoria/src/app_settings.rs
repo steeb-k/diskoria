@@ -213,7 +213,7 @@ pub fn initial_accent_color(s: &Settings) -> Color32 {
             s.accent_use_custom,
             &s.accent_custom_hex,
         ),
-        AccentSourcePref::Windows => crate::theme::windows_accent_color().unwrap_or(ACCENT_PALETTE[0]),
+        AccentSourcePref::Windows => crate::theme::os_accent_color().unwrap_or(ACCENT_PALETTE[0]),
     }
 }
 

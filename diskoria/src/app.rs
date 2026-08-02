@@ -30,13 +30,12 @@ use crate::surface_test::{
 use crate::modal_confirm::{
     two_button_modal, ModalConfirmPrimary, ModalConfirmResult, TwoButtonModalParams,
 };
-#[cfg(windows)]
 use crate::modal_confirm::{one_button_modal, OneButtonModalParams};
 use crate::smart_health::SmartHealth;
 use crate::speed_test;
 use crate::speed_test::SpeedTestMsg;
 use crate::theme::{
-    apply_visuals, windows_accent_color, Theme, CONTENT_MARGIN, MAX_CONTENT_W,
+    apply_visuals, os_accent_color, Theme, CONTENT_MARGIN, MAX_CONTENT_W,
     SIDE_PANEL_W, TITLEBAR_H,
 };
 use crate::focus::apply_manual_focus_event_filter;
@@ -347,36 +346,36 @@ pub struct DiskoriaApp {
     pub(crate) about_focus: Option<usize>,
 
     pub(crate) about_appicon: Option<egui::TextureHandle>,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     update_check_rx: Option<mpsc::Receiver<Result<crate::update::UpdateCheckResult, String>>>,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     update_download_rx: Option<mpsc::Receiver<Result<std::path::PathBuf, String>>>,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     pending_update_version: String,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     show_update_alert: bool,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     update_alert_title: String,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     update_alert_body: String,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     update_check_busy: bool,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     update_download_busy: bool,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     update_alert_focus: Option<usize>,
     /// The in-flight check was started automatically rather than by the About
     /// button. An automatic check stays silent unless it finds something — a
     /// "you are up to date" box on every launch would be noise.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     update_check_is_auto: bool,
     /// An installer has been downloaded and is waiting to run; the modal asks
     /// whether to apply it now or on exit.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     show_update_staged_modal: bool,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     staged_update_version: String,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     update_staged_focus: Option<usize>,
     /// Whether this window is currently on screen. `--minimized` still draws a
     /// hidden window (that is what kicks drive enumeration), so anything that
@@ -596,31 +595,31 @@ impl DiskoriaApp {
             health_combo_id: None,
             about_focus: None,
             about_appicon,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             update_check_rx: None,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             update_download_rx: None,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             pending_update_version: String::new(),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             show_update_alert: false,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             update_alert_title: String::new(),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             update_alert_body: String::new(),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             update_check_busy: false,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             update_download_busy: false,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             update_alert_focus: None,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             update_check_is_auto: false,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             show_update_staged_modal: false,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             staged_update_version: String::new(),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             update_staged_focus: None,
             // Corrected by `Renderer::paint` before the first draw that matters.
             window_visible: true,
@@ -952,17 +951,24 @@ impl DiskoriaApp {
         self.selected_drive.min(self.drives.len().saturating_sub(1))
     }
 
-    /// Updates are an *installed-build* feature: the release asset the updater
-    /// picks is the Inno installer, so applying one on a portable exe would
-    /// silently convert it into an installed copy. Gating here rather than at the
-    /// button means every future trigger (a startup or periodic auto-check, say)
-    /// inherits the restriction for free.
-    #[cfg(windows)]
+    /// Windows updates are an *installed-build* feature: the release asset the
+    /// updater picks is the Inno installer, so applying one on a portable exe
+    /// would silently convert it into an installed copy (KI-23). The Linux
+    /// build has no installer at all — its portable binary self-replaces, so
+    /// updates are always supported there.
+    #[cfg(any(windows, target_os = "linux"))]
     pub(crate) fn updates_supported(&self) -> bool {
-        crate::install_mode::current().is_installed()
+        #[cfg(windows)]
+        {
+            crate::install_mode::current().is_installed()
+        }
+        #[cfg(target_os = "linux")]
+        {
+            true
+        }
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     pub(crate) fn update_check_button_enabled(&self) -> bool {
         self.updates_supported()
             && !self.update_check_busy
@@ -972,7 +978,7 @@ impl DiskoriaApp {
             && !self.show_update_alert
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     pub(crate) fn on_about_check_updates_clicked(&mut self, ctx: &egui::Context) {
         // Covers `updates_supported()` too — a portable build never gets here.
         if !self.update_check_button_enabled() {
@@ -984,7 +990,7 @@ impl DiskoriaApp {
     /// Kick off the background check. `is_auto` suppresses the "up to date" and
     /// "check failed" boxes so a startup check only ever interrupts the user
     /// when there is genuinely something to install.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     fn start_update_check(&mut self, ctx: &egui::Context, is_auto: bool) {
         let (tx, rx) = mpsc::channel();
         self.update_check_rx = Some(rx);
@@ -1003,7 +1009,7 @@ impl DiskoriaApp {
     /// window actually on screen (a `--minimized` tray-only start draws a hidden
     /// window — prompting there would be invisible). When the user later opens
     /// the window from the tray it becomes visible and the check runs then.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     fn maybe_start_auto_update_check(&mut self, ctx: &egui::Context) {
         // A capture run must not reach the network, and an update box appearing
         // mid-screenshot would land in the wiki.
@@ -1026,7 +1032,7 @@ impl DiskoriaApp {
     /// Download an installer in the background and stage it. Shared by the
     /// automatic path (which downloads without asking) and the manual
     /// "Download" confirm.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     fn start_update_download(&mut self, ctx: &egui::Context, url: &str) {
         // Name must keep the `setup` marker for installer assets — the apply
         // step tells installer from portable exe by filename alone (KI-22).
@@ -1034,7 +1040,16 @@ impl DiskoriaApp {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
+        #[cfg(windows)]
         let dest = std::env::temp_dir().join(crate::update::update_temp_file_name(url, nonce));
+        // Linux: stage next to the running binary — the apply step is an
+        // atomic same-filesystem rename over current_exe.
+        #[cfg(not(windows))]
+        let dest = std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_else(std::env::temp_dir)
+            .join(crate::update::update_temp_file_name(url, nonce));
         let url = url.to_string();
         let (tx, rx) = mpsc::channel();
         self.update_download_rx = Some(rx);
@@ -1047,7 +1062,7 @@ impl DiskoriaApp {
         });
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     fn poll_update_check(&mut self, ctx: &egui::Context) {
         let recv = {
             let Some(rx) = &self.update_check_rx else {
@@ -1105,7 +1120,7 @@ impl DiskoriaApp {
         }
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     fn poll_update_download(&mut self, ctx: &egui::Context) {
         let recv = {
             let Some(rx) = &self.update_download_rx else {
@@ -1122,6 +1137,7 @@ impl DiskoriaApp {
                     .and_then(|s| s.to_str())
                     .unwrap_or("")
                     .to_ascii_lowercase();
+                #[cfg(windows)]
                 if name.contains("setup") && name.ends_with(".exe") {
                     self.shared.stage_update(path);
                     self.staged_update_version =
@@ -1151,6 +1167,18 @@ impl DiskoriaApp {
                             .to_string();
                     ctx.request_repaint();
                 }
+                // Linux: always stage and ask "now or on close" — a bare
+                // binary swap is cheap either way, and the modal is the
+                // decision point the user opted into.
+                #[cfg(not(windows))]
+                {
+                    let _ = name;
+                    self.shared.stage_update(path);
+                    self.staged_update_version =
+                        std::mem::take(&mut self.pending_update_version);
+                    self.show_update_staged_modal = true;
+                    ctx.request_repaint();
+                }
             }
             Ok(Err(e)) => {
                 self.update_download_rx = None;
@@ -1172,7 +1200,7 @@ impl DiskoriaApp {
     /// staged. Applying it now would tear down the process, so while a test is
     /// running the only option is to let it install on exit — interrupting a
     /// destructive write+verify mid-pass leaves the drive in an unknown state.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     fn draw_update_staged_modal(&mut self, ctx: &egui::Context, dark: bool) {
         let t = Theme::new(dark, self.shared.accent_color());
         let version = self.staged_update_version.clone();
@@ -1235,17 +1263,28 @@ impl DiskoriaApp {
             }
             Some(ModalConfirmResult::Confirm) => {
                 self.show_update_staged_modal = false;
-                // Take it so the exit hook doesn't launch a second installer.
-                if let Some(installer) = self.shared.take_staged_update() {
+                // Take it so the exit hook doesn't apply a second copy.
+                if let Some(staged) = self.shared.take_staged_update() {
                     self.cancel_all_tests();
-                    crate::update::spawn_run_installer_and_exit(&installer);
+                    #[cfg(windows)]
+                    crate::update::spawn_run_installer_and_exit(&staged);
+                    #[cfg(target_os = "linux")]
+                    if let Ok(exe) = std::env::current_exe() {
+                        if let Err(e) =
+                            crate::update::apply_update_now_and_restart(&staged, &exe)
+                        {
+                            self.show_update_alert = true;
+                            self.update_alert_title = "Update failed".to_string();
+                            self.update_alert_body = e;
+                        }
+                    }
                 }
             }
             None => {}
         }
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     fn draw_update_alert(&mut self, ctx: &egui::Context, dark: bool) {
         let t = Theme::new(dark, self.shared.accent_color());
         let title = self.update_alert_title.clone();
@@ -1273,7 +1312,7 @@ impl DiskoriaApp {
         }
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     fn draw_update_busy_overlay(&self, ctx: &egui::Context, dark: bool) {
         if !self.update_check_busy && !self.update_download_busy {
             return;
@@ -1794,7 +1833,7 @@ impl DiskoriaApp {
             tab_cycle_slots(ctx, &mut self.modal_two_button_focus, 2);
             self.destructive_start_confirm_focus = None;
             self.destructive_stop_confirm_focus = None;
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             {
                 self.update_staged_focus = None;
                 self.update_alert_focus = None;
@@ -1809,7 +1848,7 @@ impl DiskoriaApp {
             }
             tab_cycle_slots(ctx, &mut self.destructive_start_confirm_focus, 2);
             self.destructive_stop_confirm_focus = None;
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             {
                 self.update_staged_focus = None;
                 self.update_alert_focus = None;
@@ -1823,7 +1862,7 @@ impl DiskoriaApp {
                 self.destructive_stop_confirm_focus = Some(0);
             }
             tab_cycle_slots(ctx, &mut self.destructive_stop_confirm_focus, 2);
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             {
                 self.update_staged_focus = None;
                 self.update_alert_focus = None;
@@ -1832,7 +1871,7 @@ impl DiskoriaApp {
         }
         self.destructive_stop_confirm_focus = None;
 
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         {
             if self.pending_chart_export.is_some() {
                 if self.chart_export_focus.is_none() {
@@ -3390,18 +3429,19 @@ impl DiskoriaApp {
     }
 
     fn settings_updates_slot_count(&self) -> usize {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         {
-            // Portable builds have no update path, so the row is shown disabled
-            // and skipped in the tab order rather than trapping focus on a
-            // control that cannot do anything.
-            if crate::install_mode::current().is_installed() {
+            // A Windows portable build has no update path, so the row is shown
+            // disabled and skipped in the tab order rather than trapping focus
+            // on a control that cannot do anything. Everywhere else the
+            // support check itself decides.
+            if self.updates_supported() {
                 1
             } else {
                 0
             }
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "linux")))]
         {
             0
         }
@@ -3503,7 +3543,7 @@ impl DiskoriaApp {
         let snap = self.shared.settings_snapshot();
         match snap.accent_source {
             AccentSourcePref::Windows => {
-                let os_accent = windows_accent_color();
+                let os_accent = os_accent_color();
                 self.shared.set_accent_os_available(os_accent.is_some());
                 self.shared
                     .set_accent_color(os_accent.unwrap_or(ACCENT_PALETTE[0]));
@@ -3544,7 +3584,7 @@ impl DiskoriaApp {
                 return;
             }
             self.shared.set_accent_last_poll(Some(now));
-            let os_accent = windows_accent_color();
+            let os_accent = os_accent_color();
             self.shared.set_accent_os_available(os_accent.is_some());
             if let Some(c) = os_accent {
                 if c != self.shared.accent_color() {
@@ -3668,13 +3708,13 @@ impl DiskoriaApp {
         label: &str,
     ) {
         let is_active = self.active_nav == index;
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         let update_nav_block = self.pending_chart_export.is_some()
             || self.show_update_staged_modal
             || self.show_update_alert
             || self.update_check_busy
             || self.update_download_busy;
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "linux")))]
         let update_nav_block = false;
         let can_select = !self.show_stop_test_confirm
             && !update_nav_block
@@ -3792,7 +3832,7 @@ impl DiskoriaApp {
                                 self.draw_settings_test_overlay(ui, &t, margin, content_x, content_w);
                                 #[cfg(windows)]
                                 self.draw_settings_window(ui, &t, margin, content_x, content_w);
-                                #[cfg(windows)]
+                                #[cfg(any(windows, target_os = "linux"))]
                                 self.draw_settings_updates(ui, &t, margin, content_x, content_w);
                                 #[cfg(any(windows, target_os = "linux"))]
                                 self.draw_settings_startup(ui, &t, margin, content_x, content_w);
@@ -4430,7 +4470,10 @@ impl DiskoriaApp {
         );
 
         let accent_options = [
-            ("Windows accent", AccentSourcePref::Windows),
+            (
+                if cfg!(windows) { "Windows accent" } else { "System accent" },
+                AccentSourcePref::Windows,
+            ),
             ("Palette", AccentSourcePref::Palette),
         ];
         let accent_seg_w = accent_seg_rect.width() / 2.0;
@@ -5081,7 +5124,7 @@ impl DiskoriaApp {
         // Publish (or clear) this window's "drive under test" so other windows
         // can gray it out. Tests pin `selected_drive`, so it names the target.
         self.publish_test_lock();
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         {
             self.maybe_start_auto_update_check(ctx);
             self.poll_update_check(ctx);
@@ -5103,13 +5146,13 @@ impl DiskoriaApp {
             ctx.request_repaint();
         }
         self.alt_pressed = alt_pressed(ctx);
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         let update_blocks_shortcuts = self.pending_chart_export.is_some()
             || self.show_update_staged_modal
             || self.show_update_alert
             || self.update_check_busy
             || self.update_download_busy;
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "linux")))]
         let update_blocks_shortcuts = false;
         if !self.any_test_running()
             && self.test_result_overlay.is_none()
@@ -5191,6 +5234,11 @@ impl DiskoriaApp {
         let system_dark = match ctx.system_theme() {
             Some(egui::Theme::Dark) => true,
             Some(egui::Theme::Light) => false,
+            // winit reports no system theme on X11/Wayland — ask the XDG
+            // settings portal instead (cached; see theme::os_prefers_dark).
+            #[cfg(target_os = "linux")]
+            None => crate::theme::os_prefers_dark().unwrap_or(false),
+            #[cfg(not(target_os = "linux"))]
             None => false,
         };
         // `--demo-theme` overrides both the OS and the saved preference, so a
@@ -5235,7 +5283,7 @@ impl DiskoriaApp {
         if self.pending_chart_export.is_some() {
             self.draw_chart_export_confirm(ctx, dark);
         }
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         {
             if self.show_update_staged_modal {
                 self.draw_update_staged_modal(ctx, dark);
@@ -5451,10 +5499,11 @@ impl DiskoriaApp {
 
     // ── Updates settings section ──────────────────────────────────────────────
 
-    /// Single-row "Updates" card. On a portable build the toggle is inert and
-    /// greyed with an explanation — an update applies the Inno installer, which
-    /// a portable exe has no business running (known-issues KI-23).
-    #[cfg(windows)]
+    /// Single-row "Updates" card. On a Windows portable build the toggle is
+    /// inert and greyed with an explanation — an update applies the Inno
+    /// installer, which a portable exe has no business running (KI-23). The
+    /// Linux portable binary self-replaces, so it is live there.
+    #[cfg(any(windows, target_os = "linux"))]
     fn draw_settings_updates(
         &mut self,
         ui: &mut egui::Ui,
@@ -5519,7 +5568,7 @@ impl DiskoriaApp {
                 ui.painter().rect_stroke(
                     toggle_rect.expand(3.0),
                     14.0,
-                    Stroke::new(2.0, t.accent),
+                    Stroke::new(2.0_f32, t.accent),
                     StrokeKind::Outside,
                 );
             }
