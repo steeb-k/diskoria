@@ -1771,6 +1771,50 @@ for prim in clipped {
                     continue;
                 }
 
+                // Flat triangle: one colour and one UV at every vertex, which
+                // is what egui emits for panel fills, card backgrounds, button
+                // bodies — the large areas. Then the texture sample and the
+                // blend inputs are the same for every pixel, so they are
+                // computed once here instead of per pixel. Coverage is still
+                // decided per pixel by the untouched barycentric test below,
+                // so the rasterized shape is identical.
+                let flat = v0.color == v1.color
+                    && v1.color == v2.color
+                    && v0.uv == v1.uv
+                    && v1.uv == v2.uv;
+                let mut flat_src: Option<(f32, f32, f32, f32)> = None;
+                let mut flat_opaque: Option<u32> = None;
+                if flat {
+                    let (vr, vg, vb, va) = (
+                        v0.color.r() as f32,
+                        v0.color.g() as f32,
+                        v0.color.b() as f32,
+                        v0.color.a() as f32,
+                    );
+                    let (r, g, b, a) = if is_font_tex {
+                        let cov = tex_mgr.sample_alpha_f(v0.uv.x, v0.uv.y);
+                        (vr, vg, vb, va / 255.0 * cov)
+                    } else {
+                        let [tr, tg, tb, ta] =
+                            tex_mgr.sample_rgba(mesh.texture_id, v0.uv.x, v0.uv.y);
+                        (tr * vr, tg * vg, tb * vb, ta * va / 255.0)
+                    };
+                    let a = a.clamp(0.0, 1.0);
+                    if a < 1.0 / 255.0 {
+                        // Fully transparent everywhere — nothing to draw.
+                        continue;
+                    }
+                    if a >= 1.0 {
+                        flat_opaque = Some(to_bgra(
+                            (r + 0.5) as u8,
+                            (g + 0.5) as u8,
+                            (b + 0.5) as u8,
+                            255,
+                        ));
+                    }
+                    flat_src = Some((r, g, b, a));
+                }
+
                 tested += ((y1 - y0 + 1).max(0) as u64) * ((x1 - x0 + 1).max(0) as u64);
                 for py in y0..=y1 {
                     for px in x0..=x1 {
@@ -1785,6 +1829,17 @@ for prim in clipped {
                             continue;
                         }
 
+                        // Flat triangle: colour, sample and alpha were all
+                        // resolved once above.
+                        if let Some(packed) = flat_opaque {
+                            let idx = ((py - band_y0) as u32 * w + px as u32) as usize;
+                            band[idx] = packed;
+                            continue;
+                        }
+
+                        let (r, g, b, final_a) = if let Some(src) = flat_src {
+                            src
+                        } else {
                         let uv_x = v0.uv.x * w0 + v1.uv.x * w1 + v2.uv.x * w2;
                         let uv_y = v0.uv.y * w0 + v1.uv.y * w1 + v2.uv.y * w2;
 
@@ -1808,6 +1863,8 @@ for prim in clipped {
                         // that is NaN — which casts to 0 and paints the black
                         // speck this whole epsilon exists to remove.
                         let final_a = final_a.clamp(0.0, 1.0);
+                            (r, g, b, final_a)
+                        };
                         if final_a < 1.0 / 255.0 {
                             continue;
                         }
