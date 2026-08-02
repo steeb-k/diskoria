@@ -160,7 +160,8 @@ pub struct DiskoriaApp {
     /// Exposed so the softbuffer renderer can fill the background the right colour.
     pub dark: bool,
     /// Win32 HWND — used to query `IsZoomed` for reliable maximized state.
-    #[cfg(windows)]
+    /// Always 0 off-Windows, where `chrome::is_maximized` falls back to egui's
+    /// viewport state instead.
     hwnd: isize,
     /// Per-window draft buffer for the custom-accent hex TextEdit.  Committed
     /// to `shared.settings.accent_custom_hex` on `lost_focus`; otherwise this
@@ -490,7 +491,6 @@ impl DiskoriaApp {
 
         let mut app = Self {
             dark,
-            #[cfg(windows)]
             hwnd,
             accent_custom_hex: s.accent_custom_hex.clone(),
             accent_custom_te_id: None,
@@ -5123,6 +5123,12 @@ impl DiskoriaApp {
     pub fn draw(&mut self, ctx: &egui::Context) {
         self.scroll_focus_frames = self.scroll_focus_frames.saturating_sub(1);
 
+        // Frameless-window resize borders. Windows handles this in the
+        // WM_NCHITTEST subclass (chrome::install_win32_resize); everywhere
+        // else the hit-test is egui-side and starts a compositor resize.
+        #[cfg(not(windows))]
+        crate::chrome::handle_edge_resize(ctx);
+
         // Sync monitor-settings editing drafts from shared BEFORE any code
         // that reads them (notably start_monitor_if_not_running via
         // poll_drive_enumeration).  This ensures another window's settings
@@ -5240,7 +5246,6 @@ impl DiskoriaApp {
         // Intentionally outside the shortcut guard above so it still
         // works while a test is running or a modal is open; opening a
         // new window has no interaction with in-flight test state.
-        #[cfg(windows)]
         if ctx.input(|i| {
             i.modifiers.ctrl
                 && !i.modifiers.shift
@@ -5276,17 +5281,12 @@ impl DiskoriaApp {
 
         let t = Theme::new(dark, accent);
         // Same paint order as copynaut: titlebar → sidebar → content (content last in default layer).
-        #[cfg(windows)]
-        {
-            if draw_titlebar(ctx, &t, self.hwnd) {
-                let _ = self
-                    .shared
-                    .event_proxy
-                    .send_event(crate::UserEvent::OpenNewWindow);
-            }
+        if draw_titlebar(ctx, &t, self.hwnd) {
+            let _ = self
+                .shared
+                .event_proxy
+                .send_event(crate::UserEvent::OpenNewWindow);
         }
-        #[cfg(not(windows))]
-        let _ = draw_titlebar(ctx, &t, 0);
         self.draw_sidebar(ctx, dark);
         self.draw_central(ctx, dark);
         self.apply_health_page_focus_bindings(ctx);

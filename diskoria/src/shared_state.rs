@@ -156,7 +156,6 @@ impl SharedAppState {
     /// `App::user_event` cancels the thread so the next draw can respawn
     /// it with fresh thresholds.
     pub fn update_settings<R>(&self, f: impl FnOnce(&mut Settings) -> R) -> R {
-        #[cfg_attr(not(windows), allow(unused_variables))]
         let (r, restart_monitor) = {
             let mut guard = self.settings.write().expect("settings poisoned");
             let before = guard.clone();
@@ -169,12 +168,9 @@ impl SharedAppState {
             app_settings::save_settings(&guard);
             (r, restart_monitor)
         };
-        #[cfg(windows)]
-        {
-            let _ = self
-                .event_proxy
-                .send_event(crate::UserEvent::SettingsChanged { restart_monitor });
-        }
+        let _ = self
+            .event_proxy
+            .send_event(crate::UserEvent::SettingsChanged { restart_monitor });
         r
     }
 

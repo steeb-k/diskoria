@@ -31,6 +31,8 @@ pub mod speed_test;
 pub mod destructive_test;
 mod shared_state;
 mod shortcuts;
+#[cfg(unix)]
+mod single_instance;
 mod smart_health;
 pub mod smart_reader;
 mod smart_health_page;
@@ -82,21 +84,24 @@ pub enum UserEvent {
     DriveAlert { serial: String, is_critical: bool },
     /// Graceful shutdown requested (from tray context menu "Quit").
     QuitRequested,
-    /// Another exe launch signaled us via the single-instance named event.
-    /// Raise the main window through winit so visibility state stays in sync.
-    #[cfg(windows)]
+    /// Another exe launch signaled us via the single-instance channel (a named
+    /// event on Windows, the unix socket elsewhere). Raise the main window
+    /// through winit so visibility state stays in sync.
     ShowWindowRequested,
-    /// Open an additional Diskoria window in the primary process.  Sent
-    /// by the in-app Ctrl+N shortcut (step 5) and — once implemented —
-    /// the tray "New Window" menu item (step 9) and the secondary-exe
-    /// new-window path (step 8).
-    #[cfg(windows)]
+    /// A second launch connected to the unix single-instance socket. The
+    /// handler decides raise-vs-new-window from its own renderer state —
+    /// Windows makes that call in the *secondary* process via the shared
+    /// visibility flag instead, and pulses one of two named events.
+    #[cfg(unix)]
+    SecondLaunch,
+    /// Open an additional Diskoria window in the primary process.  Sent by the
+    /// in-app Ctrl+N shortcut, the tray "New Window" menu item, and the
+    /// secondary-exe new-window path.
     OpenNewWindow,
     /// Settings changed in some window.  Every renderer redraws so the
     /// next frame picks up the new shared values.  If `restart_monitor`
     /// is true, also tear down the monitor thread so the next draw
     /// respawns it with fresh thresholds.
-    #[cfg(windows)]
     SettingsChanged { restart_monitor: bool },
     /// egui requested a repaint from a background thread or animation.
     /// Forwarded by each context's repaint callback to wake the winit loop,
@@ -244,6 +249,42 @@ impl Renderer {
                         // up->down transition egui can't detect a new drag, so
                         // the window becomes undraggable after the first move.
                         // Synthesize the release so egui ends the interaction.
+                        let pos = self
+                            .egui_ctx
+                            .input(|i| i.pointer.latest_pos())
+                            .unwrap_or(egui::Pos2::ZERO);
+                        self.egui_state.egui_input_mut().events.push(
+                            egui::Event::PointerButton {
+                                pos,
+                                button: egui::PointerButton::Primary,
+                                pressed: false,
+                                modifiers: egui::Modifiers::default(),
+                            },
+                        );
+                        self.window.request_redraw();
+                    }
+                    // Sent by `chrome::handle_edge_resize` (the non-Windows
+                    // resize path; Windows resizes via the WM_NCHITTEST
+                    // subclass and never emits this). The compositor-driven
+                    // resize loop swallows the release just like drag_window
+                    // (KI-2), so synthesize it the same way.
+                    #[cfg(not(windows))]
+                    egui::ViewportCommand::BeginResize(dir) => {
+                        use egui::viewport::ResizeDirection as Erd;
+                        use winit::window::ResizeDirection as Wrd;
+                        let wdir = match dir {
+                            Erd::North => Wrd::North,
+                            Erd::South => Wrd::South,
+                            Erd::East => Wrd::East,
+                            Erd::West => Wrd::West,
+                            Erd::NorthEast => Wrd::NorthEast,
+                            Erd::NorthWest => Wrd::NorthWest,
+                            Erd::SouthEast => Wrd::SouthEast,
+                            Erd::SouthWest => Wrd::SouthWest,
+                        };
+                        if let Err(e) = self.window.drag_resize_window(wdir) {
+                            log::debug!(target: "diskoria", "drag_resize_window: {e}");
+                        }
                         let pos = self
                             .egui_ctx
                             .input(|i| i.pointer.latest_pos())
@@ -454,6 +495,21 @@ fn raise_window(window: &winit::window::Window) {
             }
         }
     }
+}
+
+/// Show and bring a window to the foreground, best-effort.
+///
+/// On X11 `focus_window()` maps to `_NET_ACTIVE_WINDOW` and generally works;
+/// Wayland compositors enforce focus-stealing prevention with no reliable
+/// escape hatch (winit's xdg-activation support needs a token we don't have
+/// from a plain second launch), so there `request_user_attention` at least
+/// pulses the taskbar/dock entry.
+#[cfg(not(windows))]
+fn raise_window(window: &winit::window::Window) {
+    window.set_visible(true);
+    window.set_minimized(false);
+    window.focus_window();
+    window.request_user_attention(Some(winit::window::UserAttentionType::Informational));
 }
 
 // ── winit ApplicationHandler ──────────────────────────────────────────────────
@@ -756,30 +812,47 @@ impl ApplicationHandler<UserEvent> for App {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
-            #[cfg(windows)]
             UserEvent::ShowWindowRequested => {
                 for r in self.renderers.values() {
                     raise_window(&r.window);
                 }
+                #[cfg(windows)]
                 self.refresh_any_visible_flag();
             }
-            #[cfg(windows)]
+            #[cfg(unix)]
+            UserEvent::SecondLaunch => {
+                // Same policy as Windows: a visible instance gets a second
+                // window; a hidden (tray-only) or window-less one is raised.
+                let any_visible = self
+                    .renderers
+                    .values()
+                    .any(|r| r.window.is_visible().unwrap_or(true));
+                let follow_up = if any_visible && !self.renderers.is_empty() {
+                    UserEvent::OpenNewWindow
+                } else {
+                    UserEvent::ShowWindowRequested
+                };
+                self.user_event(event_loop, follow_up);
+            }
             UserEvent::OpenNewWindow => {
+                #[cfg_attr(not(windows), allow(unused_mut))]
                 let mut renderer = Renderer::new(event_loop, self.shared.clone());
+                #[cfg(windows)]
                 if self.shared.pro_edition {
                     renderer.app.event_proxy = Some(self.proxy.clone());
                 }
                 raise_window(&renderer.window);
                 let id = renderer.window.id();
                 self.renderers.insert(id, renderer);
+                #[cfg(windows)]
                 self.refresh_any_visible_flag();
             }
-            #[cfg(windows)]
             UserEvent::SettingsChanged { restart_monitor } => {
                 if restart_monitor {
                     // Drop the monitor thread; the next draw in any window
                     // calls start_monitor_if_not_running and respawns it
                     // with the fresh thresholds.
+                    #[cfg(windows)]
                     self.shared.cancel_monitor();
                 }
                 for r in self.renderers.values() {
@@ -1385,8 +1458,8 @@ pub fn run() {
     }
 
     // Auto-start launches Diskoria with `--minimized` (via the logon scheduled
-    // task) so it comes up tray-only.
-    #[cfg(windows)]
+    // task on Windows / the autostart .desktop entry on Linux) so it comes up
+    // tray-only.
     let start_minimized = std::env::args().skip(1).any(|a| a == "--minimized");
 
     // Skip the single-instance guard under smoke — and under demo seeding, so a
@@ -1395,6 +1468,15 @@ pub fn run() {
     #[cfg(windows)]
     let _single_instance_mutex = (smoke_remaining.is_none() && !demo::seeding())
         .then(|| acquire_single_instance_mutex(start_minimized));
+    // Unix flavour: binding the socket claims primary; a connect-to-existing
+    // hands off and exits inside `acquire`. The listener starts once the event
+    // loop proxy exists, below.
+    #[cfg(unix)]
+    let single_instance = (smoke_remaining.is_none() && !demo::seeding())
+        .then(|| single_instance::acquire(start_minimized))
+        .flatten();
+    #[cfg(not(any(windows, unix)))]
+    let _ = start_minimized;
 
     // `--demo-toast`: fire one sample notification so the toast can be
     // photographed. Backgrounded because WinRT needs a COM MTA context.
@@ -1419,6 +1501,9 @@ pub fn run() {
     let _show_window_event = spawn_show_window_watcher(proxy.clone());
     #[cfg(windows)]
     let _new_window_event = spawn_new_window_watcher(proxy.clone());
+    // Serve unix activation requests; the guard unlinks the socket on drop.
+    #[cfg(unix)]
+    let _single_instance_guard = single_instance.map(|a| a.spawn(proxy.clone()));
 
     let mut app = App {
         renderers: HashMap::new(),

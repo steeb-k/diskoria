@@ -243,9 +243,6 @@ pub fn init() {
 
 /// True when demo seeding is on — background work that would hit real hardware
 /// or the network (SMART polling, the startup update check) is skipped.
-// Callers are `#[cfg(windows)]` today (single-instance skip); the Linux
-// port's shell phase starts using it.
-#[cfg_attr(not(windows), allow(dead_code))]
 pub fn seeding() -> bool {
     config().seeding()
 }

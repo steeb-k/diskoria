@@ -123,7 +123,15 @@ pub fn shell_open_uri(uri: &str) {
         .spawn();
 }
 
-#[cfg(not(windows))]
+/// Open a URI in the user's default handler. `xdg-open` is present on
+/// effectively every desktop Linux (part of xdg-utils, pulled in by all major
+/// DEs); if it's missing the click is a silent no-op, same as before.
+#[cfg(target_os = "linux")]
+pub fn shell_open_uri(uri: &str) {
+    let _ = std::process::Command::new("xdg-open").arg(uri).spawn();
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn shell_open_uri(_uri: &str) {}
 
 pub const INTERACT_MANUAL_FOCUS: Sense = Sense::CLICK;
@@ -333,6 +341,93 @@ pub fn install_win32_resize(hwnd: isize) {
     use windows_sys::Win32::Foundation::HWND;
     unsafe {
         win32_resize::install(hwnd as HWND);
+    }
+}
+
+/// Non-Windows counterpart of the `WM_NCHITTEST` subclass: an egui-side edge
+/// hit-test that starts a compositor-driven resize via
+/// `ViewportCommand::BeginResize` (mapped to `winit::Window::drag_resize_window`
+/// in `lib.rs`). Called at the top of `DiskoriaApp::draw` every frame.
+///
+/// Mirrors the Windows geometry: corners win over edges, the window-controls
+/// strip stays client (buttons clickable), and nothing hit-tests while
+/// maximized. Unlike Win32 there is no invisible non-client frame outside the
+/// window, so the resize band overlaps the outermost ~6 px of content; the
+/// layout's content margins keep real widgets out of it except for scrollbars,
+/// where the outermost sliver belonging to resize matches native frameless
+/// apps.
+#[cfg(not(windows))]
+pub fn handle_edge_resize(ctx: &egui::Context) {
+    use egui::viewport::ResizeDirection;
+    use egui::{CursorIcon, ViewportCommand};
+
+    // Same guard as the wndproc's `IsZoomed` check.
+    if ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
+        return;
+    }
+    let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) else {
+        return;
+    };
+    let rect = ctx.screen_rect();
+    // Logical px; SM_CXSIZEFRAME is ~8 physical on Windows, and the corner
+    // zones get extra reach so diagonals are easy to grab.
+    const BORDER: f32 = 6.0;
+    const CORNER: f32 = 14.0;
+
+    // Controls carve-out: keep the minimize/maximize/close strip clickable
+    // (the wndproc returns HTCLIENT here; see KI-1/KI-9).
+    if pos.y < crate::theme::TITLEBAR_H && pos.x >= rect.right() - crate::theme::CONTROLS_W {
+        return;
+    }
+
+    let on_left = pos.x <= rect.left() + BORDER;
+    let on_right = pos.x >= rect.right() - BORDER;
+    let on_top = pos.y <= rect.top() + BORDER;
+    let on_bottom = pos.y >= rect.bottom() - BORDER;
+    let near_left = pos.x <= rect.left() + CORNER;
+    let near_right = pos.x >= rect.right() - CORNER;
+    let near_top = pos.y <= rect.top() + CORNER;
+    let near_bottom = pos.y >= rect.bottom() - CORNER;
+
+    // Corners first (an edge hit within corner reach of a perpendicular edge
+    // counts as the corner), then plain edges.
+    let dir = if (on_left && near_bottom) || (on_bottom && near_left) {
+        Some(ResizeDirection::SouthWest)
+    } else if (on_right && near_bottom) || (on_bottom && near_right) {
+        Some(ResizeDirection::SouthEast)
+    } else if (on_left && near_top) || (on_top && near_left) {
+        Some(ResizeDirection::NorthWest)
+    } else if (on_right && near_top) || (on_top && near_right) {
+        Some(ResizeDirection::NorthEast)
+    } else if on_left {
+        Some(ResizeDirection::West)
+    } else if on_right {
+        Some(ResizeDirection::East)
+    } else if on_top {
+        Some(ResizeDirection::North)
+    } else if on_bottom {
+        Some(ResizeDirection::South)
+    } else {
+        None
+    };
+
+    let Some(dir) = dir else { return };
+    ctx.output_mut(|o| {
+        o.cursor_icon = match dir {
+            ResizeDirection::North => CursorIcon::ResizeNorth,
+            ResizeDirection::South => CursorIcon::ResizeSouth,
+            ResizeDirection::East => CursorIcon::ResizeEast,
+            ResizeDirection::West => CursorIcon::ResizeWest,
+            ResizeDirection::NorthEast => CursorIcon::ResizeNorthEast,
+            ResizeDirection::NorthWest => CursorIcon::ResizeNorthWest,
+            ResizeDirection::SouthEast => CursorIcon::ResizeSouthEast,
+            ResizeDirection::SouthWest => CursorIcon::ResizeSouthWest,
+        };
+    });
+    // The press must start the resize on its own frame — the compositor grab
+    // takes over immediately (Wayland requires an active pointer grab).
+    if ctx.input(|i| i.pointer.primary_pressed()) {
+        ctx.send_viewport_cmd(ViewportCommand::BeginResize(dir));
     }
 }
 
