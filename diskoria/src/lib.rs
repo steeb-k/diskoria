@@ -606,40 +606,30 @@ impl Renderer {
 
         let bg = Theme::new(self.app.dark, self.app.shared.accent_color()).bg_pri;
         let bg32 = to_bgra(bg.r(), bg.g(), bg.b(), 255);
-        // Draw straight into the surface buffer — the scratch `Vec` this used
-        // to fill and then `copy_from_slice` was a whole extra frame's worth of
-        // memory traffic (33 MB at 4K).
-        if self
-            .surface
-            .resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap())
-            .is_err()
-        {
-            return;
-        }
-        let Ok(mut buf) = self.surface.buffer_mut() else {
-            return;
-        };
+
 
         // What actually needs redrawing this frame.
         //
-        // Cost here is pixels visited, so a hover highlight repainting the
-        // whole window is the difference between 1 ms and a full frame — the
-        // gap widens with resolution, which is why this exists at all.
+        // Worked out *before* touching the surface on purpose: acquiring a
+        // buffer blocks until the compositor releases the back buffer
+        // (softbuffer's Wayland backend loops on `blocking_dispatch`), so a
+        // frame with nothing to draw must not ask for one — otherwise an idle
+        // window takes a Wayland round trip thousands of times a second, on the
+        // event-loop thread, which is what froze every window during a sector
+        // scan (KI-42).
         let prints: Vec<PrimPrint> = clipped
             .iter()
             .map(|p| prim_print(p, ppp, w, h))
             .collect();
 
         let full_rect = RectPx { x0: 0, y0: 0, x1: w as i32 - 1, y1: h as i32 - 1 };
-        let buffer_age = buf.age();
         let size_changed = self.last_size != (w, h);
         let bg_changed = self.last_bg != bg32;
-        // Only a *replaced* texture can change pixels that are already on
-        // screen, and that cannot be diffed from the meshes — repaint
-        // everything. egui appends newly rasterized glyphs to the font atlas
-        // most frames (`pos: Some(..)`), which leaves existing glyphs exactly
-        // where they were; any mesh that starts using them has a changed
-        // fingerprint and is damaged on its own account.
+        // Only a *replaced* texture can change pixels already on screen, and
+        // that cannot be diffed from the meshes — repaint everything. egui
+        // appends newly rasterized glyphs to the font atlas most frames
+        // (`pos: Some(..)`), leaving existing glyphs where they were; any mesh
+        // that starts using them has a changed fingerprint of its own.
         let textures_changed = full_output
             .textures_delta
             .set
@@ -647,11 +637,10 @@ impl Renderer {
             .any(|(_, delta)| delta.pos.is_none())
             || !full_output.textures_delta.free.is_empty();
         let forced_flag = self.force_full_repaint;
-        let force_full = self.force_full_repaint
+        let force_full = forced_flag
             || size_changed
             || bg_changed
             || textures_changed
-            || buffer_age == 0
             || force_full_repaints();
 
         // This frame's own changes. History holds *these*, not the rectangles
@@ -670,39 +659,61 @@ impl Renderer {
         };
         let raw_damage = own_damage.len();
 
-        // The buffer handed to us is `age` frames old, so it also needs
-        // whatever the frames in between changed.
-        let mut to_draw = own_damage.clone();
-        for past in self
-            .damage_history
-            .iter()
-            .take(buffer_age.saturating_sub(1) as usize)
-        {
-            to_draw.extend_from_slice(past);
-        }
-        let damage = merge_damage(to_draw);
-
         self.prev_prims = prints;
         self.last_size = (w, h);
         self.last_bg = bg32;
         self.force_full_repaint = false;
+
+        if own_damage.is_empty() {
+            // Nothing changed: leave the surface alone entirely, and do *not*
+            // record a history entry. `Buffer::age` counts presents, so the
+            // history has to hold one entry per frame actually drawn —
+            // recording skipped frames pushed the real ones out of reach of
+            // the replay and left most of the window stale (caught by
+            // DISKORIA_DAMAGE_VERIFY).
+            if stats {
+                log::info!(target: "diskoria::frame", "{w}x{h}: nothing damaged, frame skipped");
+            }
+            return;
+        }
+
+        if self
+            .surface
+            .resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap())
+            .is_err()
+        {
+            return;
+        }
+        let Ok(mut buf) = self.surface.buffer_mut() else {
+            return;
+        };
+
+        // The buffer handed back is `age` frames old, so it also needs whatever
+        // the frames in between changed; age 0 means undefined contents.
+        let buffer_age = buf.age();
+        let mut to_draw = own_damage.clone();
+        if buffer_age == 0 {
+            to_draw.push(full_rect);
+        } else {
+            for past in self
+                .damage_history
+                .iter()
+                .take(buffer_age.saturating_sub(1) as usize)
+            {
+                to_draw.extend_from_slice(past);
+            }
+        }
+        let damage = merge_damage(to_draw);
+
         self.damage_history.insert(0, own_damage);
         self.damage_history.truncate(4);
 
-        if stats && force_full {
+        if stats && (force_full || buffer_age == 0) {
             log::info!(
                 target: "diskoria::frame",
                 "full repaint: first/forced={forced_flag} resized={size_changed} \
                  theme={bg_changed} textures={textures_changed} buffer_age={buffer_age}"
             );
-        }
-
-        if damage.is_empty() {
-            // Nothing changed and the buffer still holds the last frame.
-            if stats {
-                log::info!(target: "diskoria::frame", "{w}x{h}: nothing damaged, frame skipped");
-            }
-            return;
         }
 
         // Rasterize in horizontal bands, one rayon task each, restricted to the
@@ -801,6 +812,21 @@ impl Renderer {
             })
             .collect();
         let _ = buf.present_with_damage(&present_rects);
+
+        let frame_total = t_start.elapsed();
+        // A frame this long is not slow rendering, it is the UI thread blocked
+        // on something it should not be touching — a lock, a subprocess, a
+        // disk read (KI-42). Say so rather than leaving it to look like a hang.
+        if frame_total > std::time::Duration::from_millis(250) {
+            log::warn!(
+                target: "diskoria",
+                "UI thread stalled for {:.0} ms in one frame (ui {:.0} ms, rasterize {:.0} ms) \
+                 — something blocking is running on the event loop",
+                frame_total.as_secs_f64() * 1000.0,
+                t_ui.as_secs_f64() * 1000.0,
+                t_raster.as_secs_f64() * 1000.0,
+            );
+        }
 
         if stats {
             let t_present = t_before_present.elapsed();
@@ -926,13 +952,14 @@ fn raise_window(window: &winit::window::Window) {
     }
 
     window.focus_window();
-    // Wayland ignores the line above; ask the compositor's own IPC before
-    // settling for an attention hint.
-    #[cfg(target_os = "linux")]
-    if crate::compositor_focus::focus_own_window() {
-        return;
-    }
     window.request_user_attention(Some(winit::window::UserAttentionType::Informational));
+    // Wayland ignores `focus_window`; ask the compositor's own IPC instead.
+    // Off-thread because it spawns a helper, and the UI thread must never wait
+    // on an exec (KI-42).
+    #[cfg(target_os = "linux")]
+    std::thread::spawn(|| {
+        crate::compositor_focus::focus_own_window();
+    });
 }
 
 
@@ -2061,6 +2088,11 @@ pub fn run() {
             crate::toast::send_toast(&title, &body);
         });
     }
+
+    // Warm the desktop-appearance cache and keep it fresh off-thread; the UI
+    // must never block on a subprocess (KI-42).
+    #[cfg(target_os = "linux")]
+    crate::theme::spawn_portal_refresh();
 
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()

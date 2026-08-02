@@ -189,6 +189,38 @@ history data yet" until the whole app was restarted. `ensure_history_loaded`
 now fills the map once per window from the shared DB (and seeds the latest
 snapshot so the card is populated before the next monitor cycle).
 
+### KI-42 — UI froze during a sector scan; blocking work on the event-loop thread `bug`
+Reported as: the GUI freezes partway through a sector read, worker threads keep
+logging progress, *both* windows freeze together, and the display catches up in
+one burst. Both windows freezing at once means the event-loop thread is blocked,
+not the rendering.
+
+Two blocking calls were on that thread, both introduced by the Linux port:
+
+1. **`Surface::buffer_mut()` on every frame.** softbuffer's Wayland backend is
+   double buffered and loops on `blocking_dispatch` until the compositor
+   releases the back buffer, so acquiring is a blocking Wayland round trip. The
+   paint path acquired the buffer *before* deciding whether anything had
+   changed, so tens of thousands of no-op frames a second each took one — worst
+   while a test runs, which is when repaints are continuous. Damage is now
+   computed first and the surface is touched only when there is something to
+   draw.
+2. **XDG portal reads by subprocess.** The theme/accent poll ran `dbus-send`
+   from `draw()` and waited for it. An `exec` has to fault a binary in off disk,
+   which a sector scan of the boot drive is well placed to starve. Those reads
+   now happen on a background thread and the UI only ever reads the cached
+   value; the tray's compositor-IPC focus call was moved off-thread for the same
+   reason.
+
+A frame taking over 250 ms now logs a warning naming the phase, so this class of
+bug announces itself instead of looking like a hang.
+
+Also fixed while verifying: `damage_history` recorded an entry per *paint
+attempt*, but `Buffer::age` counts *presents*, so once frames could be skipped
+the replay read empty entries instead of the frames actually drawn and left
+most of the window stale. `DISKORIA_DAMAGE_VERIFY=1` caught it (3.4 M pixels
+adrift); history now records only drawn frames.
+
 ## Resolved
 
 Condensed; see git history for full detail.

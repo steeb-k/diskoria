@@ -233,6 +233,7 @@ mod linux_portal {
 
     use egui::Color32;
 
+    /// How often the background worker re-reads the portal.
     const CACHE_FOR: Duration = Duration::from_secs(3);
 
     struct Cached {
@@ -289,14 +290,10 @@ mod linux_portal {
         Some(Color32::from_rgb(to8(r), to8(g), to8(b)))
     }
 
-    fn refresh_if_stale() {
-        let stale = {
-            let c = CACHE.lock().expect("portal cache poisoned");
-            c.read_at.is_none_or(|t| t.elapsed() > CACHE_FOR)
-        };
-        if !stale {
-            return;
-        }
+    /// Refresh the cache. **Blocks** — it spawns `dbus-send` — so this only
+    /// ever runs on the background worker or once at startup, never on the UI
+    /// thread.
+    fn refresh_blocking() {
         let prefers_dark = read_setting("color-scheme")
             .as_deref()
             .and_then(parse_color_scheme);
@@ -309,13 +306,37 @@ mod linux_portal {
         c.accent = accent;
     }
 
+    /// Read the portal once, then keep the cache fresh from a background
+    /// thread.
+    ///
+    /// Reading it inline was a UI-thread stall waiting for a subprocess: an
+    /// `exec` has to fault the binary in off disk, and a sector scan of the
+    /// boot drive starves exactly that, freezing every window for seconds
+    /// while the worker threads kept logging progress (KI-42). The UI now only
+    /// ever reads memory.
+    pub fn spawn_refresh_worker() {
+        static STARTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        STARTED.get_or_init(|| {
+            // One synchronous read before the window exists, so the very first
+            // frame already has the right theme.
+            refresh_blocking();
+            std::thread::Builder::new()
+                .name("diskoria-portal".into())
+                .spawn(|| loop {
+                    std::thread::sleep(CACHE_FOR);
+                    refresh_blocking();
+                })
+                .expect("spawn portal worker");
+        });
+    }
+
+    /// Non-blocking: whatever the worker last saw.
     pub fn prefers_dark() -> Option<bool> {
-        refresh_if_stale();
         CACHE.lock().expect("portal cache poisoned").prefers_dark
     }
 
+    /// Non-blocking: whatever the worker last saw.
     pub fn accent_color() -> Option<Color32> {
-        refresh_if_stale();
         CACHE.lock().expect("portal cache poisoned").accent
     }
 }
@@ -323,6 +344,13 @@ mod linux_portal {
 #[cfg(target_os = "linux")]
 pub fn os_accent_color() -> Option<Color32> {
     linux_portal::accent_color()
+}
+
+/// Start the background worker that keeps the desktop-appearance cache fresh.
+/// Call once at startup; every later read is a memory read.
+#[cfg(target_os = "linux")]
+pub fn spawn_portal_refresh() {
+    linux_portal::spawn_refresh_worker();
 }
 
 /// Linux only: the desktop's light/dark preference from the settings portal.
