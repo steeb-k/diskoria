@@ -2471,24 +2471,6 @@ impl DiskoriaApp {
     }
 
     fn poll_smart_health(&mut self, ctx: &egui::Context) {
-        #[cfg(not(windows))]
-        {
-            let _ = ctx;
-            if self.drives_loading || self.drives.is_empty() {
-                return;
-            }
-            let disk = self.drives[self.active_page_selected_drive_idx()].disk_number;
-            if self.smart_health_disk == Some(disk) {
-                return;
-            }
-            self.smart_health = Some(SmartHealth::Disabled);
-            self.smart_health_err = Some(
-                "Storage health reporting is only available on Windows.".to_string(),
-            );
-            self.smart_health_disk = Some(disk);
-        }
-
-        #[cfg(windows)]
         {
             if let Some(rx) = self.smart_health_rx.take() {
                 match rx.try_recv() {
@@ -2533,7 +2515,7 @@ impl DiskoriaApp {
             let disk = drive.disk_number;
 
             // `--demo-health` (implied by any demo run): canned verdict rather
-            // than a WMI query against an invented PNP ID.
+            // than a real health query against an invented device path.
             if crate::demo::config().health {
                 if self.smart_health_disk == Some(disk) {
                     return;

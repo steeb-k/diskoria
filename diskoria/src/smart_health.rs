@@ -1,8 +1,5 @@
 //! SMART / storage health summary for the selected physical disk (Windows WMI).
 
-// On Linux only `Disabled` is constructed until the port's SMART phase wires
-// up a real health verdict; the allow keeps that build warning-free.
-#[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, Clone)]
 pub enum SmartHealth {
     Healthy,
@@ -239,10 +236,61 @@ mod windows {
 #[cfg(windows)]
 pub use windows::query_smart_health;
 
-// `poll_smart_health` short-circuits before calling this on non-Windows, so
-// the stub is currently unreferenced there.
-#[cfg(not(windows))]
-#[allow(dead_code)]
+/// Linux: no WMI predict-fail source exists, so the verdict is derived from
+/// the same SMART data the Drive Health page shows — a failed ATA attribute,
+/// an NVMe critical-warning bit, or a UFS pre-EOL warning means `Failing`.
+/// `hw_id` is the resolved sysfs device path (the `pnp_device_id` slot).
+#[cfg(target_os = "linux")]
+pub fn query_smart_health(_disk_number: u32, hw_id: &str) -> Result<SmartHealth, String> {
+    use crate::smart_reader::{AttrStatus, SmartReport};
+
+    let name = std::path::Path::new(hw_id)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .ok_or_else(|| "No sysfs device path recorded for this drive.".to_string())?;
+    let device_path = format!("/dev/{name}");
+    let bus = crate::drive_enumeration::bus_from_syspath(hw_id);
+
+    match crate::smart_reader::query_smart_detail(&device_path, bus) {
+        SmartReport::Ata(d) => {
+            let reasons: Vec<String> = d
+                .attributes
+                .iter()
+                .filter(|a| a.status == AttrStatus::Failed)
+                .map(|a| format!("{} at/below threshold", a.name))
+                .collect();
+            if reasons.is_empty() {
+                Ok(SmartHealth::Healthy)
+            } else {
+                Ok(SmartHealth::Failing { reasons })
+            }
+        }
+        SmartReport::Nvme(d) => {
+            if d.critical_warning == 0 {
+                Ok(SmartHealth::Healthy)
+            } else {
+                Ok(SmartHealth::Failing {
+                    reasons: vec![format!(
+                        "NVMe critical warning 0x{:02X}",
+                        d.critical_warning
+                    )],
+                })
+            }
+        }
+        SmartReport::Ufs(d) => {
+            if d.pre_eol_info >= 0x02 {
+                Ok(SmartHealth::Failing {
+                    reasons: vec![format!("UFS pre-EOL level 0x{:02X}", d.pre_eol_info)],
+                })
+            } else {
+                Ok(SmartHealth::Healthy)
+            }
+        }
+        SmartReport::Unavailable { reason } => Err(reason),
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn query_smart_health(_disk_number: u32, _pnp_device_id: &str) -> Result<SmartHealth, String> {
-    Err("Storage health is only queried on Windows.".to_string())
+    Err("Storage health is not implemented on this platform.".to_string())
 }
