@@ -20,6 +20,7 @@ plotters-bitmap = "0.3"
 rand = "0.8"
 rfd = "0.15"
 pollster = "0.3"
+rayon = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }
 semver = "1"
 serde = { version = "1", features = ["derive"] }

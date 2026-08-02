@@ -122,6 +122,8 @@ pub enum UserEvent {
 /// tray responsive.
 const REPAINT_FRAME_CAP: std::time::Duration = std::time::Duration::from_millis(16);
 
+use rayon::prelude::*;
+
 use crate::tex_mgr::TextureManager;
 
 // ── Renderer ──────────────────────────────────────────────────────────────────
@@ -362,124 +364,35 @@ impl Renderer {
         let clipped = self.egui_ctx.tessellate(full_output.shapes, ppp);
         let t_tess = t_before_tess.elapsed();
         let t_before_raster = std::time::Instant::now();
-        // Pixels the rasterizer *visits*, counted per triangle so the metric
-        // itself costs nothing per pixel. Compared against the window area it
-        // gives the overdraw factor, which is what actually drives frame cost
-        // in a software renderer.
-        let mut px_tested: u64 = 0;
 
         let bg = Theme::new(self.app.dark, self.app.shared.accent_color()).bg_pri;
         let bg32 = to_bgra(bg.r(), bg.g(), bg.b(), 255);
-        let mut pixels: Vec<u32> = vec![bg32; (w * h) as usize];
+        // Allocated zeroed (the allocator can hand back lazily-zeroed pages)
+        // rather than pre-filled with the background: each band paints its own
+        // rows below, so the clear is parallel too.
+        let mut pixels: Vec<u32> = vec![0u32; (w * h) as usize];
 
-        for prim in &clipped {
-            let clip = prim.clip_rect;
-            let clip_x0 = (clip.min.x * ppp).floor() as i32;
-            let clip_y0 = (clip.min.y * ppp).floor() as i32;
-            let clip_x1 = (clip.max.x * ppp).ceil() as i32;
-            let clip_y1 = (clip.max.y * ppp).ceil() as i32;
-
-            if let egui::epaint::Primitive::Mesh(mesh) = &prim.primitive {
-                let verts = &mesh.vertices;
-                let indices = &mesh.indices;
-                let is_font_tex = mesh.texture_id == egui::TextureId::default();
-
-                let tri_count = indices.len() / 3;
-                for tri in 0..tri_count {
-                    let i0 = indices[tri * 3] as usize;
-                    let i1 = indices[tri * 3 + 1] as usize;
-                    let i2 = indices[tri * 3 + 2] as usize;
-                    if i0 >= verts.len() || i1 >= verts.len() || i2 >= verts.len() {
-                        continue;
-                    }
-                    let v0 = &verts[i0];
-                    let v1 = &verts[i1];
-                    let v2 = &verts[i2];
-
-                    let p0 = (v0.pos.x * ppp, v0.pos.y * ppp);
-                    let p1 = (v1.pos.x * ppp, v1.pos.y * ppp);
-                    let p2 = (v2.pos.x * ppp, v2.pos.y * ppp);
-
-                    let min_x = p0.0.min(p1.0).min(p2.0).floor() as i32;
-                    let min_y = p0.1.min(p1.1).min(p2.1).floor() as i32;
-                    let max_x = p0.0.max(p1.0).max(p2.0).ceil() as i32;
-                    let max_y = p0.1.max(p1.1).max(p2.1).ceil() as i32;
-
-                    let x0 = min_x.max(clip_x0).max(0);
-                    let y0 = min_y.max(clip_y0).max(0);
-                    let x1 = max_x.min(clip_x1).min(w as i32 - 1);
-                    let y1 = max_y.min(clip_y1).min(h as i32 - 1);
-
-                    let denom = (p1.1 - p2.1) * (p0.0 - p2.0) + (p2.0 - p1.0) * (p0.1 - p2.1);
-                    if denom.abs() < 0.001 {
-                        continue;
-                    }
-
-                    px_tested += ((y1 - y0 + 1).max(0) as u64) * ((x1 - x0 + 1).max(0) as u64);
-                    for py in y0..=y1 {
-                        for px in x0..=x1 {
-                            let fx = px as f32 + 0.5;
-                            let fy = py as f32 + 0.5;
-
-                            let w0 = ((p1.1 - p2.1) * (fx - p2.0) + (p2.0 - p1.0) * (fy - p2.1)) / denom;
-                            let w1 = ((p2.1 - p0.1) * (fx - p2.0) + (p0.0 - p2.0) * (fy - p2.1)) / denom;
-                            let w2 = 1.0 - w0 - w1;
-
-                            if w0 < -EDGE_EPS || w1 < -EDGE_EPS || w2 < -EDGE_EPS {
-                                continue;
-                            }
-
-                            let uv_x = v0.uv.x * w0 + v1.uv.x * w1 + v2.uv.x * w2;
-                            let uv_y = v0.uv.y * w0 + v1.uv.y * w1 + v2.uv.y * w2;
-
-                            let vr = v0.color.r() as f32 * w0 + v1.color.r() as f32 * w1 + v2.color.r() as f32 * w2;
-                            let vg = v0.color.g() as f32 * w0 + v1.color.g() as f32 * w1 + v2.color.g() as f32 * w2;
-                            let vb = v0.color.b() as f32 * w0 + v1.color.b() as f32 * w1 + v2.color.b() as f32 * w2;
-                            let va = v0.color.a() as f32 * w0 + v1.color.a() as f32 * w1 + v2.color.a() as f32 * w2;
-
-                            let (r, g, b, final_a) = if is_font_tex {
-                                let cov = self.tex_mgr.sample_alpha_f(uv_x, uv_y);
-                                (vr, vg, vb, va / 255.0 * cov)
-                            } else {
-                                let [tr, tg, tb, ta] = self.tex_mgr.sample_rgba(mesh.texture_id, uv_x, uv_y);
-                                (tr * vr, tg * vg, tb * vb, ta * va / 255.0)
-                            };
-
-                            // A pixel admitted by EDGE_EPS sits marginally outside
-                            // the triangle, so its interpolated alpha can land a
-                            // hair outside [0, 1]. Left alone, a negative `inv`
-                            // below can push the blend under zero, and `sqrt` of
-                            // that is NaN — which casts to 0 and paints the black
-                            // speck this whole epsilon exists to remove.
-                            let final_a = final_a.clamp(0.0, 1.0);
-                            if final_a < 1.0 / 255.0 {
-                                continue;
-                            }
-
-                            let idx = (py as u32 * w + px as u32) as usize;
-                            let dst = pixels[idx];
-                            let dr = ((dst >> 16) & 0xFF) as f32;
-                            let dg = ((dst >> 8) & 0xFF) as f32;
-                            let db = (dst & 0xFF) as f32;
-
-                            // Gamma-correct blend (gamma ≈ 2.0): linearise → blend → encode.
-                            let inv = 1.0 - final_a;
-                            let r_lin = (r / 255.0) * (r / 255.0);
-                            let g_lin = (g / 255.0) * (g / 255.0);
-                            let b_lin = (b / 255.0) * (b / 255.0);
-                            let dr_lin = (dr / 255.0) * (dr / 255.0);
-                            let dg_lin = (dg / 255.0) * (dg / 255.0);
-                            let db_lin = (db / 255.0) * (db / 255.0);
-                            let out_r = ((r_lin * final_a + dr_lin * inv).sqrt() * 255.0 + 0.5) as u8;
-                            let out_g = ((g_lin * final_a + dg_lin * inv).sqrt() * 255.0 + 0.5) as u8;
-                            let out_b = ((b_lin * final_a + db_lin * inv).sqrt() * 255.0 + 0.5) as u8;
-
-                            pixels[idx] = to_bgra(out_r, out_g, out_b, 255);
-                        }
-                    }
-                }
-            }
-        }
+        // Rasterize in horizontal bands, one rayon task each. A software
+        // renderer's cost is linear in pixels visited, and a HiDPI frame is
+        // several million of them; splitting by rows is the one change that
+        // scales with the machine rather than the display. Bands are disjoint
+        // slices of the framebuffer, so there is no locking and no change to
+        // drawing order.
+        //
+        // 32 rows keeps tasks small enough for rayon to balance a frame whose
+        // work sits mostly in a few large panels.
+        const BAND_ROWS: u32 = 32;
+        let tex_mgr = &self.tex_mgr;
+        let px_tested: u64 = pixels
+            .par_chunks_mut((BAND_ROWS * w) as usize)
+            .enumerate()
+            .map(|(band_idx, band)| {
+                let band_y0 = band_idx as i32 * BAND_ROWS as i32;
+                let rows = (band.len() / w as usize) as i32;
+                band.fill(bg32);
+                rasterize_band(band, band_y0, band_y0 + rows - 1, w, &clipped, ppp, tex_mgr)
+            })
+            .sum();
 
         let t_raster = t_before_raster.elapsed();
         let t_before_present = std::time::Instant::now();
@@ -1795,4 +1708,149 @@ pub fn run() {
     if let Err(e) = event_loop.run_app(&mut app) {
         log::error!(target: "diskoria", "event loop error: {e}");
     }
+}
+
+/// Rasterize every primitive into one horizontal band of the framebuffer.
+///
+/// `band` covers rows `band_y0..=band_y1` and is indexed relative to
+/// `band_y0`. Bands are disjoint and each walks the primitives in the same
+/// order, so painter's-algorithm ordering is preserved exactly and the output
+/// is identical to rasterizing the whole frame on one thread. Returns the
+/// number of pixels visited, for the overdraw metric.
+#[allow(clippy::too_many_arguments)]
+fn rasterize_band(
+    band: &mut [u32],
+    band_y0: i32,
+    band_y1: i32,
+    w: u32,
+    clipped: &[egui::ClippedPrimitive],
+    ppp: f32,
+    tex_mgr: &TextureManager,
+) -> u64 {
+    let mut tested: u64 = 0;
+for prim in clipped {
+        let clip = prim.clip_rect;
+        let clip_x0 = (clip.min.x * ppp).floor() as i32;
+        let clip_y0 = (clip.min.y * ppp).floor() as i32;
+        let clip_x1 = (clip.max.x * ppp).ceil() as i32;
+        let clip_y1 = (clip.max.y * ppp).ceil() as i32;
+
+        if let egui::epaint::Primitive::Mesh(mesh) = &prim.primitive {
+            let verts = &mesh.vertices;
+            let indices = &mesh.indices;
+            let is_font_tex = mesh.texture_id == egui::TextureId::default();
+
+            let tri_count = indices.len() / 3;
+            for tri in 0..tri_count {
+                let i0 = indices[tri * 3] as usize;
+                let i1 = indices[tri * 3 + 1] as usize;
+                let i2 = indices[tri * 3 + 2] as usize;
+                if i0 >= verts.len() || i1 >= verts.len() || i2 >= verts.len() {
+                    continue;
+                }
+                let v0 = &verts[i0];
+                let v1 = &verts[i1];
+                let v2 = &verts[i2];
+
+                let p0 = (v0.pos.x * ppp, v0.pos.y * ppp);
+                let p1 = (v1.pos.x * ppp, v1.pos.y * ppp);
+                let p2 = (v2.pos.x * ppp, v2.pos.y * ppp);
+
+                let min_x = p0.0.min(p1.0).min(p2.0).floor() as i32;
+                let min_y = p0.1.min(p1.1).min(p2.1).floor() as i32;
+                let max_x = p0.0.max(p1.0).max(p2.0).ceil() as i32;
+                let max_y = p0.1.max(p1.1).max(p2.1).ceil() as i32;
+
+                let x0 = min_x.max(clip_x0).max(0);
+                let y0 = min_y.max(clip_y0).max(band_y0);
+                let x1 = max_x.min(clip_x1).min(w as i32 - 1);
+                let y1 = max_y.min(clip_y1).min(band_y1);
+
+                let denom = (p1.1 - p2.1) * (p0.0 - p2.0) + (p2.0 - p1.0) * (p0.1 - p2.1);
+                if denom.abs() < 0.001 {
+                    continue;
+                }
+
+                tested += ((y1 - y0 + 1).max(0) as u64) * ((x1 - x0 + 1).max(0) as u64);
+                for py in y0..=y1 {
+                    for px in x0..=x1 {
+                        let fx = px as f32 + 0.5;
+                        let fy = py as f32 + 0.5;
+
+                        let w0 = ((p1.1 - p2.1) * (fx - p2.0) + (p2.0 - p1.0) * (fy - p2.1)) / denom;
+                        let w1 = ((p2.1 - p0.1) * (fx - p2.0) + (p0.0 - p2.0) * (fy - p2.1)) / denom;
+                        let w2 = 1.0 - w0 - w1;
+
+                        if w0 < -EDGE_EPS || w1 < -EDGE_EPS || w2 < -EDGE_EPS {
+                            continue;
+                        }
+
+                        let uv_x = v0.uv.x * w0 + v1.uv.x * w1 + v2.uv.x * w2;
+                        let uv_y = v0.uv.y * w0 + v1.uv.y * w1 + v2.uv.y * w2;
+
+                        let vr = v0.color.r() as f32 * w0 + v1.color.r() as f32 * w1 + v2.color.r() as f32 * w2;
+                        let vg = v0.color.g() as f32 * w0 + v1.color.g() as f32 * w1 + v2.color.g() as f32 * w2;
+                        let vb = v0.color.b() as f32 * w0 + v1.color.b() as f32 * w1 + v2.color.b() as f32 * w2;
+                        let va = v0.color.a() as f32 * w0 + v1.color.a() as f32 * w1 + v2.color.a() as f32 * w2;
+
+                        let (r, g, b, final_a) = if is_font_tex {
+                            let cov = tex_mgr.sample_alpha_f(uv_x, uv_y);
+                            (vr, vg, vb, va / 255.0 * cov)
+                        } else {
+                            let [tr, tg, tb, ta] = tex_mgr.sample_rgba(mesh.texture_id, uv_x, uv_y);
+                            (tr * vr, tg * vg, tb * vb, ta * va / 255.0)
+                        };
+
+                        // A pixel admitted by EDGE_EPS sits marginally outside
+                        // the triangle, so its interpolated alpha can land a
+                        // hair outside [0, 1]. Left alone, a negative `inv`
+                        // below can push the blend under zero, and `sqrt` of
+                        // that is NaN — which casts to 0 and paints the black
+                        // speck this whole epsilon exists to remove.
+                        let final_a = final_a.clamp(0.0, 1.0);
+                        if final_a < 1.0 / 255.0 {
+                            continue;
+                        }
+
+                        let idx = ((py - band_y0) as u32 * w + px as u32) as usize;
+
+                        // Fully opaque: the blend below reduces to
+                        // sqrt(src_lin) == src, so skip the framebuffer read,
+                        // six multiplies and three sqrt. Most of a UI frame is
+                        // opaque panel fill.
+                        if final_a >= 1.0 {
+                            band[idx] = to_bgra(
+                                (r + 0.5) as u8,
+                                (g + 0.5) as u8,
+                                (b + 0.5) as u8,
+                                255,
+                            );
+                            continue;
+                        }
+
+                        let dst = band[idx];
+                        let dr = ((dst >> 16) & 0xFF) as f32;
+                        let dg = ((dst >> 8) & 0xFF) as f32;
+                        let db = (dst & 0xFF) as f32;
+
+                        // Gamma-correct blend (gamma ≈ 2.0): linearise → blend → encode.
+                        let inv = 1.0 - final_a;
+                        let r_lin = (r / 255.0) * (r / 255.0);
+                        let g_lin = (g / 255.0) * (g / 255.0);
+                        let b_lin = (b / 255.0) * (b / 255.0);
+                        let dr_lin = (dr / 255.0) * (dr / 255.0);
+                        let dg_lin = (dg / 255.0) * (dg / 255.0);
+                        let db_lin = (db / 255.0) * (db / 255.0);
+                        let out_r = ((r_lin * final_a + dr_lin * inv).sqrt() * 255.0 + 0.5) as u8;
+                        let out_g = ((g_lin * final_a + dg_lin * inv).sqrt() * 255.0 + 0.5) as u8;
+                        let out_b = ((b_lin * final_a + db_lin * inv).sqrt() * 255.0 + 0.5) as u8;
+
+                        band[idx] = to_bgra(out_r, out_g, out_b, 255);
+                    }
+                }
+            }
+        }
+    }
+
+    tested
 }
