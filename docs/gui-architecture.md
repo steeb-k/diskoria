@@ -27,13 +27,35 @@ The window is rendered entirely on the **CPU**:
 3. egui tessellates the UI into triangle meshes (`lib.rs:260`).
 4. A hand-written rasterizer walks each triangle, does barycentric
    interpolation, samples the font/texture atlas, and blends per-pixel
-   (`lib.rs:266-365`).
-5. The buffer is presented via softbuffer/GDI (`lib.rs:367-376`).
+   (`rasterize_band` in `lib.rs`).
+5. The buffer is presented via softbuffer/GDI.
 
 **Why no GPU:** the target includes Windows PE / recovery-style environments
 where OpenGL/D3D may be unavailable. A software rasterizer trades performance for
-"runs anywhere." Consequence: rendering is comparatively expensive, which is why
-the repaint model (§6) works hard to avoid unnecessary frames.
+"runs anywhere." Rendering is therefore comparatively expensive, which is why the
+repaint model (§6) works hard to avoid unnecessary frames.
+
+**Parallel + flat-triangle fast path.** The framebuffer is split into 32-row
+bands, one rayon task each, and every band walks the primitive list in the same
+order — bands are disjoint slices, so painter's-algorithm ordering is preserved
+structurally rather than by convention. Triangles whose vertices share one
+colour and one UV (panel fills, card backgrounds, button bodies — the large
+areas) resolve their texture sample and blend inputs once per triangle instead
+of per pixel, and fully opaque ones reduce to a precomputed `u32` store.
+Coverage is still decided per pixel by the barycentric test, so shapes are
+unchanged; text and gradients take the generic path.
+
+Cost scales with *pixels visited*, which is the display's business, not the
+app's: on a 2.25x HiDPI panel with a tiled full-height window (3.58 Mpx, 3.4x
+overdraw) a frame was 150 ms single-threaded before this work and is ~9.5 ms
+after — 42 ms with rayon pinned to one thread, so most of the win survives on a
+low-core PE box. rayon sizes its pool from `available_parallelism`, so no cap is
+configured.
+
+**Measuring it:** `DISKORIA_FRAME_STATS=1` logs a per-frame breakdown (UI pass,
+tessellate, rasterize, present, total, primitive count, overdraw factor). Free
+when unset. Rendering changes should be checked for *pixel identity*, not just
+speed — capture the same demo page before and after and diff the images.
 
 **Gamma note (KI-5):** the blend approximates gamma 2.0 (square / sqrt) rather
 than true sRGB ~2.2 (`lib.rs:348-358`). Acceptable, but not color-exact.
