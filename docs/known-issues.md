@@ -180,6 +180,15 @@ single definition of a target, `speed_target` picks from those indices instead
 of clamping a count, and both temp-path builders return `None` for an empty or
 non-absolute mount so `start_speed_test` refuses rather than inventing a path.
 
+### KI-40 — Temperature history was per-window and only loaded at monitor start `bug`
+`load_history_from_db` ran only inside `start_monitor_if_not_running`, which
+early-returns once the monitor is up. Any window created *after* that — on
+Windows a second window, on Linux any window reopened from the tray, since
+close-to-tray destroys it (KI-39) — therefore drew an empty chart reading "No
+history data yet" until the whole app was restarted. `ensure_history_loaded`
+now fills the map once per window from the shared DB (and seeds the latest
+snapshot so the card is populated before the next monitor cycle).
+
 ## Resolved
 
 Condensed; see git history for full detail.

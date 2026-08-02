@@ -161,6 +161,12 @@ pub struct DiskoriaApp {
     /// Last 10%-boundary already logged for the running sector scan, so a
     /// 1000-block run produces ten log lines rather than thousands.
     surface_logged_decile: u8,
+    /// Whether this window has pulled the temperature history out of the DB.
+    /// Per-window, not per-process: a window created *after* the monitor
+    /// started — reopening from the tray — would otherwise show an empty
+    /// chart ("No history data yet") until the app was restarted.
+    #[cfg(any(windows, target_os = "linux"))]
+    history_loaded: bool,
     /// Settings page (`active_nav == 4`): manual keyboard focus slots (see example app).
     settings_focus: Option<usize>,
     /// Cached "Launch at startup" state for the Settings toggle. `None` until the
@@ -482,6 +488,8 @@ impl DiskoriaApp {
             accent_custom_te_id: None,
             accent_hex_edited: false,
             surface_logged_decile: u8::MAX,
+            #[cfg(any(windows, target_os = "linux"))]
+            history_loaded: false,
             settings_focus: None,
             #[cfg(any(windows, target_os = "linux"))]
             startup_enabled: None,
@@ -1519,8 +1527,10 @@ impl DiskoriaApp {
         if !self.monitoring_enabled {
             return;
         }
-        // Load historical temperature data from the SQLite DB before starting the thread.
-        self.load_history_from_db();
+        // Load historical temperature data from the SQLite DB before starting
+        // the thread. Guarded so this window does not read it twice (the
+        // per-frame poll loads it for windows that never start a monitor).
+        self.ensure_history_loaded();
 
         let poll_secs = (self.poll_interval_mins as u64) * 60;
         let (tx, rx) = mpsc::channel();
@@ -1550,6 +1560,35 @@ impl DiskoriaApp {
     }
 
     /// Load up to 7 days of temperature history from SQLite into `temp_history`.
+    /// Fill this window's temperature history from the shared DB once the
+    /// drive list is known. `start_monitor_if_not_running` also loads it, but
+    /// only for the window that happens to start the monitor — every later
+    /// window (notably one reopened from the tray) needs it too.
+    #[cfg(any(windows, target_os = "linux"))]
+    fn ensure_history_loaded(&mut self) {
+        if self.history_loaded
+            || self.drives.is_empty()
+            || !self.shared.pro_edition
+            || crate::demo::seeding()
+        {
+            return;
+        }
+        self.history_loaded = true;
+        self.load_history_from_db();
+        // Seed the current reading too, so the card is populated before the
+        // next monitor cycle lands.
+        for drive in &self.drives {
+            if let Some(snap) = self.shared.snapshot_for(&drive.serial) {
+                if let Some(t) = snap.temp_c {
+                    let pts = self.temp_history.entry(snap.serial.clone()).or_default();
+                    if !pts.iter().any(|p| p[0] as i64 == snap.timestamp_unix) {
+                        pts.push([snap.timestamp_unix as f64, t as f64]);
+                    }
+                }
+            }
+        }
+    }
+
     #[cfg(any(windows, target_os = "linux"))]
     fn load_history_from_db(&mut self) {
         match crate::history_db::open_or_create() {
@@ -1608,6 +1647,7 @@ impl DiskoriaApp {
 
     #[cfg(any(windows, target_os = "linux"))]
     fn poll_monitor(&mut self, _ctx: &egui::Context) {
+        self.ensure_history_loaded();
         let (msgs, still_connected) = self.shared.drain_monitor_rx();
         if !still_connected && !msgs.is_empty() {
             log::warn!(target: "diskoria::monitor", "Monitor channel disconnected");

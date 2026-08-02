@@ -117,7 +117,13 @@ impl ksni::Tray for SniTray {
                         Some(t) => format!("{} — {t}°C", d.model.trim()),
                         None => format!("{} — no reading", d.model.trim()),
                     },
-                    enabled: false,
+                    // Enabled on purpose: some panels dim or skip disabled
+                    // entries entirely, and this is the one place the status
+                    // is guaranteed to be readable when a bar renders no
+                    // tooltip. Clicking opens the app, where the detail is.
+                    activate: Box::new(|t: &mut SniTray| {
+                        let _ = t.proxy.send_event(UserEvent::ShowWindowRequested);
+                    }),
                     ..Default::default()
                 }
                 .into(),
