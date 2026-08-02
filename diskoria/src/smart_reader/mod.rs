@@ -594,3 +594,51 @@ mod tests {
         ));
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod hardware_tests {
+    use super::SmartReport;
+
+    /// Diagnostic, not CI: queries every enumerated drive's real SMART data.
+    /// Needs root for the ioctls; compare against `smartctl -A <dev>`.
+    #[test]
+    #[ignore = "needs root; run via scripts/test-elevated.sh"]
+    fn print_real_smart_reports() {
+        let drives = crate::drive_enumeration::enumerate_physical_disks().expect("enumerate");
+        assert!(!drives.is_empty(), "no drives found");
+        for d in &drives {
+            println!("--- {} ({:?}) {}", d.device_id, d.bus, d.model.trim());
+            match super::query_smart_detail(&d.device_id, d.bus) {
+                SmartReport::Nvme(n) => {
+                    println!(
+                        "NVMe: temp={}°C wear={}% spare={}% (thr {}%) poh={}h cycles={} \
+                         written={} unsafe_shutdowns={} media_errors={} crit=0x{:02X}",
+                        n.temperature_c, n.percentage_used, n.available_spare_pct,
+                        n.available_spare_threshold, n.power_on_hours, n.power_cycles,
+                        n.data_units_written, n.unsafe_shutdowns, n.media_errors,
+                        n.critical_warning,
+                    );
+                }
+                SmartReport::Ata(a) => {
+                    println!(
+                        "ATA: temp={:?}°C poh={:?}h cycles={:?}, {} attributes:",
+                        a.temperature_c, a.power_on_hours, a.power_cycles,
+                        a.attributes.len()
+                    );
+                    for at in &a.attributes {
+                        println!(
+                            "  {:#04x} {:<28} cur={:>3} worst={:>3} thr={:>3} raw={} ({:?})",
+                            at.id, at.name, at.current, at.worst, at.threshold,
+                            at.display_raw(), at.status,
+                        );
+                    }
+                }
+                SmartReport::Ufs(u) => println!(
+                    "UFS: pre_eol={:#04x} lt_a={:#04x} lt_b={:#04x}",
+                    u.pre_eol_info, u.life_time_est_a, u.life_time_est_b
+                ),
+                SmartReport::Unavailable { reason } => println!("Unavailable: {reason}"),
+            }
+        }
+    }
+}

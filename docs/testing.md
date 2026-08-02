@@ -84,3 +84,13 @@ workers.
   the Windows branches of `smart_reader`) — require real hardware + elevation.
 
 See `known-issues.md` for fragile areas worth extra manual attention.
+
+## Elevated Linux verification
+
+`sudo ./scripts/test-elevated.sh` runs everything that needs root, without
+touching a real disk destructively: elevated enumeration (partition styles,
+LUKS states), the real SMART/NVMe ioctls with a smartctl cross-check, the
+hwmon fallback, and a surface scan + destructive write+verify (including the
+unmount pre-flight) against a disposable 256 MB file-backed loop device,
+finishing with an elevated GUI smoke on the invoking user's display. It
+builds as $SUDO_USER so target/ stays user-owned.

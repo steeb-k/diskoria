@@ -366,3 +366,42 @@ mod tests {
         assert!(rx.try_recv().is_err(), "no progress after immediate cancel");
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod device_tests {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{mpsc, Arc};
+
+    /// Full scan of the block device named by `DISKORIA_TEST_DEVICE` — meant
+    /// for a small file-backed loop device (see scripts/test-elevated.sh).
+    #[test]
+    #[ignore = "needs root + DISKORIA_TEST_DEVICE; run via scripts/test-elevated.sh"]
+    fn scan_device_from_env() {
+        let dev = std::env::var("DISKORIA_TEST_DEVICE").expect("set DISKORIA_TEST_DEVICE");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel();
+        super::spawn_surface_test(dev.clone(), super::TOTAL_UI_BLOCKS as i32, cancel, tx)
+            .join()
+            .expect("worker join");
+
+        let mut last = None;
+        let mut error = None;
+        let mut completed = false;
+        for m in rx.try_iter() {
+            match m {
+                super::SurfaceTestMsg::Progress(p) => last = Some(p),
+                super::SurfaceTestMsg::Error(e) => error = Some(e),
+                super::SurfaceTestMsg::Completed => completed = true,
+            }
+        }
+        assert_eq!(error, None, "surface scan reported an error");
+        assert!(completed, "no Completed message");
+        let p = last.expect("no progress messages");
+        assert_eq!(p.bad_sectors, 0, "bad sectors on a healthy loop device");
+        assert_eq!(p.bytes_scanned, p.total_bytes, "scan did not cover the device");
+        println!(
+            "surface scan of {dev}: {} bytes, {} sectors good, {} slow, avg {:.0} MB/s",
+            p.total_bytes, p.good_sectors, p.slow_sectors, p.average_speed_mbps
+        );
+    }
+}

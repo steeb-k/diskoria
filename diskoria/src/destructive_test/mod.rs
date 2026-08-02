@@ -451,3 +451,53 @@ mod tests {
         assert_eq!(&dev.data[..1024], &expect[..]);
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod device_tests {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{mpsc, Arc};
+
+    /// Full write+verify of the block device named by `DISKORIA_TEST_DEVICE`,
+    /// unmounting any mount points in `DISKORIA_TEST_MOUNTS` (colon-separated)
+    /// first — exercising the umount pre-flight. DESTROYS the device contents;
+    /// meant for a file-backed loop device (see scripts/test-elevated.sh).
+    #[test]
+    #[ignore = "needs root + DISKORIA_TEST_DEVICE; run via scripts/test-elevated.sh"]
+    fn write_verify_device_from_env() {
+        let dev = std::env::var("DISKORIA_TEST_DEVICE").expect("set DISKORIA_TEST_DEVICE");
+        let mounts: Vec<String> = std::env::var("DISKORIA_TEST_MOUNTS")
+            .map(|v| v.split(':').map(str::to_string).collect())
+            .unwrap_or_default();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel();
+        super::spawn_destructive_test(
+            dev.clone(),
+            mounts,
+            super::TOTAL_UI_BLOCKS as i32,
+            cancel,
+            tx,
+        )
+        .join()
+        .expect("worker join");
+
+        let mut last = None;
+        let mut error = None;
+        let mut completed = false;
+        for m in rx.try_iter() {
+            match m {
+                super::DestructiveTestMsg::Progress(p) => last = Some(p),
+                super::DestructiveTestMsg::Error(e) => error = Some(e),
+                super::DestructiveTestMsg::Completed => completed = true,
+            }
+        }
+        assert_eq!(error, None, "destructive test reported an error");
+        assert!(completed, "no Completed message");
+        let p = last.expect("no progress messages");
+        assert_eq!(p.bad_sectors, 0, "verify mismatches on a healthy loop device");
+        assert_eq!(p.bytes_scanned, p.total_bytes, "test did not cover the device");
+        println!(
+            "write+verify of {dev}: {} bytes, {} sectors verified, avg {:.0} MB/s",
+            p.total_bytes, p.good_sectors, p.average_speed_mbps
+        );
+    }
+}
