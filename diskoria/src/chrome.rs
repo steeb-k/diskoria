@@ -6,16 +6,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::theme::{Theme, BTN_W, CLOSE_HOVER_BG, CONTROLS_W, NEWWIN_W, TITLEBAR_H};
 
-/// Set by the subclassed window procedure on `WM_DEVICECHANGE`
-/// (`DBT_DEVNODES_CHANGED` — a device was added/removed). The event loop polls
-/// this to debounce and trigger an automatic drive re-scan. Always stays
-/// `false` on non-Windows.
+/// Set on device add/remove: by the subclassed window procedure on
+/// `WM_DEVICECHANGE` (`DBT_DEVNODES_CHANGED`) on Windows, by the netlink
+/// uevent listener (`device_events.rs`) on Linux. The event loop polls this
+/// to debounce and trigger an automatic drive re-scan.
 static DEVICE_CHANGE_PENDING: AtomicBool = AtomicBool::new(false);
 
 /// Read-and-clear the device-change flag. Returns `true` if a device-tree
 /// change arrived since the last call.
 pub fn take_device_change_pending() -> bool {
     DEVICE_CHANGE_PENDING.swap(false, Ordering::Relaxed)
+}
+
+/// Flag a device-tree change from a platform watcher thread.
+#[cfg_attr(windows, allow(dead_code))] // Windows sets it from the wndproc instead
+pub(crate) fn flag_device_change() {
+    DEVICE_CHANGE_PENDING.store(true, Ordering::Relaxed);
 }
 
 pub fn decode_png(data: &[u8]) -> Option<(usize, usize, Vec<u8>)> {

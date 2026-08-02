@@ -18,6 +18,8 @@ mod autostart;
 mod chrome;
 mod demo;
 #[cfg(target_os = "linux")]
+mod device_events;
+#[cfg(target_os = "linux")]
 mod elevation;
 mod github_config;
 mod focus;
@@ -1536,6 +1538,11 @@ pub fn run() {
     // Serve unix activation requests; the guard unlinks the socket on drop.
     #[cfg(unix)]
     let _single_instance_guard = single_instance.map(|a| a.spawn(proxy.clone()));
+
+    // Block-device hotplug → debounced auto-re-enumeration (the Linux
+    // counterpart of WM_DEVICECHANGE in the wndproc).
+    #[cfg(target_os = "linux")]
+    device_events::spawn_uevent_watcher(proxy.clone());
 
     let mut app = App {
         renderers: HashMap::new(),
