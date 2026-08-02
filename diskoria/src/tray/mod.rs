@@ -89,6 +89,41 @@ pub(crate) fn render_thermometer_rgba(temp_c: Option<i32>) -> Vec<u8> {
     pixels
 }
 
+/// The app-level tray icon as 32×32 RGBA.
+///
+/// `appicon2.ico`, not `trayicon.ico`: every frame of the latter is a
+/// green/yellow placeholder (KI-41), which is what the Windows tray icon has
+/// been drawing. Falls back to a solid accent square if decoding fails.
+pub(crate) fn app_icon_rgba() -> Vec<u8> {
+    static APP_ICO: &[u8] = include_bytes!("../../../assets/appicon2.ico");
+
+    if let Ok(img) = image::load_from_memory(APP_ICO) {
+        let rgba = img
+            .resize(ICON_SIZE, ICON_SIZE, image::imageops::FilterType::Lanczos3)
+            .into_rgba8();
+        if rgba.dimensions() == (ICON_SIZE, ICON_SIZE) {
+            return rgba.into_raw();
+        }
+    }
+    (0..ICON_SIZE * ICON_SIZE)
+        .flat_map(|_| [61u8, 90, 128, 255])
+        .collect()
+}
+
+/// What the single Linux tray item should show: a drive thermometer once
+/// something reports a temperature, otherwise the app icon.
+///
+/// Windows carries a separate app icon alongside the per-drive thermometers;
+/// with one aggregated item there is nothing to show when no drive reports a
+/// temperature — a gray thermometer just looked broken.
+#[cfg_attr(windows, allow(dead_code))]
+pub(crate) fn tray_icon_rgba(hottest: Option<i32>) -> Vec<u8> {
+    match hottest {
+        Some(t) => render_thermometer_rgba(Some(t)),
+        None => app_icon_rgba(),
+    }
+}
+
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
@@ -98,3 +133,60 @@ pub use windows::*;
 mod linux;
 #[cfg(target_os = "linux")]
 pub use linux::TrayManager;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PIXELS: usize = (ICON_SIZE * ICON_SIZE * 4) as usize;
+
+    #[test]
+    fn app_icon_decodes_to_a_full_rgba_buffer() {
+        let icon = app_icon_rgba();
+        assert_eq!(icon.len(), PIXELS);
+        assert!(
+            icon.chunks_exact(4).any(|px| px[3] > 0),
+            "app icon must not be fully transparent"
+        );
+    }
+
+    /// With nothing reporting a temperature the item shows the app icon
+    /// rather than an empty (gray) thermometer.
+    #[test]
+    fn no_temperature_falls_back_to_the_app_icon() {
+        assert_eq!(tray_icon_rgba(None), app_icon_rgba());
+        assert_ne!(tray_icon_rgba(Some(48)), app_icon_rgba());
+        assert_eq!(tray_icon_rgba(Some(48)), render_thermometer_rgba(Some(48)));
+    }
+
+    #[test]
+    fn thermometer_colour_tracks_the_temperature() {
+        assert_eq!(temp_color(Some(30)), [39, 174, 96]);
+        assert_eq!(temp_color(Some(65)), [230, 126, 34]);
+        assert_eq!(temp_color(Some(80)), [231, 76, 60]);
+        assert_eq!(temp_color(None), [128, 128, 128]);
+    }
+}
+
+#[cfg(test)]
+mod icon_dump {
+    /// Diagnostic: writes the tray artwork to disk so it can be eyeballed.
+    /// `DISKORIA_ICON_DUMP_DIR` chooses where (default `/tmp`).
+    #[test]
+    #[ignore = "writes PNGs for visual inspection"]
+    fn dump_tray_icons() {
+        let dir = std::env::var("DISKORIA_ICON_DUMP_DIR").unwrap_or_else(|_| "/tmp".into());
+        for (name, rgba) in [
+            ("tray-app", super::app_icon_rgba()),
+            ("tray-cool", super::render_thermometer_rgba(Some(30))),
+            ("tray-warm", super::render_thermometer_rgba(Some(65))),
+        ] {
+            let img: image::RgbaImage =
+                image::ImageBuffer::from_raw(super::ICON_SIZE, super::ICON_SIZE, rgba)
+                    .expect("icon buffer");
+            let path = format!("{dir}/{name}.png");
+            img.save(&path).expect("write png");
+            println!("wrote {path}");
+        }
+    }
+}

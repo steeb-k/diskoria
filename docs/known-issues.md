@@ -189,6 +189,14 @@ history data yet" until the whole app was restarted. `ensure_history_loaded`
 now fills the map once per window from the shared DB (and seeds the latest
 snapshot so the card is populated before the next monitor cycle).
 
+### KI-41 — `assets/trayicon.ico` is a placeholder `bug`
+Every frame of it (16 → 256) is two flat green/yellow blocks, not artwork —
+verified by decoding each frame. It was the source for the Windows app-level
+tray icon, so that icon has been drawing the placeholder. Both platforms now
+share `tray::app_icon_rgba`, which reads `appicon2.ico` (the real icon, and
+what winit already uses for the window). The file is left in place in case a
+tray-specific design is wanted later; nothing references it.
+
 ## Resolved
 
 Condensed; see git history for full detail.

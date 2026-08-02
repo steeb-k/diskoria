@@ -60,7 +60,7 @@ impl ksni::Tray for SniTray {
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
         // RGBA → ARGB32 network byte order.
-        let rgba = super::render_thermometer_rgba(self.hottest());
+        let rgba = super::tray_icon_rgba(self.hottest());
         let mut data = Vec::with_capacity(rgba.len());
         for px in rgba.chunks_exact(4) {
             data.extend_from_slice(&[px[3], px[0], px[1], px[2]]);

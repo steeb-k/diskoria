@@ -76,24 +76,9 @@ pub fn render_thermometer_icon(temp_c: Option<i32>) -> Icon {
         .expect("thermometer icon RGBA valid")
 }
 
-/// Load the bundled assets/trayicon.ico as the app tray icon, falling back to a solid rectangle.
+/// The app tray icon, from the artwork shared with the Linux item.
 fn app_icon() -> Icon {
-    static TRAY_ICO: &[u8] = include_bytes!("../../assets/trayicon.ico");
-
-    if let Ok(img) = image::load_from_memory(TRAY_ICO) {
-        let rgba = img.resize(ICON_SIZE, ICON_SIZE, image::imageops::FilterType::Lanczos3)
-            .into_rgba8();
-        let (w, h) = rgba.dimensions();
-        if let Ok(icon) = Icon::from_rgba(rgba.into_raw(), w, h) {
-            return icon;
-        }
-    }
-
-    // Fallback: solid #3D5A80 rectangle.
-    let pixels: Vec<u8> = (0..ICON_SIZE * ICON_SIZE)
-        .flat_map(|_| [61u8, 90, 128, 255])
-        .collect();
-    Icon::from_rgba(pixels, ICON_SIZE, ICON_SIZE).expect("app icon valid")
+    Icon::from_rgba(super::app_icon_rgba(), ICON_SIZE, ICON_SIZE).expect("app icon valid")
 }
 
 // ── TrayManager ───────────────────────────────────────────────────────────────
