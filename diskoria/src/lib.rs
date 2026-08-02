@@ -463,6 +463,9 @@ struct App {
     /// once `UserEvent::OpenNewWindow` (Ctrl+N / tray "New Window") creates
     /// additional windows.
     renderers: HashMap<WindowId, Renderer>,
+    // Every sender today (tray, monitor, single-instance watchers) is
+    // `#[cfg(windows)]`; the Linux port's shell phase starts using it.
+    #[cfg_attr(not(windows), allow(dead_code))]
     proxy: EventLoopProxy<UserEvent>,
     shared: Arc<SharedAppState>,
     #[cfg(windows)]
@@ -556,6 +559,7 @@ impl App {
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.renderers.is_empty() {
+            #[cfg_attr(not(windows), allow(unused_mut))]
             let mut renderer = Renderer::new(event_loop, self.shared.clone());
             #[cfg(windows)]
             if self.shared.pro_edition {
@@ -940,8 +944,8 @@ impl ApplicationHandler<UserEvent> for App {
     /// releasing its exe. Reached from every real exit — the tray's Quit, and
     /// the last window closing when `close_to_tray` is off. Hiding to the tray
     /// is not an exit, so a staged update simply waits.
-    #[cfg(windows)]
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        #[cfg(windows)]
         if let Some(installer) = self.shared.take_staged_update() {
             log::info!(
                 target: "diskoria",
@@ -956,6 +960,13 @@ impl ApplicationHandler<UserEvent> for App {
             // relaunch = false: the user was closing Diskoria, not restarting it.
             crate::update::spawn_installer(&installer, false);
         }
+        // Drop every renderer (window, softbuffer surface, egui-winit state —
+        // including the smithay-clipboard worker on Wayland) while the event
+        // loop's display connection is still alive. `run_app` consumes the
+        // `EventLoop`, so anything still held in `App` afterwards is destroyed
+        // *after* the connection — on Wayland the clipboard worker then frees
+        // proxies of a dead `wl_display` and segfaults at exit.
+        self.renderers.clear();
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {

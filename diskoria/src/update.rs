@@ -1,6 +1,10 @@
 //! GitHub Releases update check and Windows self-update (download → exit → replace exe → relaunch).
 //! Release assets are published on the **`diskoria-binaries`** repo (see [`crate::github_config`]).
 
+// Every caller of this module is `#[cfg(windows)]` today, so the whole feature
+// is dead code on Linux until the linux-support update phase un-gates it.
+#![cfg_attr(not(windows), allow(dead_code))]
+
 use semver::Version;
 use serde::Deserialize;
 

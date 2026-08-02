@@ -6,7 +6,11 @@
 //! write so that the filesystem cannot interfere, and the volume handles are kept
 //! open for the duration of the test to prevent Windows from auto-remounting.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
+// The cancel-flag loads live in the Windows worker; gated so the Linux build
+// stays warning-free until the port adds its own worker.
+#[cfg(windows)]
+use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread::JoinHandle;

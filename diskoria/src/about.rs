@@ -117,7 +117,7 @@ pub fn draw_about_header_row(
                 ui.painter().rect_stroke(
                     check_r.rect.expand(2.0),
                     4.0,
-                    egui::Stroke::new(2.0, t.accent),
+                    egui::Stroke::new(2.0_f32, t.accent),
                     egui::StrokeKind::Outside,
                 );
             }
@@ -171,7 +171,7 @@ pub fn draw_about(
         |ui| {
             Frame::NONE
                 .fill(t.bg_pri)
-                .stroke(Stroke::new(1.5, t.border))
+                .stroke(Stroke::new(1.5_f32, t.border))
                 .inner_margin(Margin::same(INNER_PAD_PX))
                 .corner_radius(CornerRadius::same(8))
                 .show(ui, |ui| {
@@ -222,7 +222,7 @@ fn draw_install_mode_chip(ui: &mut egui::Ui, t: &Theme) {
     };
     ui.painter().rect_filled(rect, 9.0, bg);
     ui.painter()
-        .rect_stroke(rect, 9.0, Stroke::new(1.0, t.border), egui::StrokeKind::Middle);
+        .rect_stroke(rect, 9.0, Stroke::new(1.0_f32, t.border), egui::StrokeKind::Middle);
     ui.painter()
         .text(rect.center(), Align2::CENTER_CENTER, label, font, fg);
 }
@@ -278,7 +278,7 @@ fn about_card_text_column(ui: &mut egui::Ui, t: &Theme, about_focus: Option<usiz
             ui.painter().rect_stroke(
                 link.rect.expand(2.0),
                 3.0,
-                egui::Stroke::new(2.0, t.accent),
+                egui::Stroke::new(2.0_f32, t.accent),
                 egui::StrokeKind::Outside,
             );
         }
@@ -307,7 +307,7 @@ fn about_card_text_column(ui: &mut egui::Ui, t: &Theme, about_focus: Option<usiz
         ui.painter().rect_stroke(
             kofi_btn.rect.expand(2.0),
             4.0,
-            egui::Stroke::new(2.0, t.accent),
+            egui::Stroke::new(2.0_f32, t.accent),
             egui::StrokeKind::Outside,
         );
     }

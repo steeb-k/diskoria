@@ -24,7 +24,7 @@ env:
   DISKORIA_SKIP_RESOURCE: 1
 
 jobs:
-  test:
+  test-windows:
     name: build + test (windows)
     runs-on: windows-latest
     timeout-minutes: 30
@@ -33,11 +33,8 @@ jobs:
       # cargo-deny workflow: a tag can be moved to point at different code.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Windows, not Linux: this crate has ~283 cfg(windows) sites and puts
-      # rusqlite, wmi, tray-icon and the windows crates behind
-      # [target.'cfg(windows)'], so a Linux job would compile a small and
-      # unrepresentative slice of it. rusqlite is "bundled", so SQLite builds
-      # from source with the runner's MSVC — no system packages are needed.
+      # rusqlite is "bundled", so SQLite builds from source with the runner's
+      # MSVC — no system packages are needed.
       - name: Toolchain versions
         run: |
           rustc --version
@@ -59,5 +56,38 @@ jobs:
 
       # Plain `cargo test` deliberately: the one #[ignore]d test needs hardware
       # this runner does not have. Everything else is unprivileged and runs.
+      - name: Test
+        run: cargo test --locked --manifest-path diskoria/Cargo.toml
+
+  # Both OS targets build and test since the linux-support work: the Windows
+  # job covers the Win32/WMI/IOCTL half, this one covers the Linux backend
+  # (sysfs/SG_IO/O_DIRECT) plus everything platform-neutral. winit/softbuffer
+  # dlopen their X11/Wayland libraries at runtime, so build-time system
+  # packages stay small.
+  test-linux:
+    name: build + test (linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev pkg-config
+
+      - name: Toolchain versions
+        run: |
+          rustc --version
+          cargo --version
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: diskoria
+
+      - name: Build
+        run: cargo build --locked --all-targets --manifest-path diskoria/Cargo.toml
+
       - name: Test
         run: cargo test --locked --manifest-path diskoria/Cargo.toml

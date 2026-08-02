@@ -1,5 +1,8 @@
 //! SMART / storage health summary for the selected physical disk (Windows WMI).
 
+// On Linux only `Disabled` is constructed until the port's SMART phase wires
+// up a real health verdict; the allow keeps that build warning-free.
+#[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, Clone)]
 pub enum SmartHealth {
     Healthy,
@@ -236,7 +239,10 @@ mod windows {
 #[cfg(windows)]
 pub use windows::query_smart_health;
 
+// `poll_smart_health` short-circuits before calling this on non-Windows, so
+// the stub is currently unreferenced there.
 #[cfg(not(windows))]
+#[allow(dead_code)]
 pub fn query_smart_health(_disk_number: u32, _pnp_device_id: &str) -> Result<SmartHealth, String> {
     Err("Storage health is only queried on Windows.".to_string())
 }

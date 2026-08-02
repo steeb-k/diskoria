@@ -239,23 +239,23 @@ pub fn apply_visuals(ctx: &egui::Context, dark: bool, accent: Color32) {
     vis.window_shadow = egui::Shadow::NONE;
 
     vis.widgets.noninteractive.bg_fill = t.bg_pri;
-    vis.widgets.noninteractive.fg_stroke = Stroke::new(1.0, t.txt_pri);
-    vis.widgets.noninteractive.bg_stroke = Stroke::new(1.5, t.border);
+    vis.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, t.txt_pri);
+    vis.widgets.noninteractive.bg_stroke = Stroke::new(1.5_f32, t.border);
     vis.widgets.inactive.bg_fill = Color32::TRANSPARENT;
-    vis.widgets.inactive.fg_stroke = Stroke::new(1.0, t.accent);
+    vis.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, t.accent);
     vis.widgets.inactive.bg_stroke = Stroke::NONE;
     vis.widgets.hovered.bg_fill = t.hover;
-    vis.widgets.hovered.fg_stroke = Stroke::new(1.0, t.accent);
+    vis.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, t.accent);
     vis.widgets.hovered.bg_stroke = Stroke::NONE;
     vis.widgets.active.bg_fill = if dark {
         Color32::from_rgba_premultiplied(255, 255, 255, 30)
     } else {
         Color32::from_rgba_premultiplied(0, 0, 0, 25)
     };
-    vis.widgets.active.fg_stroke = Stroke::new(1.0, t.accent);
+    vis.widgets.active.fg_stroke = Stroke::new(1.0_f32, t.accent);
     vis.selection.bg_fill =
         Color32::from_rgba_unmultiplied(t.accent.r(), t.accent.g(), t.accent.b(), 120);
-    vis.selection.stroke = Stroke::new(1.5, t.accent);
+    vis.selection.stroke = Stroke::new(1.5_f32, t.accent);
     ctx.set_visuals(vis);
 }
 

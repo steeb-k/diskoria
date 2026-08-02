@@ -5,6 +5,9 @@
 pub const UPDATES_OWNER: &str = "steeb-k";
 pub const UPDATES_REPO: &str = "diskoria-binaries";
 
+// Only the (Windows-gated) update flow calls this today; un-gated by the
+// port's update phase.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn api_latest_releases_url() -> String {
     format!(
         "https://api.github.com/repos/{UPDATES_OWNER}/{UPDATES_REPO}/releases/latest"

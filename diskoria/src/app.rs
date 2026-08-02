@@ -6,11 +6,17 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use egui::{
-    Align2, Color32, CornerRadius, FontFamily, FontId, Frame, Id, Key, LayerId, Modifiers, Order,
+    Align2, Color32, FontFamily, FontId, Frame, Id, Key,
     Pos2, Rect, ScrollArea, Sense, Stroke, StrokeKind, Ui, Vec2,
 };
-use egui::text::{LayoutJob, TextFormat};
+// Used only inside `#[cfg(windows)]` code (update modal, chart export UI, tray
+// wiring); gated so the Linux build stays warning-free until those paths are
+// un-gated by the port.
+#[cfg(windows)]
+use egui::{CornerRadius, LayerId, Modifiers, Order};
+#[cfg(windows)]
 use egui_plot::{Line, MarkerShape, Plot, PlotPoints, Points};
+use egui::text::{LayoutJob, TextFormat};
 
 use crate::app_settings::{
     accent_from_palette, color_to_hex_6, parse_hex_color_6,
@@ -27,11 +33,14 @@ use crate::surface_test::{
     self, SurfaceTestMsg, SurfaceTestProgress, TOTAL_UI_BLOCKS,
 };
 use crate::modal_confirm::{
-    one_button_modal, two_button_modal, ModalConfirmPrimary, ModalConfirmResult,
-    OneButtonModalParams, TwoButtonModalParams,
+    two_button_modal, ModalConfirmPrimary, ModalConfirmResult, TwoButtonModalParams,
 };
+#[cfg(windows)]
+use crate::modal_confirm::{one_button_modal, OneButtonModalParams};
 use crate::smart_health::SmartHealth;
-use crate::speed_test::{self, SpeedTestMsg};
+#[cfg(windows)]
+use crate::speed_test;
+use crate::speed_test::SpeedTestMsg;
 use crate::theme::{
     apply_visuals, windows_accent_color, Theme, CONTENT_MARGIN, MAX_CONTENT_W,
     SIDE_PANEL_W, TITLEBAR_H,
@@ -113,13 +122,22 @@ fn nav_mnemonic_prefix_and_char_width(
     Some((w_before, w_ch))
 }
 
+// The sector-map and speed-gap constants are consumed only by `#[cfg(windows)]`
+// draw code today; gated so the Linux build stays warning-free until the port
+// un-gates the test panels.
+#[cfg(windows)]
 const SECTOR_GRID_COLS: usize = 50;
+#[cfg(windows)]
 const SECTOR_CELL_GAP: f32 = 1.0;
+#[cfg(windows)]
 const SECTOR_MAP_PAD: f32 = 16.0;
 /// Space between sector grid and legend row inside the map card.
+#[cfg(windows)]
 const SECTOR_LEGEND_GAP: f32 = 10.0;
+#[cfg(windows)]
 const SECTOR_LEGEND_ROW_H: f32 = 22.0;
 /// Speed Test: spacing between Start/Stop, progress card, and results grid.
+#[cfg(windows)]
 const SPEED_PAGE_SECTION_GAP: f32 = 14.0;
 /// Speed Test: padding below the results grid before scroll end.
 const SPEED_PAGE_BOTTOM_PAD: f32 = 20.0;
@@ -252,6 +270,9 @@ pub struct DiskoriaApp {
     smart_health_pct: Option<u8>,
     smart_health_err: Option<String>,
     smart_health_disk: Option<u32>,
+    // Only the `#[cfg(windows)]` poll arm reads this today (Linux never spawns
+    // the health thread); un-gated by the port's SMART phase.
+    #[cfg_attr(not(windows), allow(dead_code))]
     smart_health_rx: Option<mpsc::Receiver<SmartHealthMsg>>,
     smart_health_inflight: bool,
 
@@ -1363,6 +1384,7 @@ impl DiskoriaApp {
         }
     }
 
+    #[cfg(windows)]
     fn reset_speed_results_display(&mut self) {
         self.speed_seq_read_mbps = -1.0;
         self.speed_seq_write_mbps = -1.0;
@@ -1373,6 +1395,7 @@ impl DiskoriaApp {
         self.speed_progress_op = "Ready".to_string();
     }
 
+    #[cfg_attr(not(windows), allow(dead_code))] // caller is Windows-gated today
     fn speed_test_temp_path(drive_letter: &str) -> String {
         let clean = drive_letter.trim_end_matches('\\');
         let root = if clean.ends_with(':') {
@@ -1390,6 +1413,7 @@ impl DiskoriaApp {
         )
     }
 
+    #[cfg_attr(not(windows), allow(dead_code))] // caller is Windows-gated today
     fn can_start_speed_test(&self) -> bool {
         if self.surface_test_running {
             return false;
@@ -1404,11 +1428,12 @@ impl DiskoriaApp {
         !self.drives[di].partitions[pi].is_bitlocker_locked()
     }
 
+    #[cfg_attr(not(windows), allow(dead_code))] // caller is Windows-gated today
     fn start_speed_test(&mut self, ctx: &egui::Context) {
         #[cfg(not(windows))]
         {
+            let _ = ctx;
             self.speed_error_msg = Some("Speed test requires Windows.".to_string());
-            return;
         }
         #[cfg(windows)]
         {
@@ -1438,6 +1463,7 @@ impl DiskoriaApp {
         }
     }
 
+    #[cfg_attr(not(windows), allow(dead_code))] // caller is Windows-gated today
     fn stop_speed_test(&mut self) {
         if let Some(c) = &self.speed_test_cancel {
             c.store(true, Ordering::SeqCst);
@@ -2390,6 +2416,8 @@ impl DiskoriaApp {
                             d.list.iter().map(|dd| dd.serial.clone()).collect();
                         old != serials_new
                     });
+                    #[cfg(not(windows))]
+                    let _ = serials_changed;
                     self.shared.drives_write(|d| {
                         d.list = drives;
                         d.loading = false;
@@ -2447,6 +2475,7 @@ impl DiskoriaApp {
     fn poll_smart_health(&mut self, ctx: &egui::Context) {
         #[cfg(not(windows))]
         {
+            let _ = ctx;
             if self.drives_loading || self.drives.is_empty() {
                 return;
             }
@@ -2459,7 +2488,6 @@ impl DiskoriaApp {
                 "Storage health reporting is only available on Windows.".to_string(),
             );
             self.smart_health_disk = Some(disk);
-            return;
         }
 
         #[cfg(windows)]
@@ -2600,6 +2628,7 @@ impl DiskoriaApp {
         }
     }
 
+    #[cfg_attr(not(windows), allow(dead_code))] // caller is Windows-gated today
     fn reset_sector_cells_for_new_test(&mut self) {
         self.test_result_overlay = None;
         self.fail_overlay_shown = false;
@@ -2624,6 +2653,7 @@ impl DiskoriaApp {
         self.surface_chart_bucket_idx = 0;
     }
 
+    #[cfg_attr(not(windows), allow(dead_code))] // caller is Windows-gated today
     fn start_surface_test(&mut self, ctx: &egui::Context) {
         if self.drives.is_empty() {
             log::debug!(target: "diskoria", "start_surface_test: skipped (no drives)");
@@ -3345,12 +3375,15 @@ impl DiskoriaApp {
         }
     }
 
+    #[cfg_attr(not(windows), allow(dead_code))] // caller is Windows-gated today
     fn save_app_settings(&self) {
         // Sync per-window monitor-settings drafts into shared and persist.
         // Accent/theme fields already live in `shared.settings` and are saved
         // by every `update_settings` call; this covers the still-local monitor
         // fields (step 3 will migrate them too).
         self.shared.update_settings(|s| {
+            #[cfg(not(windows))]
+            let _ = s;
             #[cfg(windows)]
             {
                 s.monitoring_enabled = self.monitoring_enabled;
@@ -3372,6 +3405,7 @@ impl DiskoriaApp {
             + 1
     }
 
+    #[cfg_attr(not(windows), allow(dead_code))] // caller is Windows-gated today
     fn settings_monitoring_slot_start(&self) -> usize {
         self.settings_theme_slot_count()
     }
@@ -3552,7 +3586,12 @@ impl DiskoriaApp {
         self.shared.set_accent_last_poll(None);
     }
 
+    // The early-outs must stay ahead of the `#[cfg(windows)]` DWM poll, which
+    // makes the last of them a "needless" return on the Linux compile only.
+    #[allow(clippy::needless_return)]
     fn update_accent_color(&mut self, ctx: &egui::Context) {
+        #[cfg(not(windows))]
+        let _ = ctx;
         // `--demo-accent` pins the accent; polling DWM would overwrite it on the
         // next frame and put the host's colour into the capture.
         if crate::demo::config().accent.is_some() {
@@ -3773,7 +3812,7 @@ impl DiskoriaApp {
                             Pos2::new(left + w_before, underline_y),
                             Pos2::new(left + w_before + w_ch, underline_y),
                         ],
-                        Stroke::new(1.0, icon_col),
+                        Stroke::new(1.0_f32, icon_col),
                     );
                 }
             }
@@ -4388,7 +4427,7 @@ impl DiskoriaApp {
         ui.painter().rect_stroke(
             seg_rect,
             6.0,
-            Stroke::new(1.5, t.border),
+            Stroke::new(1.5_f32, t.border),
             StrokeKind::Middle,
         );
 
@@ -4416,7 +4455,7 @@ impl DiskoriaApp {
                 ui.painter().rect_stroke(
                     seg.expand(3.0),
                     6.0,
-                    Stroke::new(2.0, t.accent),
+                    Stroke::new(2.0_f32, t.accent),
                     StrokeKind::Outside,
                 );
             }
@@ -4455,7 +4494,7 @@ impl DiskoriaApp {
         ui.painter().rect_stroke(
             accent_seg_rect,
             6.0,
-            Stroke::new(1.5, t.border),
+            Stroke::new(1.5_f32, t.border),
             StrokeKind::Middle,
         );
 
@@ -4486,7 +4525,7 @@ impl DiskoriaApp {
                 ui.painter().rect_stroke(
                     seg.expand(3.0),
                     6.0,
-                    Stroke::new(2.0, t.accent),
+                    Stroke::new(2.0_f32, t.accent),
                     StrokeKind::Outside,
                 );
             }
@@ -4550,14 +4589,14 @@ impl DiskoriaApp {
                 ui.painter().rect_stroke(
                     sw_rect,
                     4.0,
-                    Stroke::new(if selected { 2.0 } else { 1.5 }, stroke_col),
+                    Stroke::new(if selected { 2.0_f32 } else { 1.5_f32 }, stroke_col),
                     StrokeKind::Middle,
                 );
                 if sw_focused {
                     ui.painter().rect_stroke(
                         sw_rect.expand(3.0),
                         4.0,
-                        Stroke::new(2.0, t.accent),
+                        Stroke::new(2.0_f32, t.accent),
                         StrokeKind::Outside,
                     );
                 }
@@ -4592,7 +4631,7 @@ impl DiskoriaApp {
                     ui.painter().rect_stroke(
                         sw_rect.expand(2.0),
                         4.0,
-                        Stroke::new(1.0, t.accent),
+                        Stroke::new(1.0_f32, t.accent),
                         StrokeKind::Middle,
                     );
 
@@ -4641,7 +4680,7 @@ impl DiskoriaApp {
 
         let hex_slot = self.settings_hex_slot();
         let field_focused = self.settings_focus == Some(hex_slot);
-        let line_w = if field_focused { 2.5 } else { 1.5 };
+        let line_w = if field_focused { 2.5_f32 } else { 1.5_f32 };
         ui.painter().line_segment(
             [input_rect.left_bottom(), input_rect.right_bottom()],
             Stroke::new(line_w, t.accent),
@@ -4882,7 +4921,6 @@ impl ChartExportRequest {
 /// Pixel sizes (margins, fonts, marker radii) scale with `height` relative to the
 /// baseline 460 px so a 2x render (used for the HTML-embed lightbox) stays crisp
 /// and proportioned. The on-disk export and the embedded copy share this path.
-#[cfg(windows)]
 /// `pub(crate)` so `demo::write_export_reports` can build the same combined
 /// report the chart-export button produces, without a file dialog.
 pub(crate) fn render_performance_chart_png_bytes(
@@ -4998,6 +5036,7 @@ fn export_performance_chart_png(
     std::fs::write(path, bytes).map_err(|e| e.to_string())
 }
 
+#[cfg(windows)]
 fn sector_cell_color(cell: SectorCell, heat_min_ms: f64, heat_max_ms: f64) -> Color32 {
     match cell {
         SectorCell::Pending => Color32::from_rgb(60, 60, 60),
@@ -5032,7 +5071,7 @@ fn paint_speed_metric_cell(
     foot: &str,
 ) {
     painter.rect_filled(rect, 8.0, t.bg_pri);
-    painter.rect_stroke(rect, 8.0, Stroke::new(1.5, t.border), StrokeKind::Middle);
+    painter.rect_stroke(rect, 8.0, Stroke::new(1.5_f32, t.border), StrokeKind::Middle);
 
     let pad = 12.0_f32;
     let title_font = FontId::new(10.0, FontFamily::Proportional);
@@ -5342,7 +5381,7 @@ impl DiskoriaApp {
                 ui.painter().rect_stroke(
                     toggle_rect.expand(3.0),
                     14.0,
-                    Stroke::new(2.0, t.accent),
+                    Stroke::new(2.0_f32, t.accent),
                     StrokeKind::Outside,
                 );
             }
@@ -5388,7 +5427,7 @@ impl DiskoriaApp {
                     fg,
                 );
                 if focused {
-                    ui.painter().rect_stroke(rect.expand(3.0), 4.0, Stroke::new(2.0, t.accent), StrokeKind::Outside);
+                    ui.painter().rect_stroke(rect.expand(3.0), 4.0, Stroke::new(2.0_f32, t.accent), StrokeKind::Outside);
                 }
                 let kb = page_keys && keyboard_activate(ui, focused);
                 if resp.clicked() || kb {

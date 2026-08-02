@@ -2,14 +2,20 @@
 //! see `docs/refactor-roadmap.md`. No behavior change.
 
 use egui::{
-    Align2, Color32, FontFamily, FontId, Id, Key, Modifiers, Pos2, Rect, Sense, Stroke,
+    Align2, Color32, FontFamily, FontId, Id, Pos2, Rect, Stroke,
     StrokeKind, Vec2,
 };
+// Used only by the `#[cfg(windows)]` test-button block below; gated so the
+// Linux build stays warning-free until the port un-gates that block.
+#[cfg(windows)]
+use egui::{Key, Modifiers, Sense};
 
 use crate::chrome::INTERACT_MANUAL_FOCUS;
 use crate::detected_drive::DetectedDrive;
 use crate::drive_selector::{self, ChipSpec, DriveEntry};
-use crate::theme::{Theme, CLOSE_HOVER_BG};
+use crate::theme::Theme;
+#[cfg(windows)]
+use crate::theme::CLOSE_HOVER_BG;
 
 impl crate::app::DiskoriaApp {
     /// Destructive Test page — gate blocker (first visit) then write+verify UI.
@@ -110,7 +116,7 @@ impl crate::app::DiskoriaApp {
                 ui.painter().rect_stroke(
                     btn_rect.expand(3.0),
                     4.0,
-                    Stroke::new(2.0, t.accent),
+                    Stroke::new(2.0_f32, t.accent),
                     StrokeKind::Outside,
                 );
             }
@@ -426,7 +432,6 @@ impl crate::app::DiskoriaApp {
                         .color(t.txt_sec),
                 );
             });
-            return;
         }
 
         #[cfg(windows)]

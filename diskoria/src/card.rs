@@ -130,6 +130,7 @@ pub(crate) struct CardBuilder<'a> {
 
 impl<'a> CardBuilder<'a> {
     /// Inner padding on all four sides. Defaults to [`CARD_PAD`].
+    #[cfg_attr(not(windows), allow(dead_code))] // callers are Windows-gated cards today
     pub fn pad(mut self, pad: f32) -> Self {
         self.pad = pad;
         self
@@ -242,6 +243,7 @@ impl CardLayout {
     }
 
     /// Width of the content column.
+    #[cfg_attr(not(windows), allow(dead_code))] // callers are Windows-gated cards today
     pub fn inner_w(&self) -> f32 {
         self.geom.inner_w()
     }

@@ -485,7 +485,7 @@ pub fn draw_titlebar(ctx: &egui::Context, t: &Theme, hwnd: isize) -> bool {
             let mc = min_rect.center();
             ui.painter().line_segment(
                 [Pos2::new(mc.x - 5.0, mc.y), Pos2::new(mc.x + 5.0, mc.y)],
-                Stroke::new(1.5, t.txt_pri),
+                Stroke::new(1.5_f32, t.txt_pri),
             );
 
             let mxc = max_rect_area.center();
@@ -497,14 +497,14 @@ pub fn draw_titlebar(ctx: &egui::Context, t: &Theme, hwnd: isize) -> bool {
                 ui.painter().rect_stroke(
                     back,
                     0.0,
-                    Stroke::new(1.5, t.txt_pri),
+                    Stroke::new(1.5_f32, t.txt_pri),
                     StrokeKind::Middle,
                 );
                 ui.painter().rect_filled(front, 0.0, t.bg_pri);
                 ui.painter().rect_stroke(
                     front,
                     0.0,
-                    Stroke::new(1.5, t.txt_pri),
+                    Stroke::new(1.5_f32, t.txt_pri),
                     StrokeKind::Middle,
                 );
             } else {
@@ -512,7 +512,7 @@ pub fn draw_titlebar(ctx: &egui::Context, t: &Theme, hwnd: isize) -> bool {
                 ui.painter().rect_stroke(
                     sq,
                     0.0,
-                    Stroke::new(1.5, t.txt_pri),
+                    Stroke::new(1.5_f32, t.txt_pri),
                     StrokeKind::Middle,
                 );
             }
@@ -526,11 +526,11 @@ pub fn draw_titlebar(ctx: &egui::Context, t: &Theme, hwnd: isize) -> bool {
             let d = 5.0_f32;
             ui.painter().line_segment(
                 [Pos2::new(cc.x - d, cc.y - d), Pos2::new(cc.x + d, cc.y + d)],
-                Stroke::new(1.5, close_col),
+                Stroke::new(1.5_f32, close_col),
             );
             ui.painter().line_segment(
                 [Pos2::new(cc.x + d, cc.y - d), Pos2::new(cc.x - d, cc.y + d)],
-                Stroke::new(1.5, close_col),
+                Stroke::new(1.5_f32, close_col),
             );
 
             new_r.clicked()

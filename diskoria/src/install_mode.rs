@@ -30,6 +30,8 @@ use std::sync::OnceLock;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum InstallMode {
     /// Running from the directory the Inno Setup installer wrote.
+    /// Never constructed on non-Windows (`detect()` is hard-wired Portable).
+    #[cfg_attr(not(windows), allow(dead_code))]
     Installed,
     /// A standalone exe run from anywhere else.
     Portable,
@@ -151,6 +153,8 @@ fn read_install_dir() -> Option<String> {
 /// Whether two directory strings name the same directory, ignoring case,
 /// separator flavour and a trailing separator. Pure so it can be unit-tested
 /// without touching the registry. An empty/blank side never matches.
+/// Only `detect()` (Windows) calls it outside of tests.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn same_dir(a: &str, b: &str) -> bool {
     fn norm(s: &str) -> String {
         s.trim()

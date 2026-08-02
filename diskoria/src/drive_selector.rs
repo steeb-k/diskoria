@@ -181,7 +181,7 @@ pub(crate) fn two_row_combo(
     ui.painter().rect_filled(card_rect, 0.0, t.bg_pri);
     ui.painter().line_segment(
         [card_rect.left_bottom(), card_rect.right_bottom()],
-        Stroke::new(1.5, t.accent),
+        Stroke::new(1.5_f32, t.accent),
     );
 
     if let Some(entry) = entries.get(current) {
@@ -269,7 +269,7 @@ pub(crate) fn two_row_combo(
                         ui.painter().rect_stroke(
                             r.rect.shrink(1.0),
                             4.0,
-                            Stroke::new(2.0, t.accent),
+                            Stroke::new(2.0_f32, t.accent),
                             StrokeKind::Inside,
                         );
                     }
@@ -297,7 +297,7 @@ pub(crate) fn two_row_combo(
         ui.painter().rect_stroke(
             card_rect.expand(2.0),
             4.0,
-            Stroke::new(2.0, t.accent),
+            Stroke::new(2.0_f32, t.accent),
             StrokeKind::Outside,
         );
     }
@@ -347,7 +347,7 @@ pub(crate) fn refresh_button(
         ui.painter().rect_stroke(
             rect.expand(2.0),
             4.0,
-            Stroke::new(2.0, t.accent),
+            Stroke::new(2.0_f32, t.accent),
             StrokeKind::Outside,
         );
     }

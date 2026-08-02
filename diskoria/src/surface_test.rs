@@ -1,6 +1,10 @@
 //! Read-only full-disk surface scan (sequential reads, progress to UI).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
+// The cancel-flag loads live in the Windows worker; gated so the Linux build
+// stays warning-free until the port adds its own worker.
+#[cfg(windows)]
+use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread::JoinHandle;

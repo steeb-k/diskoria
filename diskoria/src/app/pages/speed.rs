@@ -2,14 +2,21 @@
 //! see `docs/refactor-roadmap.md`. No behavior change.
 
 use egui::{
-    Align2, Color32, CornerRadius, FontFamily, FontId, Frame, Id, Key, Modifiers, Pos2, Rect,
-    Sense, Stroke, StrokeKind, Vec2,
+    Align2, Color32, FontFamily, FontId, Id, Pos2, Rect, Vec2,
 };
+// Used only by the `#[cfg(windows)]` benchmark UI below; gated so the Linux
+// build stays warning-free until the port un-gates that code.
+#[cfg(windows)]
+use egui::{CornerRadius, Frame, Key, Modifiers, Sense, Stroke, StrokeKind};
 
 use crate::drive_selector::{self, ChipSpec, DriveEntry};
-use crate::theme::{Theme, CLOSE_HOVER_BG};
+use crate::theme::Theme;
+#[cfg(windows)]
+use crate::theme::CLOSE_HOVER_BG;
 
-use super::super::{paint_speed_metric_cell, SPEED_PAGE_BOTTOM_PAD, SPEED_PAGE_SECTION_GAP};
+use super::super::{paint_speed_metric_cell, SPEED_PAGE_BOTTOM_PAD};
+#[cfg(windows)]
+use super::super::SPEED_PAGE_SECTION_GAP;
 
 impl crate::app::DiskoriaApp {
     /// Speed Test page — volume combo, 2×2 metrics, progress, Start/Stop.

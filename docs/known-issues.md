@@ -413,6 +413,18 @@ Condensed; see git history for full detail.
   startup, and shown on the Settings page where the swatches would be; the
   segment handlers now go through `reapply_accent_source`, which falls back
   explicitly.
+- **KI-32 — Segfault at exit on Wayland: clipboard worker outlived the display
+  connection** `bug`. Found the moment the Linux shell first ran: `run_app`
+  consumes the winit `EventLoop` (and with it the Wayland connection), but `App`
+  — holding every `Renderer`, whose egui-winit state owns the smithay-clipboard
+  worker thread — was dropped *after* `run_app` returned. The worker then called
+  `wl_proxy_destroy` on objects of a dead `wl_display` and the process died with
+  SIGSEGV after the clean-exit log line (boot smoke saw exit 139, not 0).
+  Windows never hit it because nothing in a renderer holds display-connection
+  objects with a cross-thread teardown. Fixed by clearing `self.renderers` in
+  `ApplicationHandler::exiting` (`lib.rs`), which the loop invokes while the
+  connection is still alive; the previously Windows-only `exiting` hook is now
+  unconditional with the staged-update half behind `#[cfg(windows)]`.
 - **KI-31 — Tray windows used a hard-coded accent when no main window existed**
   `bug`. The flyout and both tray context menus (`lib.rs`) resolved their accent
   as `self.primary().map(|r| r.app.shared.accent_color()).unwrap_or(Color32::from_rgb(61, 90, 128))`.

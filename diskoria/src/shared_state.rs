@@ -11,7 +11,11 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Mutex, RwLock};
+// Only the `#[cfg(windows)]` monitor fields hold an `Arc` today; gated so the
+// Linux build stays warning-free until the port un-gates the monitor.
+#[cfg(windows)]
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use egui::Color32;
@@ -471,22 +475,15 @@ impl SharedAppState {
             return;
         }
 
-        #[cfg(windows)]
-        {
-            let ctx2 = ctx.clone();
-            std::thread::spawn(move || {
-                let result = crate::drive_enumeration::enumerate_physical_disks();
-                let _ = tx.send(result);
-                ctx2.request_repaint();
-            });
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = tx.send(Err(
-                "Drive enumeration runs on Windows only.".to_string(),
-            ));
-            ctx.request_repaint();
-        }
+        // Platform-neutral seam: `enumerate_physical_disks` is the real WMI
+        // scan on Windows and an immediate Err on other platforms until the
+        // Linux backend lands.
+        let ctx2 = ctx.clone();
+        std::thread::spawn(move || {
+            let result = crate::drive_enumeration::enumerate_physical_disks();
+            let _ = tx.send(result);
+            ctx2.request_repaint();
+        });
         self.set_drive_poll_rx(Some(rx));
         *self.drive_poll_started.lock().expect("drive_poll_started poisoned") = Some(Instant::now());
     }

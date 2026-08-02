@@ -99,7 +99,7 @@ pub fn two_button_modal(
         .show(ctx, |ui| {
             let painter = ui.painter();
             painter.rect_filled(dlg, 8.0, t.bg_pri);
-            painter.rect_stroke(dlg, 8.0, Stroke::new(1.5, t.accent), StrokeKind::Middle);
+            painter.rect_stroke(dlg, 8.0, Stroke::new(1.5_f32, t.accent), StrokeKind::Middle);
 
             let btn_h = 30.0_f32;
             let btn_y = dlg.bottom() - 16.0 - btn_h;
@@ -160,14 +160,14 @@ pub fn two_button_modal(
             painter.rect_stroke(
                 cancel_rect,
                 4.0,
-                Stroke::new(1.5, t.border),
+                Stroke::new(1.5_f32, t.border),
                 StrokeKind::Middle,
             );
             if cancel_focused {
                 painter.rect_stroke(
                     cancel_rect.expand(3.0),
                     4.0,
-                    Stroke::new(2.0, t.accent),
+                    Stroke::new(2.0_f32, t.accent),
                     StrokeKind::Outside,
                 );
             }
@@ -224,7 +224,7 @@ pub fn two_button_modal(
                         painter.rect_stroke(
                             confirm_rect.expand(3.0),
                             4.0,
-                            Stroke::new(2.0, t.accent),
+                            Stroke::new(2.0_f32, t.accent),
                             StrokeKind::Outside,
                         );
                     }
@@ -247,7 +247,7 @@ pub fn two_button_modal(
                         painter.rect_stroke(
                             confirm_rect.expand(3.0),
                             4.0,
-                            Stroke::new(2.0, t.accent),
+                            Stroke::new(2.0_f32, t.accent),
                             StrokeKind::Outside,
                         );
                     }
@@ -288,6 +288,9 @@ pub fn two_button_modal(
     inner.inner
 }
 
+// The one-button modal's only caller (the update flow) is Windows-gated today;
+// un-gated by the port's update phase.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub struct OneButtonModalParams<'a> {
     pub overlay_id: Id,
     pub dialog_id: Id,
@@ -300,6 +303,7 @@ pub struct OneButtonModalParams<'a> {
 }
 
 /// Single OK button — Escape or OK dismisses. `button_focus` is `Some(0)` when OK is focused.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn one_button_modal(
     ctx: &Context,
     t: &Theme,
@@ -324,7 +328,7 @@ pub fn one_button_modal(
         .show(ctx, |ui| {
             let painter = ui.painter();
             painter.rect_filled(dlg, 8.0, t.bg_pri);
-            painter.rect_stroke(dlg, 8.0, Stroke::new(1.5, t.accent), StrokeKind::Middle);
+            painter.rect_stroke(dlg, 8.0, Stroke::new(1.5_f32, t.accent), StrokeKind::Middle);
 
             let btn_h = 30.0_f32;
             let btn_w = 90.0_f32;
@@ -362,7 +366,7 @@ pub fn one_button_modal(
                 painter.rect_stroke(
                     ok_rect.expand(3.0),
                     4.0,
-                    Stroke::new(2.0, t.accent),
+                    Stroke::new(2.0_f32, t.accent),
                     StrokeKind::Outside,
                 );
             }

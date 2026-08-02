@@ -69,7 +69,7 @@ pub fn small_browse_style_button(
     ui.painter().rect_stroke(
         rect,
         4.0,
-        Stroke::new(1.5, btn_border),
+        Stroke::new(1.5_f32, btn_border),
         StrokeKind::Middle,
     );
 
@@ -131,7 +131,7 @@ pub fn show_tooltip_text(ctx: &egui::Context, id: Id, anchor_pos: Pos2, t: &Them
             let (rect, _resp) = ui.allocate_exact_size(size, Sense::hover());
             ui.painter().rect_filled(rect, 4.0, t.bg_sec);
             ui.painter()
-                .rect_stroke(rect, 4.0, Stroke::new(1.0, t.accent), StrokeKind::Middle);
+                .rect_stroke(rect, 4.0, Stroke::new(1.0_f32, t.accent), StrokeKind::Middle);
             let text_pos = rect.min + Vec2::splat(pad);
             ui.painter()
                 .add(egui::Shape::galley(text_pos, galley, t.txt_pri));

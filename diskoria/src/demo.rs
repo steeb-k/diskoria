@@ -243,6 +243,9 @@ pub fn init() {
 
 /// True when demo seeding is on — background work that would hit real hardware
 /// or the network (SMART polling, the startup update check) is skipped.
+// Callers are `#[cfg(windows)]` today (single-instance skip); the Linux
+// port's shell phase starts using it.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn seeding() -> bool {
     config().seeding()
 }
@@ -476,6 +479,7 @@ pub fn chart_samples(total_gb: f64, scanned_frac: f64) -> Vec<[f64; 2]> {
 ///
 /// A daily cycle plus a slow climb, crossing the 55 °C warning line near the end
 /// so the alert in [`alert_event`] has something visible behind it.
+#[cfg_attr(not(windows), allow(dead_code))] // consumer (monitor seeding) is Windows-gated today
 pub fn temperature_history(now_unix: i64, warm: bool) -> Vec<[f64; 2]> {
     // One sample every 5 minutes for 7 days.
     let step = 300_i64;
@@ -501,6 +505,7 @@ pub fn temperature_history(now_unix: i64, warm: bool) -> Vec<[f64; 2]> {
 /// its reallocated sectors. That is not an oversight: Windows' predict-fail bit
 /// really does stay clear on a drive that has started swapping in spares, and
 /// telling the two signals apart is the whole point of the Drive Health page.
+#[cfg_attr(not(windows), allow(dead_code))] // consumer (poll_smart_health) is Windows-gated today
 pub fn wmi_health(drive_index: usize) -> (crate::smart_health::SmartHealth, Option<u8>) {
     use crate::smart_health::SmartHealth;
     match drive_index {
@@ -576,6 +581,7 @@ pub fn write_export_reports() -> bool {
 /// Title and body for the `--demo-toast` sample notification. Same shape the
 /// alert path builds in `DiskoriaApp::poll_monitor`, so the screenshot matches
 /// what monitoring actually sends.
+#[cfg_attr(not(windows), allow(dead_code))] // consumer (--demo-toast path) is Windows-gated today
 pub fn sample_toast() -> (String, String) {
     let alert = alert_event();
     (
@@ -585,6 +591,7 @@ pub fn sample_toast() -> (String, String) {
 }
 
 /// The alert `--demo-alert` raises: the warning-state SATA drive running hot.
+#[cfg_attr(not(windows), allow(dead_code))] // consumer (--demo-alert path) is Windows-gated today
 pub fn alert_event() -> crate::alert_engine::AlertEvent {
     let d = &drives()[1];
     crate::alert_engine::AlertEvent {

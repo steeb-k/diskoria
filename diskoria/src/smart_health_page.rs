@@ -772,7 +772,7 @@ fn draw_attribute_card(
 ) {
     let status_color = status_color(attr.status, dark);
     ui.painter().rect_filled(rect, 8.0, t.bg_pri);
-    ui.painter().rect_stroke(rect, 8.0, Stroke::new(1.5, t.border), StrokeKind::Middle);
+    ui.painter().rect_stroke(rect, 8.0, Stroke::new(1.5_f32, t.border), StrokeKind::Middle);
 
     let pad = 10.0_f32;
     let inner_x = rect.min.x + pad;
@@ -1352,7 +1352,7 @@ impl DiskoriaApp {
                         ui.painter().rect_stroke(
                             btn.rect.expand(2.0),
                             4.0,
-                            Stroke::new(2.0, t.accent),
+                            Stroke::new(2.0_f32, t.accent),
                             StrokeKind::Outside,
                         );
                     }
