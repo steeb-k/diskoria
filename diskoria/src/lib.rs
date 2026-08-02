@@ -17,6 +17,8 @@ mod card;
 mod autostart;
 mod chrome;
 mod demo;
+#[cfg(target_os = "linux")]
+mod elevation;
 mod github_config;
 mod focus;
 mod install_mode;
@@ -1477,6 +1479,36 @@ pub fn run() {
         .flatten();
     #[cfg(not(any(windows, unix)))]
     let _ = start_minimized;
+
+    // pkexec self-relaunch (Linux): runs *after* the single-instance check so
+    // a second launch hands off to the running primary without an auth
+    // prompt, and *before* the event loop so no unelevated window flashes.
+    // On success the elevated child runs the whole session and this process
+    // just forwards its exit code; a declined auth degrades to an unelevated
+    // run (per-operation errors where root is required).
+    #[cfg(target_os = "linux")]
+    let single_instance = {
+        let mut si = single_instance;
+        if elevation::should_elevate(smoke_remaining.is_some(), start_minimized) {
+            // Give the socket to the elevated child.
+            if let Some(a) = si.take() {
+                a.release();
+            }
+            match elevation::relaunch_elevated() {
+                Ok(code) => std::process::exit(code),
+                Err(reason) => {
+                    log::warn!(target: "diskoria", "continuing unelevated: {reason}");
+                    si = (smoke_remaining.is_none() && !demo::seeding())
+                        .then(|| single_instance::acquire(start_minimized))
+                        .flatten();
+                }
+            }
+        }
+        // Heal root-owned files in the user's data dir (created by this or a
+        // previous elevated session) so unelevated runs keep write access.
+        elevation::fix_data_dir_ownership();
+        si
+    };
 
     // `--demo-toast`: fire one sample notification so the toast can be
     // photographed. Backgrounded because WinRT needs a COM MTA context.

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Diskoria
+GenericName=Disk Health and Testing
+Comment=Storage scanning, benchmarking and drive health
+Exec=diskoria
+Icon=diskoria
+Terminal=false
+Categories=System;Utility;
+Keywords=disk;drive;SMART;benchmark;sector;health;

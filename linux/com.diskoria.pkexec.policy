@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
+<!--
+  Optional polkit action for Diskoria's pkexec self-relaunch.
+
+  Diskoria works WITHOUT this file: pkexec then uses its implicit action and
+  prompts for admin authentication on every launch. Installing this policy
+  (and the binary at the pinned path below) gives a friendlier prompt message
+  and keeps the authorization for the rest of the session (auth_admin_keep).
+
+  Install:  sudo cp com.diskoria.pkexec.policy /usr/share/polkit-1/actions/
+  The exec.path annotation must match where the diskoria binary lives —
+  adjust it if you keep the portable binary somewhere else.
+-->
+<policyconfig>
+  <vendor>Diskoria</vendor>
+  <vendor_url>https://github.com/steeb-k/diskoria</vendor_url>
+
+  <action id="com.diskoria.pkexec.run">
+    <description>Run Diskoria</description>
+    <message>Diskoria needs administrative privileges for raw disk access (SMART health, surface scans, and disk tests).</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/bin/diskoria</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+</policyconfig>

@@ -93,6 +93,13 @@ pub fn acquire(start_minimized: bool) -> Option<Acquired> {
 }
 
 impl Acquired {
+    /// Give the socket back (listener dropped, file unlinked) without serving.
+    /// Used just before the pkexec self-relaunch: the elevated child must be
+    /// able to bind the same path.
+    pub fn release(self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+
     /// Start serving activation requests, forwarding each connection to the
     /// event loop as `UserEvent::SecondLaunch`.
     pub fn spawn(self, proxy: EventLoopProxy<UserEvent>) -> Guard {
