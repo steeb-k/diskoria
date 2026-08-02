@@ -38,7 +38,10 @@ installer/             diskoria.iss — Inno Setup script (built by build-releas
                        via ISCC; produces releases/<ver>/diskoria-<ver>-setup.exe).
                        Writes the startup scheduled task and the
                        HKLM\Software\Diskoria\InstallDir marker read by install_mode.rs
-assets/                appicon2.ico, trayicon.ico, applogo.png (embedded at compile time)
+assets/                appicon2.ico (window + notification icon), trayicon.ico
+                       (tray only — simplified for 16-24px; looks flat rendered
+                       large, by design), applogo.png (in-app sidebar logo).
+                       All embedded at compile time.
   source/              Editable/alternate originals (.xcf, alt png/ico) — not embedded
 ```
 

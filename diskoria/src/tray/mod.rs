@@ -91,13 +91,15 @@ pub(crate) fn render_thermometer_rgba(temp_c: Option<i32>) -> Vec<u8> {
 
 /// The app-level tray icon as 32×32 RGBA.
 ///
-/// `appicon2.ico`, not `trayicon.ico`: every frame of the latter is a
-/// green/yellow placeholder (KI-41), which is what the Windows tray icon has
-/// been drawing. Falls back to a solid accent square if decoding fails.
+/// `trayicon.ico`, **not** `appicon2.ico`. The tray icon is deliberately a
+/// simplified, high-contrast design because tray icons are drawn at 16–24 px,
+/// where the detailed window icon turns to mush. It looks flat when rendered
+/// large — that is the point, so do not "fix" it to the window icon.
+/// Falls back to a solid accent square if decoding fails.
 pub(crate) fn app_icon_rgba() -> Vec<u8> {
-    static APP_ICO: &[u8] = include_bytes!("../../../assets/appicon2.ico");
+    static TRAY_ICO: &[u8] = include_bytes!("../../../assets/trayicon.ico");
 
-    if let Ok(img) = image::load_from_memory(APP_ICO) {
+    if let Ok(img) = image::load_from_memory(TRAY_ICO) {
         let rgba = img
             .resize(ICON_SIZE, ICON_SIZE, image::imageops::FilterType::Lanczos3)
             .into_rgba8();

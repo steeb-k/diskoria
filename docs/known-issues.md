@@ -189,14 +189,6 @@ history data yet" until the whole app was restarted. `ensure_history_loaded`
 now fills the map once per window from the shared DB (and seeds the latest
 snapshot so the card is populated before the next monitor cycle).
 
-### KI-41 — `assets/trayicon.ico` is a placeholder `bug`
-Every frame of it (16 → 256) is two flat green/yellow blocks, not artwork —
-verified by decoding each frame. It was the source for the Windows app-level
-tray icon, so that icon has been drawing the placeholder. Both platforms now
-share `tray::app_icon_rgba`, which reads `appicon2.ico` (the real icon, and
-what winit already uses for the window). The file is left in place in case a
-tray-specific design is wanted later; nothing references it.
-
 ## Resolved
 
 Condensed; see git history for full detail.
@@ -493,6 +485,12 @@ Condensed; see git history for full detail.
   startup, and shown on the Settings page where the swatches would be; the
   segment handlers now go through `reapply_accent_source`, which falls back
   explicitly.
+- **KI-41 — withdrawn: `trayicon.ico` is not a placeholder.** Filed in error
+  after rendering it at 256 px, where its flat two-tone shapes look unfinished.
+  It is a deliberately simplified, high-contrast design for the 16–24 px a tray
+  actually draws at, which is exactly why it differs from `appicon2.ico`. Both
+  platforms keep using it for the tray; `tray::app_icon_rgba` carries a comment
+  so it does not get "fixed" again. Number retired rather than reused.
 - **KI-32 — Segfault at exit on Wayland: clipboard worker outlived the display
   connection** `bug`. Found the moment the Linux shell first ran: `run_app`
   consumes the winit `EventLoop` (and with it the Wayland connection), but `App`
