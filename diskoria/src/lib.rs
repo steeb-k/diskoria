@@ -174,27 +174,98 @@ impl RectPx {
 /// simpler to reason about than fifty slivers.
 const MAX_DAMAGE_RECTS: usize = 8;
 
+/// Above this many *raw* rectangles, skip straight to the bounding box.
+///
+/// `frame_damage` emits two rectangles per changed triangle, so a scroll or a
+/// heatmap recolor arrives here with thousands. Those frames repaint nearly
+/// everything regardless, and the result is capped at [`MAX_DAMAGE_RECTS`]
+/// anyway, so there is nothing to be gained by merging them precisely.
+const RAW_DAMAGE_LIMIT: usize = 4096;
+
+/// Above this many rectangles *after* the sweep below, likewise.
+const MERGE_BUDGET: usize = 256;
+
+/// Reduce damage rectangles to a small disjoint set covering every input.
+///
+/// Disjointness is the correctness requirement: the rasterizer blends, so a
+/// pixel inside two damage rectangles is composited twice and comes out wrong.
+/// Everything else here is about cost.
+///
+/// Cost is the whole story, in fact. This used to be a fixpoint loop that
+/// restarted its entire O(n²) scan after *every* merge and removed from the
+/// middle of the `Vec` each time — O(n³), on the event-loop thread, over the
+/// thousands of rectangles a scroll produces. That was the freeze in KI-43:
+/// seconds of work to compute a set that the `MAX_DAMAGE_RECTS` cap (8) was
+/// about to collapse into a single rectangle anyway, because the cap was
+/// applied *after* the loop rather than before it.
+///
+/// Now the work is bounded up front and done in three tiers:
+/// 1. Too many raw rectangles → bounding box, no merging at all.
+/// 2. A linear sweep over y-then-x-sorted rectangles, which collapses the
+///    common case cheaply: text damage arrives one rectangle per glyph, and
+///    neighbouring glyphs touch, so a line of text becomes one rectangle.
+/// 3. The exact pairwise fixpoint on what survives — correct, and now only
+///    ever run on a set small enough for it to be free.
 fn merge_damage(mut rects: Vec<RectPx>) -> Vec<RectPx> {
     rects.retain(|r| !r.is_empty());
-    let mut merged = true;
-    while merged {
-        merged = false;
-        'outer: for i in 0..rects.len() {
-            for j in (i + 1)..rects.len() {
-                if rects[i].touches(&rects[j]) {
-                    rects[i] = rects[i].union(rects[j]);
-                    rects.remove(j);
-                    merged = true;
-                    break 'outer;
-                }
-            }
+    if rects.len() <= 1 {
+        return rects;
+    }
+    if rects.len() > RAW_DAMAGE_LIMIT {
+        return bounding_box(rects);
+    }
+
+    // Sweep: sort by row then column and fuse touching neighbours in one pass.
+    rects.sort_unstable_by_key(|r| (r.y0, r.x0));
+    let mut swept: Vec<RectPx> = Vec::with_capacity(rects.len());
+    for r in rects {
+        match swept.last_mut() {
+            Some(last) if last.touches(&r) => *last = last.union(r),
+            _ => swept.push(r),
         }
     }
-    if rects.len() > MAX_DAMAGE_RECTS {
-        let all = rects.iter().copied().reduce(RectPx::union);
-        rects = all.into_iter().collect();
+    if swept.len() > MERGE_BUDGET {
+        return bounding_box(swept);
     }
-    rects
+
+    // Exact fixpoint. The sweep only fuses neighbours in sort order, so
+    // rectangles that touch "backwards" (a tall rectangle overlapping several
+    // later rows) are still outstanding; repeat full passes until a pass
+    // changes nothing, which is what makes the result pairwise disjoint.
+    // `swap_remove` is O(1) and order does not matter here.
+    loop {
+        let mut changed = false;
+        let mut i = 0;
+        while i < swept.len() {
+            let mut j = i + 1;
+            while j < swept.len() {
+                if swept[i].touches(&swept[j]) {
+                    swept[i] = swept[i].union(swept[j]);
+                    swept.swap_remove(j);
+                    changed = true;
+                    // `j` now holds a rectangle swapped in from the end, which
+                    // has not been tested against `i` yet — do not advance.
+                } else {
+                    j += 1;
+                }
+            }
+            i += 1;
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    if swept.len() > MAX_DAMAGE_RECTS {
+        return bounding_box(swept);
+    }
+    swept
+}
+
+/// The one rectangle covering them all. Trivially disjoint, and always a valid
+/// (if pessimistic) answer — worst case it means a full repaint.
+fn bounding_box(rects: Vec<RectPx>) -> Vec<RectPx> {
+    rects.into_iter().reduce(RectPx::union).into_iter().collect()
 }
 
 /// `DISKORIA_FULL_REPAINT=1` disables damage tracking, for comparing a
@@ -2382,4 +2453,119 @@ for prim in clipped {
     }
 
     tested
+}
+
+#[cfg(test)]
+mod damage_tests {
+    use super::{merge_damage, RectPx, MAX_DAMAGE_RECTS};
+
+    fn r(x0: i32, y0: i32, x1: i32, y1: i32) -> RectPx {
+        RectPx { x0, y0, x1, y1 }
+    }
+
+    fn overlaps(a: &RectPx, b: &RectPx) -> bool {
+        a.x0 <= b.x1 && b.x0 <= a.x1 && a.y0 <= b.y1 && b.y0 <= a.y1
+    }
+
+    fn covers(outer: &RectPx, inner: &RectPx) -> bool {
+        outer.x0 <= inner.x0 && outer.y0 <= inner.y0 && outer.x1 >= inner.x1 && outer.y1 >= inner.y1
+    }
+
+    /// The two things every result must satisfy: nothing is composited twice,
+    /// and nothing that changed is left unpainted.
+    fn assert_disjoint_and_covering(input: &[RectPx], out: &[RectPx]) {
+        for i in 0..out.len() {
+            for j in (i + 1)..out.len() {
+                assert!(
+                    !overlaps(&out[i], &out[j]),
+                    "output rects overlap: {:?} and {:?} — those pixels blend twice",
+                    out[i],
+                    out[j]
+                );
+            }
+        }
+        for r in input.iter().filter(|r| !r.is_empty()) {
+            assert!(
+                out.iter().any(|o| covers(o, r)),
+                "input {r:?} is not covered by any output rect — stale pixels"
+            );
+        }
+        assert!(out.len() <= MAX_DAMAGE_RECTS, "cap exceeded: {}", out.len());
+    }
+
+    #[test]
+    fn far_apart_rects_stay_separate() {
+        let input = vec![r(0, 0, 10, 10), r(500, 500, 510, 510)];
+        let out = merge_damage(input.clone());
+        assert_eq!(out.len(), 2);
+        assert_disjoint_and_covering(&input, &out);
+    }
+
+    #[test]
+    fn touching_rects_fuse() {
+        // Adjacent, not overlapping: `touches` treats a 1px gap as contact so
+        // the merged region stays disjoint.
+        let input = vec![r(0, 0, 10, 10), r(11, 0, 20, 10)];
+        let out = merge_damage(input.clone());
+        assert_eq!(out, vec![r(0, 0, 20, 10)]);
+        assert_disjoint_and_covering(&input, &out);
+    }
+
+    #[test]
+    fn empty_rects_are_dropped() {
+        let out = merge_damage(vec![r(5, 5, 4, 4), r(0, 0, 3, 3)]);
+        assert_eq!(out, vec![r(0, 0, 3, 3)]);
+    }
+
+    /// The case the cheap sweep alone gets wrong: sorted by row, A and C do not
+    /// touch, but once B joins them the union does. Only the exact pass after
+    /// the sweep catches it — without it the output would overlap.
+    #[test]
+    fn transitively_touching_rects_fuse_across_sort_order() {
+        let input = vec![r(0, 0, 5, 100), r(0, 40, 200, 45), r(195, 0, 200, 100)];
+        let out = merge_damage(input.clone());
+        assert_eq!(out.len(), 1);
+        assert_disjoint_and_covering(&input, &out);
+    }
+
+    #[test]
+    fn a_line_of_glyph_rects_collapses() {
+        // Text damage arrives one rect per glyph, side by side.
+        let input: Vec<RectPx> = (0..60).map(|i| r(i * 8, 20, i * 8 + 7, 32)).collect();
+        let out = merge_damage(input.clone());
+        assert_eq!(out, vec![r(0, 20, 479, 32)]);
+        assert_disjoint_and_covering(&input, &out);
+    }
+
+    /// KI-43: a scroll changes every triangle, so thousands of rects arrive at
+    /// once. The old fixpoint was O(n^3) here and took over a second on the
+    /// event-loop thread; the answer is a bounding box either way.
+    #[test]
+    fn a_scroll_sized_pile_is_bounded_not_merged() {
+        let mut input = Vec::new();
+        for i in 0..6000i32 {
+            let x = (i % 100) * 19;
+            let y = (i / 100) * 31;
+            input.push(r(x, y, x + 15, y + 25));
+        }
+        let started = std::time::Instant::now();
+        let out = merge_damage(input.clone());
+        let took = started.elapsed();
+        assert_eq!(out.len(), 1);
+        assert_disjoint_and_covering(&input, &out);
+        assert!(
+            took < std::time::Duration::from_millis(50),
+            "merging {} rects took {took:?} — this runs on the event-loop thread",
+            input.len()
+        );
+    }
+
+    /// Between the two tiers: enough rects to exceed the cap after merging,
+    /// few enough to go through the exact pass.
+    #[test]
+    fn many_separate_regions_collapse_to_the_cap() {
+        let input: Vec<RectPx> = (0..40).map(|i| r(i * 50, i * 30, i * 50 + 10, i * 30 + 10)).collect();
+        let out = merge_damage(input.clone());
+        assert_disjoint_and_covering(&input, &out);
+    }
 }

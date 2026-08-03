@@ -73,6 +73,19 @@ Typical steady state on the Drive Health page: tens of thousands of frames where
 nothing changed and painting is skipped outright, a partial redraw per second at
 ~1 ms, and a full repaint only when something structural happens (~16 ms).
 
+**Merging must stay cheap (KI-43).** `frame_damage` emits two rectangles per
+changed triangle, so a scroll or a heatmap recolor hands `merge_damage` tens of
+thousands of them — and the result is capped at 8 rectangles regardless. An
+exact pairwise merge over that many inputs is quadratic and cost seconds on the
+event-loop thread. The cost is therefore bounded *before* any merging: over
+`RAW_DAMAGE_LIMIT` raw rectangles it returns the bounding box; otherwise a
+linear y-then-x sweep fuses touching neighbours (a line of text arrives one
+rectangle per glyph and collapses to one), and only the survivors go through the
+exact fixpoint. Coarser damage is always safe — it is a superset — so when in
+doubt, widen rather than merge harder. The one property that is not negotiable
+is **disjointness**: the rasterizer blends, so a pixel inside two damage
+rectangles composites twice and comes out wrong.
+
 **Measuring and verifying:** `DISKORIA_FRAME_STATS=1` logs a per-frame breakdown
 (UI pass, tessellate, rasterize, present, total, primitive count, overdraw,
 damage rectangles, buffer age). `DISKORIA_FULL_REPAINT=1` disables damage
