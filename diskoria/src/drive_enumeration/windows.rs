@@ -394,7 +394,7 @@ fn fallback_partitions_for_disk(
             );
         }
 
-        let bl = bitlocker
+        let bl = encryption
             .get(&letter)
             .copied()
             .unwrap_or(EncryptionStatus::NotEncrypted);
@@ -461,7 +461,7 @@ fn partitions_for_disk(
                 .unwrap_or("Local Disk")
                 .to_string();
 
-            let bl = bitlocker
+            let bl = encryption
                 .get(&mount_point)
                 .copied()
                 .unwrap_or(EncryptionStatus::NotEncrypted);
@@ -480,7 +480,7 @@ fn partitions_for_disk(
 
     if out.is_empty() {
         let already: Vec<String> = out.iter().map(|p| p.mount_point.clone()).collect();
-        let fallback = fallback_partitions_for_disk(disk_index, bitlocker, &already);
+        let fallback = fallback_partitions_for_disk(disk_index, encryption, &already);
         out.extend(fallback);
     }
 

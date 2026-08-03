@@ -378,5 +378,6 @@ fn query_ufs(device_path: &str) -> SmartReport {
         log::warn!(target: "diskoria", "query_ufs: {reason} path={device_path}");
     }
     report
+}
 
 

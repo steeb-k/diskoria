@@ -1148,7 +1148,7 @@ impl App {
     /// per-window state (accent, snapshots). With multiple windows open this is
     /// just "some window"; a future refinement could target the most-recently-
     /// focused window or broadcast to all.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     fn primary(&self) -> Option<&Renderer> {
         self.renderers.values().next()
     }
@@ -1885,9 +1885,7 @@ impl App {
         #[cfg(any(windows, target_os = "linux"))]
         {
             let has_drives = self
-                .renderers
-                .values()
-                .next()
+                .primary()
                 .map(|r| !r.app.drives.is_empty())
                 .unwrap_or(false);
 
