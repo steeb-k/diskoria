@@ -82,6 +82,15 @@ workers.
 - The CPU rasterizer output (`lib.rs::paint`) — no pixel snapshot tests.
 - Real SMART/IOCTL paths (`surface_test`, `destructive_test`, `speed_test`,
   the Windows branches of `smart_reader`) — require real hardware + elevation.
+- **ARM64 has never been executed on any platform.** The Linux `aarch64` cross
+  build is clean and produces a correct ELF, but no ARM hardware has run it, so
+  nothing past "it links" is known. Treat an ARM64 artifact as unverified until
+  someone boots one.
+- Damage tracking under *real* input. The `DISKORIA_DAMAGE_VERIFY` sweeps on
+  Windows were driven by synthesized `PostMessage` traffic, which the OS does
+  not coalesce the way it does genuine mouse input, and no rendered frame was
+  ever inspected by eye. "No mismatches" means the verifier found none, not that
+  the UI looked right.
 
 See `known-issues.md` for fragile areas worth extra manual attention.
 
