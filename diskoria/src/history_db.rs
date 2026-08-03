@@ -74,7 +74,9 @@ fn open_rw_at(path: &std::path::Path, journal: &str) -> Result<Connection> {
 }
 
 /// Schema setup for tests in other modules that build a throwaway database.
+/// Only the Linux service-snapshot tests use it, so it is dead on other targets.
 #[cfg(test)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn apply_schema_for_tests(conn: &Connection) -> Result<()> {
     apply_schema(conn)
 }

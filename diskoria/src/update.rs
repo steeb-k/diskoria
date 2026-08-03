@@ -76,6 +76,7 @@ fn pick_linux_url_for_arch(assets: &[AssetJson], arch: &str) -> Option<String> {
 
 /// Architecture tokens that can appear in a release asset name, grouped by the
 /// `std::env::consts::ARCH` value they correspond to.
+#[cfg_attr(windows, allow(dead_code))]
 const ARCH_ALIASES: &[(&str, &[&str])] = &[
     ("x86_64", &["x86_64", "x86-64", "amd64"]),
     ("x86", &["i686", "i386"]),
