@@ -71,11 +71,18 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # libfontconfig1-dev is not optional despite winit/softbuffer dlopening
+      # their X11/Wayland libraries: plotters' `ttf` feature pulls font-kit ->
+      # yeslogic-fontconfig-sys, whose build script resolves fontconfig through
+      # pkg-config and hard-fails without `fontconfig.pc`. `build-portable.sh`
+      # sidesteps it with RUST_FONTCONFIG_DLOPEN=1, but only for *cross* builds;
+      # a native build — which is what this job is — takes the pkg-config path.
+      # See known-issues.md (KI-53).
       - name: System packages
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libxkbcommon-dev libwayland-dev pkg-config
+            libxkbcommon-dev libwayland-dev libfontconfig1-dev pkg-config
 
       - name: Toolchain versions
         run: |

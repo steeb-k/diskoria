@@ -186,6 +186,13 @@ assets/                appicon2.ico (window + notification icon, About page —
 
 ## Build / run / test
 
+**Linux build dependencies** (Debian/Ubuntu names): `libxkbcommon-dev
+libwayland-dev libfontconfig1-dev pkg-config`. winit and softbuffer dlopen
+their X11/Wayland libraries, but `plotters`'s `ttf` feature pulls font-kit →
+`yeslogic-fontconfig-sys`, whose build script needs `fontconfig.pc` at compile
+time. Cross builds escape it with `RUST_FONTCONFIG_DLOPEN=1`, which
+`build-portable.sh` sets for that case only (known-issues KI-53).
+
 ```
 .\scripts\run-dev.ps1                  # Windows: cargo run (needs elevation)
 ./scripts/run-dev.sh                   # Linux: cargo run (app pkexec-relaunches;

@@ -573,6 +573,30 @@ Verified by screenshotting every page at 380x480 and 560x640. The pure parts
 (label column, temperature caption, dialog fitting) have unit tests; the wide
 layouts are asserted unchanged rather than merely eyeballed.
 
+### KI-53 — The Linux CI job had never run, and did not build `bug` `linux` `fixed`
+`ci.yml` grew a `test-linux` job during the linux-support work, but the
+workflow only triggers on `push: branches: [main]` and `pull_request`. The
+branch was never PR'd and never merged, so **that job had not executed once**
+between being written and the 1.7.0 release prep — every green tick in the CI
+history came from `main`, whose `ci.yml` has a Windows job and nothing else.
+
+The first dispatch of it failed immediately: `yeslogic-fontconfig-sys` (via
+`plotters`'s `ttf` feature → `font-kit`) resolves fontconfig through
+pkg-config and hard-fails without `fontconfig.pc`, which the job's apt list
+did not install. `scripts/build-portable.sh` already knows about this and
+exports `RUST_FONTCONFIG_DLOPEN=1` to make the crate dlopen libfontconfig
+instead — but deliberately only for *cross* builds, so a native build like
+CI's still takes the pkg-config path.
+
+Fixed by adding `libfontconfig1-dev` to the job's packages, and by listing the
+Linux build dependencies in CLAUDE.md, where nothing had recorded them.
+
+The wider lesson is the trigger, not the package: a job that only runs on
+`main` and PRs gives no signal at all to a long-lived branch that uses
+neither. Anything merging a branch of this age should dispatch the workflow
+against it (`gh workflow run ci.yml --ref <branch>`) *before* fast-forwarding
+`main`, or main inherits a failure nobody has seen.
+
 ## Resolved
 
 Condensed; see git history for full detail.
