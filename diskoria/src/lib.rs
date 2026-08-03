@@ -514,7 +514,11 @@ impl Renderer {
         let mut attrs = attrs
             .with_decorations(false)
             .with_inner_size(LogicalSize::new(800_u32, 600_u32))
-            .with_min_inner_size(LogicalSize::new(780_u32, 580_u32))
+            // Far below the old 780x580: the nav collapses to an icon rail and
+            // then to a hamburger menu as the window narrows, so there is no
+            // longer a width at which the sidebar alone squeezes the content
+            // out (theme::nav_mode).
+            .with_min_inner_size(LogicalSize::new(380_u32, 480_u32))
             .with_resizable(true)
             .with_title("Diskoria");
         if let Some(icon) = window_icon {

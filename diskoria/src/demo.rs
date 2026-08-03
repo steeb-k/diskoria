@@ -23,6 +23,8 @@
 //! --demo-toast      fire a sample Windows toast
 //! --demo-alert      monitoring having raised an alert
 //! --demo-confirm    the confirmation modal for the current page
+//! --demo-nav-open   hold the collapsed nav open — the rail's hover overlay at
+//!                   rail widths, the full-window menu at phone widths
 //! --demo-theme <dark|light>   force the theme, ignoring the OS and settings
 //! --demo-accent <RRGGBB>      force the accent, ignoring the live Windows one
 //! --demo-export <dir>         write the Export Log report for every canned
@@ -77,6 +79,10 @@ pub struct DemoConfig {
     pub toast: bool,
     pub alert: bool,
     pub confirm: bool,
+    /// Hold the collapsed nav open: the rail's hover overlay in `NavMode::Rail`,
+    /// the full-window menu in `NavMode::Mobile`. Both are pointer-driven and
+    /// so cannot otherwise be captured — same reason `--demo-confirm` exists.
+    pub nav_open: bool,
     /// `Some(true)` = force dark, `Some(false)` = force light.
     pub dark: Option<bool>,
     /// Accent as `(r, g, b)`, from `--demo-accent`.
@@ -103,6 +109,7 @@ impl DemoConfig {
             || self.toast
             || self.alert
             || self.confirm
+            || self.nav_open
     }
 
     /// The Sector Write Test gate is bypassed when a flag implies the test has
@@ -203,6 +210,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> DemoConfig {
             "--demo-toast" => cfg.toast = true,
             "--demo-alert" => cfg.alert = true,
             "--demo-confirm" => cfg.confirm = true,
+            "--demo-nav-open" => cfg.nav_open = true,
             _ => {}
         }
     }

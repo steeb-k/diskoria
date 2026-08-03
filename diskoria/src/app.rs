@@ -35,8 +35,8 @@ use crate::smart_health::SmartHealth;
 use crate::speed_test;
 use crate::speed_test::SpeedTestMsg;
 use crate::theme::{
-    apply_visuals, os_accent_color, Theme, CONTENT_MARGIN, MAX_CONTENT_W,
-    SIDE_PANEL_W, TITLEBAR_H,
+    apply_visuals, content_margin, nav_mode, os_accent_color, NavMode, Theme, MAX_CONTENT_W,
+    NAV_ICON_X, NAV_LABEL_X, RAIL_FLYOUT_W, RAIL_W, TITLEBAR_H,
 };
 use crate::focus::apply_manual_focus_event_filter;
 use crate::widgets::show_tooltip_text;
@@ -72,6 +72,110 @@ const NAV_BOTTOM: &[(&str, &str)] = &[
     ("\u{f431}", "About"),
     ("\u{f3e5}", "Settings"),
 ];
+
+/// Height of one nav row in the sidebar and the rail.
+const NAV_ROW_H: f32 = 40.0;
+/// Taller rows in the mobile menu — it's the only nav on screen, and the extra
+/// height gives a touch-sized target.
+const NAV_ROW_H_MOBILE: f32 = 52.0;
+/// Bootstrap Icons `power` — verified against the bundled font's `post` table,
+/// which is also where `gear` (Settings) and `info-circle` (About) come from.
+const ICON_QUIT: &str = "\u{f4ff}";
+
+/// Draw sizes at or below this take the 64px sidebar asset; anything larger
+/// takes the 512px one. Both are the same artwork — see [`DiskoriaApp::paint_nav_icon`].
+const NAV_ICON_SMALL_MAX: f32 = 64.0;
+
+/// **Trial.** The collapsed nav forms use the app-icon artwork because `applogo.png`
+/// turns to mush at rail size; this puts the app icon in the full 240px sidebar
+/// too, so all three forms carry the same mark.
+///
+/// Set to `false` to give the full sidebar its wordmark logo back — the
+/// `applogo.png` path (`paint_logo` and friends) is kept wired up for exactly
+/// that, and a plain `const` branch keeps both sides compiled and warning-free.
+const FULL_SIDEBAR_USES_APP_ICON: bool = true;
+/// Hover dwell before the collapsed rail expands, and pointer-out grace before
+/// it collapses again. The close delay is the longer of the two so a pointer
+/// clipping the corner of a row on its way out doesn't snap the panel shut.
+const NAV_RAIL_OPEN_DELAY: std::time::Duration = std::time::Duration::from_millis(120);
+const NAV_RAIL_CLOSE_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// One tick of the rail's hover state machine — see [`rail_hover_step`].
+#[derive(Debug, PartialEq, Eq)]
+struct RailHoverStep {
+    /// Whether the overlay should be open after this tick.
+    expanded: bool,
+    /// Pending-transition timestamp to carry into the next tick.
+    since: Option<Instant>,
+    /// Schedule a frame this far out, or the transition never completes: a
+    /// pointer that has come to rest generates no further events.
+    repaint_in: Option<std::time::Duration>,
+}
+
+/// Decide whether the hover overlay is open, given where the pointer is and how
+/// long it has been there. Pure so the delays can be tested without a window.
+///
+/// `since` is when the *pending* transition started — the one that has not yet
+/// waited out its delay. It is cleared whenever the pointer and the panel agree.
+fn rail_hover_step(
+    expanded: bool,
+    over: bool,
+    since: Option<Instant>,
+    now: Instant,
+) -> RailHoverStep {
+    if over == expanded {
+        // Pointer and panel already agree; drop any half-finished transition so
+        // a pointer that leaves and comes straight back starts its dwell over.
+        return RailHoverStep {
+            expanded,
+            since: None,
+            repaint_in: None,
+        };
+    }
+
+    let delay = if over {
+        NAV_RAIL_OPEN_DELAY
+    } else {
+        NAV_RAIL_CLOSE_DELAY
+    };
+    let since = since.unwrap_or(now);
+    let waited = now.saturating_duration_since(since);
+    if waited >= delay {
+        RailHoverStep {
+            expanded: over,
+            since: None,
+            repaint_in: None,
+        }
+    } else {
+        RailHoverStep {
+            expanded,
+            since: Some(since),
+            repaint_in: Some(delay - waited),
+        }
+    }
+}
+
+/// How a nav row paints: icons alone on the rail, icon + label everywhere else.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NavRowStyle {
+    Labeled,
+    IconOnly,
+    /// Labelled, but on taller rows — the mobile menu.
+    Mobile,
+}
+
+impl NavRowStyle {
+    fn row_h(self) -> f32 {
+        match self {
+            NavRowStyle::Mobile => NAV_ROW_H_MOBILE,
+            _ => NAV_ROW_H,
+        }
+    }
+
+    fn labeled(self) -> bool {
+        !matches!(self, NavRowStyle::IconOnly)
+    }
+}
 
 /// Sidebar nav mnemonics (uppercase = the capitalized letter that gets underlined):
 /// **H** Drive Health, **R** Sector Read, **W** Sector Write, **B** Benchmark, **A** About, **S** Settings.
@@ -178,6 +282,16 @@ pub struct DiskoriaApp {
     pub(crate) scroll_focus_frames: u8,
     pub(crate) pending_scroll_rect: Option<Rect>,
     active_nav: usize,
+    /// `NavMode::Rail` only: whether the hover overlay is currently open. Not
+    /// derived from the pointer directly — [`NAV_RAIL_OPEN_DELAY`] and
+    /// [`NAV_RAIL_CLOSE_DELAY`] sit between the two, so brushing the rail on the
+    /// way to the content does not flash a panel over the page.
+    nav_rail_expanded: bool,
+    /// When the pointer entered (or left) the rail, whichever transition is
+    /// currently pending. `None` once the pending delay has been applied.
+    nav_rail_since: Option<Instant>,
+    /// `NavMode::Mobile` only: the full-window nav menu is up.
+    nav_menu_open: bool,
     alt_pressed: bool,
     logo: Option<egui::TextureHandle>,
     logo_light: Option<egui::TextureHandle>,
@@ -354,7 +468,16 @@ pub struct DiskoriaApp {
     /// Manual Tab order on About: 0=Check updates, 1=URL, 2=Ko-fi.
     pub(crate) about_focus: Option<usize>,
 
+    /// `appicon2.ico` — the real app icon, shown on the About page.
     pub(crate) about_appicon: Option<egui::TextureHandle>,
+    /// The sidebar mark: `appicon2.png`, the 512px render of the same artwork.
+    /// Higher fidelity than any frame in the `.ico`, which is what the 240px
+    /// sidebar slot wants.
+    nav_icon: Option<egui::TextureHandle>,
+    /// `appicon2-64.png` for the 32px rail and mobile headers, where the 512px
+    /// asset would lose the icon's fine detail outright — see
+    /// [`DiskoriaApp::paint_nav_icon`].
+    nav_icon_small: Option<egui::TextureHandle>,
     #[cfg(any(windows, target_os = "linux"))]
     update_check_rx: Option<mpsc::Receiver<Result<crate::update::UpdateCheckResult, String>>>,
     #[cfg(any(windows, target_os = "linux"))]
@@ -446,8 +569,14 @@ impl DiskoriaApp {
         static LOGO_PNG: &[u8] = include_bytes!("../../assets/applogo.png");
         let (logo, logo_light, logo_size) = load_logo_textures(ctx, LOGO_PNG);
 
-        static ABOUT_ICO: &[u8] = include_bytes!("../../assets/appicon2.ico");
-        let about_appicon = crate::chrome::load_appicon_texture(ctx, ABOUT_ICO);
+        static APP_ICO: &[u8] = include_bytes!("../../assets/appicon2.ico");
+        let about_appicon =
+            crate::chrome::load_appicon_texture(ctx, "diskoria_about_appicon", APP_ICO);
+        static NAV_ICON_PNG: &[u8] = include_bytes!("../../assets/appicon2.png");
+        static NAV_ICON_64_PNG: &[u8] = include_bytes!("../../assets/appicon2-64.png");
+        let nav_icon = crate::chrome::load_appicon_texture(ctx, "diskoria_nav_icon", NAV_ICON_PNG);
+        let nav_icon_small =
+            crate::chrome::load_appicon_texture(ctx, "diskoria_nav_icon_small", NAV_ICON_64_PNG);
 
         let s = shared.settings_snapshot();
         // `--demo-accent` pins the accent for reproducible reference captures;
@@ -496,6 +625,9 @@ impl DiskoriaApp {
             scroll_focus_frames: 0,
             pending_scroll_rect: None,
             active_nav: 0,
+            nav_rail_expanded: false,
+            nav_rail_since: None,
+            nav_menu_open: false,
             alt_pressed: false,
             logo,
             logo_light,
@@ -607,6 +739,8 @@ impl DiskoriaApp {
             health_combo_id: None,
             about_focus: None,
             about_appicon,
+            nav_icon,
+            nav_icon_small,
             #[cfg(any(windows, target_os = "linux"))]
             update_check_rx: None,
             #[cfg(any(windows, target_os = "linux"))]
@@ -3721,12 +3855,51 @@ impl DiskoriaApp {
         }
     }
 
-    fn draw_sidebar(&mut self, ctx: &egui::Context, dark: bool) {
+    /// Draw whichever form of the nav this window's width calls for.
+    ///
+    /// Mobile draws nothing here — the menu is a full-window overlay put up
+    /// after the content (see [`DiskoriaApp::draw_nav_menu`]), and leaving the
+    /// `SidePanel` out entirely is what gives the central panel the whole width.
+    fn draw_sidebar(&mut self, ctx: &egui::Context, dark: bool, mode: NavMode) {
         let t = Theme::new(dark, self.shared.accent_color());
 
+        // Width comes from the mode, so the panel the user sees and the width
+        // the layout reserves for it are the same number.
+        let width = mode.side_panel_w();
+        match mode {
+            NavMode::Full => self.draw_sidebar_full(ctx, &t, dark, width),
+            NavMode::Rail => self.draw_sidebar_rail(ctx, &t, dark, width),
+            NavMode::Mobile => {}
+        }
+    }
+
+    /// Reset nav state that only makes sense in the mode we just left, so a
+    /// resize can never strand an expanded overlay or an open menu on screen.
+    fn sync_nav_mode(&mut self, mode: NavMode) {
+        if mode != NavMode::Rail {
+            self.nav_rail_expanded = false;
+            self.nav_rail_since = None;
+        }
+        if mode != NavMode::Mobile {
+            self.nav_menu_open = false;
+        }
+        // `--demo-nav-open`: pin whichever collapsed form this width uses. Both
+        // are pointer-driven, so a capture has no other way to reach them.
+        if crate::demo::config().nav_open {
+            match mode {
+                NavMode::Rail => self.nav_rail_expanded = true,
+                NavMode::Mobile => self.nav_menu_open = true,
+                NavMode::Full => {}
+            }
+        }
+    }
+
+    /// The 240px sidebar: mark, wordmark, labelled rows. Which mark depends on
+    /// [`FULL_SIDEBAR_USES_APP_ICON`].
+    fn draw_sidebar_full(&mut self, ctx: &egui::Context, t: &Theme, dark: bool, width: f32) {
         egui::SidePanel::left("diskoria_sidebar")
             .resizable(false)
-            .exact_width(SIDE_PANEL_W)
+            .exact_width(width)
             .show_separator_line(false)
             .frame(Frame::NONE.fill(t.sb_bg))
             .show(ctx, |ui| {
@@ -3734,25 +3907,10 @@ impl DiskoriaApp {
                 ui.add_space(TITLEBAR_H + 12.0);
 
                 let avail_w = ui.available_width();
-                let logo_handle = if dark { &self.logo } else { &self.logo_light };
-                if let Some(handle) = logo_handle {
-                    let pad = 10.0_f32;
-                    let img_w = avail_w - pad * 2.0;
-                    let [iw, ih] = self.logo_size;
-                    let img_h = if iw > 0 {
-                        img_w * ih as f32 / iw as f32
-                    } else {
-                        img_w
-                    };
-                    let top_left = Pos2::new(full.left() + pad, ui.cursor().min.y);
-                    let rect = Rect::from_min_size(top_left, Vec2::new(img_w, img_h));
-                    ui.allocate_space(Vec2::new(avail_w, img_h));
-                    ui.painter().image(
-                        handle.id(),
-                        rect,
-                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                        Color32::WHITE,
-                    );
+                if FULL_SIDEBAR_USES_APP_ICON {
+                    self.draw_nav_header(ui, t, full.left(), avail_w, 10.0, None);
+                } else {
+                    self.draw_sidebar_logo(ui, dark, full.left(), avail_w, 10.0);
                 }
 
                 let target_w = avail_w - 20.0;
@@ -3785,50 +3943,403 @@ impl DiskoriaApp {
                 );
                 ui.add_space(text_h + 8.0);
 
-                for (i, (icon, label)) in NAV_TOP.iter().enumerate() {
-                    self.draw_nav_row(ctx, ui, &t, dark, i, icon, label);
-                }
-
-                let bottom_h = NAV_BOTTOM.len() as f32 * 40.0 + 8.0;
-                let avail_h = ui.available_height();
-                ui.add_space((avail_h - bottom_h).max(0.0));
-
-                for (i, (icon, label)) in NAV_BOTTOM.iter().enumerate() {
-                    let idx = NAV_TOP.len() + i;
-                    self.draw_nav_row(ctx, ui, &t, dark, idx, icon, label);
-                }
-                ui.add_space(8.0);
+                let _ = self.draw_nav_list(ctx, ui, t, dark, avail_w, NavRowStyle::Labeled);
             });
     }
 
-    fn draw_nav_row(
+    /// The 72px icon rail, plus the labelled overlay it expands to on hover.
+    ///
+    /// The overlay is a foreground `Area`, not a wider panel: the central panel
+    /// keeps the width it had, so hovering the rail never reflows the page
+    /// underneath the pointer.
+    fn draw_sidebar_rail(&mut self, ctx: &egui::Context, t: &Theme, dark: bool, width: f32) {
+        egui::SidePanel::left("diskoria_sidebar")
+            .resizable(false)
+            .exact_width(width)
+            .show_separator_line(false)
+            .frame(Frame::NONE.fill(t.sb_bg))
+            .show(ctx, |ui| {
+                let full = ui.max_rect();
+                ui.add_space(TITLEBAR_H + 8.0);
+                let avail_w = ui.available_width();
+                self.draw_nav_header(ui, t, full.left(), avail_w, 8.0, None);
+                ui.add_space(10.0);
+                let _ = self.draw_nav_list(ctx, ui, t, dark, avail_w, NavRowStyle::IconOnly);
+            });
+
+        self.update_rail_hover(ctx);
+        if self.nav_rail_expanded {
+            self.draw_rail_flyout(ctx, t, dark);
+        }
+    }
+
+    /// Open/close the hover overlay, with a delay on each edge so a pointer
+    /// crossing the rail on its way somewhere else doesn't trigger it.
+    fn update_rail_hover(&mut self, ctx: &egui::Context) {
+        // Pinned open for a capture; the pointer does not get a vote.
+        if crate::demo::config().nav_open {
+            return;
+        }
+        let screen = ctx.screen_rect();
+        // While a modal owns the screen the rail must stay put: the overlay
+        // would paint over a scrim that is meant to be swallowing input.
+        if self.blocks_content_interaction() {
+            self.nav_rail_expanded = false;
+            self.nav_rail_since = None;
+            return;
+        }
+
+        // Once expanded, the overlay itself is the hover target — otherwise the
+        // panel would close the moment the pointer moved onto one of its rows.
+        let hot_w = if self.nav_rail_expanded {
+            RAIL_FLYOUT_W
+        } else {
+            RAIL_W
+        };
+        let hot = Rect::from_min_size(screen.left_top(), Vec2::new(hot_w, screen.height()));
+        let over = ctx
+            .input(|i| i.pointer.hover_pos())
+            .is_some_and(|p| hot.contains(p));
+
+        let step = rail_hover_step(
+            self.nav_rail_expanded,
+            over,
+            self.nav_rail_since,
+            Instant::now(),
+        );
+        self.nav_rail_expanded = step.expanded;
+        self.nav_rail_since = step.since;
+        if let Some(d) = step.repaint_in {
+            // Nothing else would wake the loop: the pointer may already have
+            // stopped moving, so the transition has to schedule its own frame.
+            ctx.request_repaint_after(d);
+        }
+    }
+
+    /// The labelled panel the rail expands to. Painted over the content, with
+    /// a hairline right edge instead of a blur shadow — the CPU rasterizer
+    /// pays for every translucent pixel (see `docs/gui-architecture.md` § 1).
+    fn draw_rail_flyout(&mut self, ctx: &egui::Context, t: &Theme, dark: bool) {
+        let screen = ctx.screen_rect();
+        let rect = Rect::from_min_size(
+            screen.left_top(),
+            Vec2::new(RAIL_FLYOUT_W, screen.height()),
+        );
+
+        egui::Area::new(Id::new("diskoria_rail_flyout"))
+            .order(Order::Foreground)
+            .fixed_pos(rect.min)
+            .show(ctx, |ui| {
+                // Claim the whole panel first so clicks and scrolls land here
+                // rather than on the page it is covering.
+                ui.allocate_rect(rect, Sense::click_and_drag());
+                ui.painter().rect_filled(
+                    rect,
+                    CornerRadius {
+                        nw: 0,
+                        ne: 0,
+                        sw: 0,
+                        se: 8,
+                    },
+                    t.sb_bg,
+                );
+                ui.painter().line_segment(
+                    [rect.right_top(), rect.right_bottom()],
+                    Stroke::new(1.0_f32, t.border),
+                );
+
+                let picked = ui
+                    .scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                        ui.add_space(TITLEBAR_H + 8.0);
+                        // Icon stays at rail width so it doesn't jump sideways
+                        // as the panel opens over it; the name appears beside
+                        // it, aligned with the row labels below.
+                        self.draw_nav_header(
+                            ui,
+                            t,
+                            rect.left(),
+                            RAIL_W,
+                            8.0,
+                            Some(NAV_LABEL_X),
+                        );
+                        ui.add_space(10.0);
+                        self.draw_nav_list(ctx, ui, t, dark, RAIL_FLYOUT_W, NavRowStyle::Labeled)
+                    })
+                    .inner;
+                if picked {
+                    // Collapse straight away rather than waiting for the
+                    // pointer to leave — the page behind is what the user just
+                    // asked to look at.
+                    self.nav_rail_expanded = false;
+                    self.nav_rail_since = None;
+                }
+            });
+    }
+
+    /// The phone-width nav: a full-window menu over everything, title bar
+    /// included. Drawn after the content so it wins the input, but before the
+    /// modals, which still have to be able to cover it.
+    ///
+    /// The window loses its minimize/maximize/close buttons behind the menu;
+    /// the header strip keeps the drag gesture so the window can still be
+    /// moved, and the menu is one tap from closing.
+    fn draw_nav_menu(&mut self, ctx: &egui::Context, dark: bool) {
+        let t = Theme::new(dark, self.shared.accent_color());
+        let screen = ctx.screen_rect();
+
+        // Esc backs out, as everywhere else in the app.
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            self.nav_menu_open = false;
+            return;
+        }
+
+        let header_h = 56.0_f32;
+        let header = Rect::from_min_size(screen.left_top(), Vec2::new(screen.width(), header_h));
+        let close_rect = Rect::from_min_size(
+            Pos2::new(screen.right() - crate::theme::BTN_W, screen.top()),
+            Vec2::splat(crate::theme::BTN_W),
+        );
+
+        egui::Area::new(Id::new("diskoria_nav_menu"))
+            .order(Order::Foreground)
+            .fixed_pos(screen.min)
+            .show(ctx, |ui| {
+                // Opaque, full-window: nothing behind the menu may be clicked.
+                ui.allocate_rect(screen, Sense::click_and_drag());
+                ui.painter().rect_filled(screen, 0.0, t.sb_bg);
+
+                let drag_r = ui.interact(
+                    Rect::from_min_max(header.left_top(), Pos2::new(close_rect.left(), header.bottom())),
+                    Id::new("diskoria_nav_menu_drag"),
+                    Sense::click_and_drag(),
+                );
+                if drag_r.dragged() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
+
+                // Explicit position, not the cursor: the backdrop above already
+                // allocated the whole window, so the cursor is at its foot.
+                // App icon rather than the wordmark logo, for the same reason
+                // the rail uses it — this is icon-sized.
+                let icon_size = 32.0_f32;
+                self.paint_nav_icon(
+                    ui.painter(),
+                    Pos2::new(screen.left() + 14.0, header.center().y - icon_size * 0.5),
+                    icon_size,
+                );
+                ui.painter().text(
+                    Pos2::new(screen.left() + 58.0, header.center().y),
+                    Align2::LEFT_CENTER,
+                    "Diskoria",
+                    FontId::new(20.0, FontFamily::Name("InterBold".into())),
+                    t.txt_pri,
+                );
+
+                let close_r = ui.interact(
+                    close_rect,
+                    Id::new("diskoria_nav_menu_close"),
+                    INTERACT_MANUAL_FOCUS,
+                );
+                if close_r.hovered() {
+                    ui.painter().rect_filled(close_rect, 0.0, t.hover);
+                }
+                let cc = close_rect.center();
+                let d = 6.0_f32;
+                for (a, b) in [((-d, -d), (d, d)), ((d, -d), (-d, d))] {
+                    ui.painter().line_segment(
+                        [
+                            Pos2::new(cc.x + a.0, cc.y + a.1),
+                            Pos2::new(cc.x + b.0, cc.y + b.1),
+                        ],
+                        Stroke::new(1.5_f32, t.txt_pri),
+                    );
+                }
+
+                // The logo call above allocated only its own height; put the
+                // cursor below the whole header before listing the rows.
+                ui.scope_builder(
+                    egui::UiBuilder::new().max_rect(Rect::from_min_max(
+                        Pos2::new(screen.left(), header.bottom() + 8.0),
+                        screen.max,
+                    )),
+                    |ui| {
+                        if self.draw_nav_list(
+                            ctx,
+                            ui,
+                            &t,
+                            dark,
+                            screen.width(),
+                            NavRowStyle::Mobile,
+                        ) {
+                            self.nav_menu_open = false;
+                        }
+                    },
+                );
+
+                if close_r.clicked() {
+                    self.nav_menu_open = false;
+                }
+            });
+    }
+
+    /// Paint the square sidebar mark `size` wide at `top_left`, from whichever
+    /// asset is closest to the size being drawn.
+    ///
+    /// The CPU rasterizer **point-samples** — `tex_mgr::TexEntry::sample` is a
+    /// single floored texel lookup, and the `TextureOptions::LINEAR` we pass
+    /// egui never reaches a GPU sampler. So a texture drawn far below its
+    /// native size keeps one texel in every NxN block and simply drops the
+    /// rest: at 512 → 32 the icon's contact pins disappear into blobs. The
+    /// 64px asset is there for the rail and mobile headers; the 240px sidebar
+    /// takes the 512px one.
+    fn paint_nav_icon(&self, painter: &egui::Painter, top_left: Pos2, size: f32) {
+        let preferred = if size <= NAV_ICON_SMALL_MAX {
+            self.nav_icon_small.as_ref().or(self.nav_icon.as_ref())
+        } else {
+            self.nav_icon.as_ref().or(self.nav_icon_small.as_ref())
+        };
+        let Some(handle) = preferred else { return };
+        painter.image(
+            handle.id(),
+            Rect::from_min_size(top_left, Vec2::splat(size)),
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
+    }
+
+    /// Height the logo takes at `img_w` wide, from the texture's own aspect.
+    fn logo_h_for(&self, img_w: f32) -> f32 {
+        let [iw, ih] = self.logo_size;
+        if iw > 0 {
+            img_w * ih as f32 / iw as f32
+        } else {
+            img_w
+        }
+    }
+
+    /// Paint the app logo `img_w` wide with its top-left at `top_left`,
+    /// returning the height it took. Aspect comes from the texture, so the mark
+    /// keeps its proportions at every nav width.
+    fn paint_logo(&self, painter: &egui::Painter, dark: bool, top_left: Pos2, img_w: f32) -> f32 {
+        let logo_handle = if dark { &self.logo } else { &self.logo_light };
+        let Some(handle) = logo_handle else { return 0.0 };
+        let img_h = self.logo_h_for(img_w);
+        painter.image(
+            handle.id(),
+            Rect::from_min_size(top_left, Vec2::new(img_w, img_h)),
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
+        img_h
+    }
+
+    /// The nav's header mark: the app icon, squared off and centred in a
+    /// `width`-wide column at `pad` inset. `name_at` puts the app name beside
+    /// it, that far from `left` — used by the expanded overlay, where lining
+    /// the wordmark up with `NAV_LABEL_X` puts it on the same left edge as the
+    /// row labels underneath. Advances the cursor past the block.
+    fn draw_nav_header(
+        &self,
+        ui: &mut egui::Ui,
+        t: &Theme,
+        left: f32,
+        width: f32,
+        pad: f32,
+        name_at: Option<f32>,
+    ) {
+        let size = (width - pad * 2.0).max(1.0);
+        let top = ui.cursor().min.y;
+        self.paint_nav_icon(
+            ui.painter(),
+            Pos2::new(left + (width - size) * 0.5, top),
+            size,
+        );
+        if let Some(x) = name_at {
+            ui.painter().text(
+                Pos2::new(left + x, top + size * 0.5),
+                Align2::LEFT_CENTER,
+                "Diskoria",
+                FontId::new(19.0, FontFamily::Name("InterBold".into())),
+                t.txt_pri,
+            );
+        }
+        ui.allocate_space(Vec2::new(width, size));
+    }
+
+    /// Flow-layout wrapper around [`paint_logo`]: fits it to `width` at `pad`
+    /// inset from `left`, then advances the cursor past it.
+    ///
+    /// Only safe where the cursor is where the logo goes — the mobile menu
+    /// allocates its whole backdrop first, so that one calls `paint_logo`
+    /// directly with a rect of its own.
+    fn draw_sidebar_logo(&self, ui: &mut egui::Ui, dark: bool, left: f32, width: f32, pad: f32) {
+        let img_w = (width - pad * 2.0).max(1.0);
+        let top_left = Pos2::new(left + pad, ui.cursor().min.y);
+        let img_h = self.paint_logo(ui.painter(), dark, top_left, img_w);
+        ui.allocate_space(Vec2::new(width, img_h));
+    }
+
+    /// The nav rows themselves: the top group, then the bottom group pushed to
+    /// the foot of the panel. Identical in every mode bar the row style.
+    /// Returns `true` if a row was picked this frame.
+    #[must_use]
+    fn draw_nav_list(
         &mut self,
         ctx: &egui::Context,
         ui: &mut egui::Ui,
         t: &Theme,
         dark: bool,
-        index: usize,
+        width: f32,
+        style: NavRowStyle,
+    ) -> bool {
+        let mut picked = false;
+        for (i, (icon, label)) in NAV_TOP.iter().enumerate() {
+            picked |= self.draw_nav_row(ctx, ui, t, dark, i, icon, label, width, style);
+        }
+
+        // Only the mobile menu carries Quit — it is the one form whose title
+        // bar has no close button to fall back on.
+        let with_quit = style == NavRowStyle::Mobile;
+        let bottom_rows = NAV_BOTTOM.len() + usize::from(with_quit);
+        let bottom_h = bottom_rows as f32 * style.row_h() + 8.0;
+        let avail_h = ui.available_height();
+        ui.add_space((avail_h - bottom_h).max(0.0));
+
+        for (i, (icon, label)) in NAV_BOTTOM.iter().enumerate() {
+            let idx = NAV_TOP.len() + i;
+            picked |= self.draw_nav_row(ctx, ui, t, dark, idx, icon, label, width, style);
+        }
+        if with_quit {
+            picked |= self.draw_quit_row(ui, t, dark, width, style);
+        }
+        ui.add_space(8.0);
+        picked
+    }
+
+    /// Row chrome: allocation, active/hover fill, icon and label. Returns the
+    /// response and the colour anything else drawn on the row should take.
+    ///
+    /// Shared by the page rows and the mobile menu's Quit action so the two
+    /// cannot drift apart visually.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_nav_row(
+        &self,
+        ui: &mut egui::Ui,
+        t: &Theme,
+        dark: bool,
+        width: f32,
+        style: NavRowStyle,
         icon: &str,
         label: &str,
-    ) {
-        let is_active = self.active_nav == index;
-        #[cfg(any(windows, target_os = "linux"))]
-        let update_nav_block = self.pending_chart_export.is_some()
-            || self.show_update_staged_modal
-            || self.show_update_alert
-            || self.update_check_busy
-            || self.update_download_busy;
-        #[cfg(not(any(windows, target_os = "linux")))]
-        let update_nav_block = false;
-        let can_select = !self.show_stop_test_confirm
-            && !update_nav_block
-            && (!self.any_test_running() || is_active);
+        is_active: bool,
+        can_select: bool,
+    ) -> (egui::Response, Color32) {
         let sense = if can_select {
             INTERACT_MANUAL_FOCUS
         } else {
             Sense::empty()
         };
-        let item_r = ui.allocate_response(Vec2::new(ui.available_width(), 40.0), sense);
+        let item_r = ui.allocate_response(Vec2::new(width, style.row_h()), sense);
 
         if is_active {
             let fill = Color32::from_rgba_premultiplied(
@@ -3862,28 +4373,98 @@ impl DiskoriaApp {
             t.txt_pri
         };
         let cy = item_r.rect.center().y;
+        // The same offset in every form — `RAIL_W` is 2 × NAV_ICON_X, so this
+        // is simultaneously the rail's centre and the overlay's icon column,
+        // and nothing shifts when the overlay opens over the rail.
         ui.painter().text(
-            Pos2::new(item_r.rect.left() + 24.0, cy),
+            Pos2::new(item_r.rect.left() + NAV_ICON_X, cy),
             Align2::CENTER_CENTER,
             icon,
             FontId::proportional(18.0),
             icon_col,
         );
-        ui.painter().text(
-            Pos2::new(item_r.rect.left() + 52.0, cy),
-            Align2::LEFT_CENTER,
-            label,
-            FontId::proportional(15.0),
-            icon_col,
-        );
+        if style.labeled() {
+            ui.painter().text(
+                Pos2::new(item_r.rect.left() + NAV_LABEL_X, cy),
+                Align2::LEFT_CENTER,
+                label,
+                FontId::proportional(15.0),
+                icon_col,
+            );
+        }
 
-        if can_select && self.alt_pressed && !label.is_empty() {
+        (item_r, icon_col)
+    }
+
+    /// The mobile menu's Quit row, below Settings. It replaces the close button
+    /// the phone-width title bar gives up, so — like that button — it stays
+    /// live while a test is running; `UserEvent::QuitRequested` cancels the
+    /// tests and the monitor on its way out.
+    ///
+    /// Genuinely quits, rather than sending `ViewportCommand::Close`: with
+    /// `close_to_tray` on, closing hides the window and keeps monitoring, which
+    /// is not what a menu entry labelled Quit should do.
+    fn draw_quit_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        t: &Theme,
+        dark: bool,
+        width: f32,
+        style: NavRowStyle,
+    ) -> bool {
+        let (item_r, _) =
+            self.paint_nav_row(ui, t, dark, width, style, ICON_QUIT, "Quit", false, true);
+        if item_r.clicked() {
+            let _ = self
+                .shared
+                .event_proxy
+                .send_event(crate::UserEvent::QuitRequested);
+            return true;
+        }
+        false
+    }
+
+    /// One nav row. Returns `true` if it was picked this frame — the mobile
+    /// menu and the rail overlay both close themselves on a pick.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_nav_row(
+        &mut self,
+        ctx: &egui::Context,
+        ui: &mut egui::Ui,
+        t: &Theme,
+        dark: bool,
+        index: usize,
+        icon: &str,
+        label: &str,
+        width: f32,
+        style: NavRowStyle,
+    ) -> bool {
+        let is_active = self.active_nav == index;
+        #[cfg(any(windows, target_os = "linux"))]
+        let update_nav_block = self.pending_chart_export.is_some()
+            || self.show_update_staged_modal
+            || self.show_update_alert
+            || self.update_check_busy
+            || self.update_download_busy;
+        #[cfg(not(any(windows, target_os = "linux")))]
+        let update_nav_block = false;
+        let can_select = !self.show_stop_test_confirm
+            && !update_nav_block
+            && (!self.any_test_running() || is_active);
+        let (item_r, icon_col) =
+            self.paint_nav_row(ui, t, dark, width, style, icon, label, is_active, can_select);
+        let cy = item_r.rect.center().y;
+
+        // Only where the label is actually on screen — there is nothing to
+        // underline on the rail. The Alt+key shortcuts still work there; they
+        // are bound in `draw`, not here.
+        if style.labeled() && can_select && self.alt_pressed && !label.is_empty() {
             let font = FontId::proportional(15.0);
             if let Some(m) = nav_mnemonic_char(index) {
                 if let Some((w_before, w_ch)) =
                     nav_mnemonic_prefix_and_char_width(label, m, ctx, &font)
                 {
-                    let left = item_r.rect.left() + 52.0;
+                    let left = item_r.rect.left() + NAV_LABEL_X;
                     let underline_y = cy + 10.0;
                     ui.painter().line_segment(
                         [
@@ -3898,10 +4479,12 @@ impl DiskoriaApp {
 
         if item_r.clicked() && can_select {
             self.active_nav = index;
+            return true;
         }
+        false
     }
 
-    fn draw_central(&mut self, ctx: &egui::Context, dark: bool) {
+    fn draw_central(&mut self, ctx: &egui::Context, dark: bool, mode: NavMode) {
         let t = Theme::new(dark, self.shared.accent_color());
 
         egui::CentralPanel::default()
@@ -3916,7 +4499,7 @@ impl DiskoriaApp {
                         ui.set_min_width(ui.available_width());
                         ui.add_space(20.0);
 
-                        let margin = CONTENT_MARGIN;
+                        let margin = content_margin(mode);
                         let full_w = ui.available_width();
                         let content_w = full_w.min(MAX_CONTENT_W);
                         let content_x = ui.max_rect().left() + (full_w - content_w) * 0.5;
@@ -5364,15 +5947,30 @@ impl DiskoriaApp {
         apply_visuals(ctx, dark, accent);
 
         let t = Theme::new(dark, accent);
+        // One mode for the whole frame: the title bar, the sidebar and the
+        // content margins all have to agree, and `screen_rect` can change
+        // between calls mid-resize.
+        let mode = nav_mode(ctx.screen_rect().width());
+        self.sync_nav_mode(mode);
+
         // Same paint order as copynaut: titlebar → sidebar → content (content last in default layer).
-        if draw_titlebar(ctx, &t, self.hwnd) {
+        let tb = draw_titlebar(ctx, &t, self.hwnd, mode, self.nav_menu_open);
+        if tb.new_window {
             let _ = self
                 .shared
                 .event_proxy
                 .send_event(crate::UserEvent::OpenNewWindow);
         }
-        self.draw_sidebar(ctx, dark);
-        self.draw_central(ctx, dark);
+        if tb.menu_toggled {
+            // A modal owns the screen: the hamburger is visible under it but
+            // must not put a menu on top of the dialog.
+            self.nav_menu_open = !self.nav_menu_open && !self.blocks_content_interaction();
+        }
+        self.draw_sidebar(ctx, dark, mode);
+        self.draw_central(ctx, dark, mode);
+        if self.nav_menu_open {
+            self.draw_nav_menu(ctx, dark);
+        }
         self.apply_health_page_focus_bindings(ctx);
         self.apply_sector_page_focus_bindings(ctx);
         self.apply_speed_page_focus_bindings(ctx);
@@ -6301,6 +6899,85 @@ fn speed_target(
         eligible[0]
     };
     Some((di, pi))
+}
+
+#[cfg(test)]
+mod rail_hover_tests {
+    use super::{
+        rail_hover_step, NAV_RAIL_CLOSE_DELAY, NAV_RAIL_OPEN_DELAY,
+    };
+    use std::time::Instant;
+
+    #[test]
+    fn steady_state_clears_any_pending_transition() {
+        let t0 = Instant::now();
+        // Pointer away, panel closed.
+        let s = rail_hover_step(false, false, Some(t0), t0);
+        assert!(!s.expanded);
+        assert_eq!(s.since, None);
+        assert_eq!(s.repaint_in, None);
+        // Pointer on it, panel open.
+        let s = rail_hover_step(true, true, Some(t0), t0);
+        assert!(s.expanded);
+        assert_eq!(s.since, None);
+    }
+
+    #[test]
+    fn opening_waits_out_the_dwell_and_schedules_its_own_frame() {
+        let t0 = Instant::now();
+        // Pointer arrives: nothing visible yet, but a frame is booked.
+        let s = rail_hover_step(false, true, None, t0);
+        assert!(!s.expanded, "must not open on the first frame of hover");
+        assert_eq!(s.since, Some(t0));
+        assert_eq!(s.repaint_in, Some(NAV_RAIL_OPEN_DELAY));
+
+        // Part-way through the dwell: still shut, frame re-booked for the rest.
+        let half = NAV_RAIL_OPEN_DELAY / 2;
+        let s = rail_hover_step(false, true, Some(t0), t0 + half);
+        assert!(!s.expanded);
+        assert_eq!(s.repaint_in, Some(NAV_RAIL_OPEN_DELAY - half));
+
+        // Dwell elapsed.
+        let s = rail_hover_step(false, true, Some(t0), t0 + NAV_RAIL_OPEN_DELAY);
+        assert!(s.expanded);
+        assert_eq!(s.since, None);
+        assert_eq!(s.repaint_in, None);
+    }
+
+    #[test]
+    fn closing_uses_the_longer_grace() {
+        let t0 = Instant::now();
+        let s = rail_hover_step(true, false, None, t0);
+        assert!(s.expanded, "must not slam shut the instant the pointer leaves");
+        assert_eq!(s.repaint_in, Some(NAV_RAIL_CLOSE_DELAY));
+
+        // The open dwell is not long enough to close it — the two delays are
+        // independent, and close is the more forgiving of the two.
+        assert!(NAV_RAIL_CLOSE_DELAY > NAV_RAIL_OPEN_DELAY);
+        let s = rail_hover_step(true, false, Some(t0), t0 + NAV_RAIL_OPEN_DELAY);
+        assert!(s.expanded);
+
+        let s = rail_hover_step(true, false, Some(t0), t0 + NAV_RAIL_CLOSE_DELAY);
+        assert!(!s.expanded);
+    }
+
+    #[test]
+    fn a_pointer_brushing_past_never_opens_the_panel() {
+        // The case the delays exist for: in and out again inside the dwell.
+        let t0 = Instant::now();
+        let brush = NAV_RAIL_OPEN_DELAY / 3;
+        let s = rail_hover_step(false, true, None, t0);
+        assert!(!s.expanded);
+        // Pointer has moved off before the dwell elapsed.
+        let s = rail_hover_step(s.expanded, false, s.since, t0 + brush);
+        assert!(!s.expanded);
+        // …and the half-finished dwell was dropped, so coming back later starts
+        // a fresh one rather than opening immediately.
+        assert_eq!(s.since, None);
+        let s = rail_hover_step(false, true, s.since, t0 + brush * 2);
+        assert!(!s.expanded);
+        assert_eq!(s.since, Some(t0 + brush * 2));
+    }
 }
 
 #[cfg(test)]

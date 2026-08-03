@@ -4,7 +4,9 @@ use egui::{Color32, FontFamily, Id, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2}
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::theme::{Theme, BTN_W, CLOSE_HOVER_BG, CONTROLS_W, NEWWIN_W, TITLEBAR_H};
+use crate::theme::{
+    NavMode, Theme, BTN_W, CLOSE_HOVER_BG, CONTROLS_W, NEWWIN_W, TITLEBAR_H,
+};
 
 /// Set on device add/remove: by the subclassed window procedure on
 /// `WM_DEVICECHANGE` (`DBT_DEVNODES_CHANGED`) on Windows, by the netlink
@@ -103,9 +105,11 @@ pub fn load_logo_textures(
     (Some(logo), Some(logo_light), size)
 }
 
-/// Load an image (PNG or ICO) as an egui texture for the About page.
+/// Load an image (PNG or ICO) as an egui texture. `name` is egui's debug name
+/// for it — give each asset its own so they're tellable apart in a texture dump.
 pub fn load_appicon_texture(
     ctx: &egui::Context,
+    name: &str,
     bytes: &[u8],
 ) -> Option<egui::TextureHandle> {
     let img = image::load_from_memory(bytes).ok()?;
@@ -116,7 +120,7 @@ pub fn load_appicon_texture(
         rgba.as_raw(),
     );
     Some(ctx.load_texture(
-        "diskoria_about_appicon",
+        name,
         color_image,
         egui::TextureOptions::LINEAR,
     ))
@@ -166,6 +170,7 @@ mod win32_resize {
     use std::sync::OnceLock;
 
     use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CallWindowProcW, DefWindowProcW, GetSystemMetrics, GetWindowLongW, GetWindowRect, IsZoomed,
         SetWindowLongPtrW, SetWindowLongW, SetWindowPos, WM_NCHITTEST,
@@ -226,16 +231,31 @@ mod win32_resize {
 
             let cx = x_from_lparam(lparam);
             let cy = y_from_lparam(lparam);
-            // Shared with the egui title bar via theme.rs so the controls strip
-            // and the resize border can never disagree (see KI-1).
-            let titlebar_h = crate::theme::TITLEBAR_H as i32;
-            let controls_w = crate::theme::CONTROLS_W as i32;
             let mut rect_for_controls: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
             if GetWindowRect(hwnd, &mut rect_for_controls) != 0 {
+                // Everything the title bar draws is in logical pixels; the hit
+                // test works in physical ones. Scale rather than compare the
+                // two directly — at 150% the untranslated constants carved out
+                // only two thirds of the strip (known-issues KI-51).
+                let dpi = GetDpiForWindow(hwnd);
+                let scale = if dpi == 0 { 1.0 } else { dpi as f32 / 96.0 };
+                let logical_w = (rect_for_controls.right - rect_for_controls.left) as f32 / scale;
+                // Same `nav_mode` the drawing code uses, so the strip the user
+                // can see and the strip that swallows the resize border are
+                // always the same strip (KI-1's rule, now mode-dependent).
+                let mode = crate::theme::nav_mode(logical_w);
+                let (left_reserve, right_reserve) = super::titlebar_hit_reserve(mode);
+                let titlebar_h = (crate::theme::TITLEBAR_H * scale) as i32;
+                let left_w = (left_reserve * scale) as i32;
+                let right_w = (right_reserve * scale) as i32;
+
                 let in_top = cy >= rect_for_controls.top && cy < rect_for_controls.top + titlebar_h;
                 let in_controls =
-                    cx >= rect_for_controls.right - controls_w && cx < rect_for_controls.right;
-                if in_top && in_controls {
+                    cx >= rect_for_controls.right - right_w && cx < rect_for_controls.right;
+                let in_left = left_w > 0
+                    && cx >= rect_for_controls.left
+                    && cx < rect_for_controls.left + left_w;
+                if in_top && (in_controls || in_left) {
                     return HTCLIENT;
                 }
             }
@@ -437,12 +457,50 @@ pub fn handle_edge_resize(ctx: &egui::Context) {
     }
 }
 
-/// Draws the custom title bar (drag strip + window controls). Returns `true`
-/// on the frame the new-window button is clicked, so the caller can fire
-/// `UserEvent::OpenNewWindow` (it has the `SharedAppState` / event proxy that
-/// this free function does not).
+/// What the title bar reports back for the frame it was drawn on. Both fields
+/// are one-frame click edges, not held state.
+#[derive(Default, Clone, Copy)]
+pub struct TitlebarOut {
+    /// The new-window button was clicked (absent in [`NavMode::Mobile`]).
+    pub new_window: bool,
+    /// The hamburger was clicked — the caller toggles its nav menu.
+    pub menu_toggled: bool,
+}
+
+/// Logical widths the title bar reserves at each end of the top strip:
+/// `(left, right)`. The left reserve is the mobile hamburger; the right is the
+/// window-control strip.
+///
+/// Both the egui title bar and the Win32 `WM_NCHITTEST` hook call this, so the
+/// clickable buttons and the resize border can never disagree about where the
+/// strip ends — the property KI-1 established for `CONTROLS_W`, kept now that
+/// the strip's width depends on the nav mode.
+pub fn titlebar_hit_reserve(mode: NavMode) -> (f32, f32) {
+    match mode {
+        // Hamburger on the left; nothing on the right — at phone width the
+        // window controls give way entirely and Quit lives in the menu.
+        NavMode::Mobile => (BTN_W, 0.0),
+        _ => (0.0, CONTROLS_W),
+    }
+}
+
+/// Draws the custom title bar (drag strip + window controls). See
+/// [`TitlebarOut`] for what the caller has to act on — this free function has
+/// neither the `SharedAppState` nor the event proxy needed to fire
+/// `UserEvent::OpenNewWindow` itself.
+///
+/// In [`NavMode::Mobile`] the bar is rebuilt: the new-window button and the
+/// minimize/maximize glyphs give up their room to a hamburger and the app name,
+/// leaving only close. Maximize is still reachable by double-clicking the drag
+/// strip, so a window dragged down to phone size can always be restored.
 #[must_use]
-pub fn draw_titlebar(ctx: &egui::Context, t: &Theme, hwnd: isize) -> bool {
+pub fn draw_titlebar(
+    ctx: &egui::Context,
+    t: &Theme,
+    hwnd: isize,
+    mode: NavMode,
+    menu_open: bool,
+) -> TitlebarOut {
     #[cfg(windows)]
     let maximized = {
         use windows_sys::Win32::UI::WindowsAndMessaging::IsZoomed;
@@ -455,6 +513,9 @@ pub fn draw_titlebar(ctx: &egui::Context, t: &Theme, hwnd: isize) -> bool {
     let _ = hwnd;
 
     let screen = ctx.screen_rect();
+    if mode == NavMode::Mobile {
+        return draw_titlebar_mobile(ctx, t, screen, maximized, menu_open);
+    }
     let controls_w = CONTROLS_W;
     let close_rect = Rect::from_min_size(
         Pos2::new(screen.right() - BTN_W, screen.top()),
@@ -637,5 +698,95 @@ pub fn draw_titlebar(ctx: &egui::Context, t: &Theme, hwnd: isize) -> bool {
             new_r.clicked()
         });
 
-    inner.inner
+    TitlebarOut {
+        new_window: inner.inner,
+        menu_toggled: false,
+    }
+}
+
+/// Phone-width title bar: `[hamburger] Diskoria …`.
+///
+/// Deliberately not a variant of the wide bar — at 380px there is no room for
+/// five controls, and phone-style navigation puts what survives in the menu
+/// rather than the chrome. Nothing is left on the right at all: Quit is the
+/// last row of the nav menu, and maximize/restore is still a double-click on
+/// the drag strip.
+fn draw_titlebar_mobile(
+    ctx: &egui::Context,
+    t: &Theme,
+    screen: Rect,
+    maximized: bool,
+    menu_open: bool,
+) -> TitlebarOut {
+    let (left_reserve, _) = titlebar_hit_reserve(NavMode::Mobile);
+    let menu_rect = Rect::from_min_size(screen.left_top(), Vec2::new(left_reserve, TITLEBAR_H));
+    let drag_rect = Rect::from_min_max(
+        Pos2::new(menu_rect.right(), screen.top()),
+        Pos2::new(screen.right(), screen.top() + TITLEBAR_H),
+    );
+
+    egui::Area::new(Id::new("diskoria_tb_drag"))
+        .fixed_pos(drag_rect.min)
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            let drag_r =
+                ui.interact(drag_rect, Id::new("diskoria_tb_drag_i"), Sense::click_and_drag());
+            if drag_r.dragged() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            }
+            if drag_r.double_clicked() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+            }
+            // The app name sits in the drag strip, not on a button — dragging
+            // the window by its own name is the expected gesture.
+            ui.painter().text(
+                Pos2::new(drag_rect.left() + 4.0, drag_rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                "Diskoria",
+                egui::FontId::new(13.0, FontFamily::Name("InterBold".into())),
+                t.txt_pri,
+            );
+        });
+
+    let inner = egui::Area::new(Id::new("diskoria_tb_controls"))
+        .fixed_pos(menu_rect.left_top())
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            let menu_r = ui.interact(menu_rect, Id::new("diskoria_tb_menu"), INTERACT_MANUAL_FOCUS);
+
+            if menu_r.hovered() || menu_open {
+                ui.painter().rect_filled(menu_rect, 0.0, t.hover);
+            }
+            let mc = menu_rect.center();
+            let stroke = Stroke::new(1.5_f32, t.txt_pri);
+            if menu_open {
+                // Hamburger becomes the menu's close affordance while it is up.
+                let d = 5.0_f32;
+                ui.painter().line_segment(
+                    [Pos2::new(mc.x - d, mc.y - d), Pos2::new(mc.x + d, mc.y + d)],
+                    stroke,
+                );
+                ui.painter().line_segment(
+                    [Pos2::new(mc.x + d, mc.y - d), Pos2::new(mc.x - d, mc.y + d)],
+                    stroke,
+                );
+            } else {
+                for dy in [-5.0_f32, 0.0, 5.0] {
+                    ui.painter().line_segment(
+                        [
+                            Pos2::new(mc.x - 7.0, mc.y + dy),
+                            Pos2::new(mc.x + 7.0, mc.y + dy),
+                        ],
+                        stroke,
+                    );
+                }
+            }
+
+            menu_r.clicked()
+        });
+
+    TitlebarOut {
+        new_window: false,
+        menu_toggled: inner.inner,
+    }
 }

@@ -17,6 +17,92 @@ pub const SIDE_PANEL_W: f32 = 240.0;
 pub const CONTENT_MARGIN: f32 = 24.0;
 pub const MAX_CONTENT_W: f32 = 800.0;
 
+// ── Responsive nav ────────────────────────────────────────────────────────────
+// The sidebar has three forms; which one a window draws depends only on that
+// window's own width, so two windows at different sizes disagree happily. See
+// `docs/gui-architecture.md` § Responsive nav.
+
+/// Centre of the icon column, and left edge of the label, within a nav row.
+/// Shared by all three nav forms so a row's icon lands in the same place no
+/// matter which one is drawn.
+pub const NAV_ICON_X: f32 = 24.0;
+pub const NAV_LABEL_X: f32 = 52.0;
+
+/// Width of the collapsed icon rail (no labels; hover opens [`RAIL_FLYOUT_W`]).
+///
+/// Exactly twice [`NAV_ICON_X`], which is what makes the rail's icons sit at
+/// once *centred in the rail* and *at the same x as the expanded overlay's*.
+/// A wider rail — it was 72px, sized to fit the wordmark logo — centres the
+/// icons further right, so they visibly jump left the moment the panel opens.
+pub const RAIL_W: f32 = 2.0 * NAV_ICON_X;
+/// Width of the panel the rail expands to on hover. Drawn as a foreground
+/// overlay *over* the content — the central panel never reflows for a hover.
+pub const RAIL_FLYOUT_W: f32 = 220.0;
+/// At or above this window width the full 240px sidebar is drawn.
+pub const BP_RAIL: f32 = 900.0;
+/// Below this window width the sidebar disappears entirely and the title bar
+/// grows a hamburger that opens a full-window menu.
+pub const BP_MOBILE: f32 = 560.0;
+
+// Compile-time invariants: the overlay has to be wider than the rail it covers
+// (or it reveals nothing) and narrower than the full sidebar (or the collapsed
+// form is the wider of the two the moment it opens).
+const _: () = assert!(RAIL_FLYOUT_W > RAIL_W);
+const _: () = assert!(RAIL_FLYOUT_W < SIDE_PANEL_W);
+const _: () = assert!(BP_RAIL > BP_MOBILE);
+// The rail is icon-only, so its whole width is the icon column.
+const _: () = assert!(RAIL_W == 2.0 * NAV_ICON_X);
+// Labels have to clear the icons they sit beside.
+const _: () = assert!(NAV_LABEL_X > NAV_ICON_X);
+
+/// Which form of the nav a window draws. Derived from the window width by
+/// [`nav_mode`] every frame — never store it, and never branch on a raw width.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NavMode {
+    /// 240px sidebar with logo, wordmark and labelled rows.
+    Full,
+    /// 72px icon rail; hover expands a labelled overlay.
+    Rail,
+    /// No sidebar; hamburger in the title bar opens a full-window menu.
+    Mobile,
+}
+
+/// Pick the nav form for a window of `screen_w` logical pixels.
+///
+/// Deliberately has no hysteresis: the mode never feeds back into the window
+/// width, so a drag that parks the edge exactly on a breakpoint can flip the
+/// sidebar but cannot oscillate.
+pub fn nav_mode(screen_w: f32) -> NavMode {
+    if screen_w >= BP_RAIL {
+        NavMode::Full
+    } else if screen_w >= BP_MOBILE {
+        NavMode::Rail
+    } else {
+        NavMode::Mobile
+    }
+}
+
+impl NavMode {
+    /// Width the sidebar occupies in the layout. Zero in [`NavMode::Mobile`];
+    /// the hover overlay is *not* counted — it floats over the content.
+    pub fn side_panel_w(self) -> f32 {
+        match self {
+            NavMode::Full => SIDE_PANEL_W,
+            NavMode::Rail => RAIL_W,
+            NavMode::Mobile => 0.0,
+        }
+    }
+}
+
+/// Horizontal page margin. Tightened on phone-sized windows, where 24px a side
+/// is 13% of the window.
+pub fn content_margin(mode: NavMode) -> f32 {
+    match mode {
+        NavMode::Mobile => 16.0,
+        _ => CONTENT_MARGIN,
+    }
+}
+
 // ── Card geometry ─────────────────────────────────────────────────────────────
 // The rounded panels every page stacks vertically. Shared by `card::CardLayout`,
 // which is the only thing that should be reading them — see known-issues KI-18.
@@ -403,6 +489,50 @@ pub fn apply_visuals(ctx: &egui::Context, dark: bool, accent: Color32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rail_icons_do_not_move_when_the_overlay_opens() {
+        // The rail's icon is centred in the rail; the overlay's is at
+        // NAV_ICON_X from the same left edge. They must be the same point, or
+        // hovering makes every icon jump sideways.
+        let left = 0.0_f32;
+        let rail_icon_x = left + RAIL_W * 0.5;
+        let flyout_icon_x = left + NAV_ICON_X;
+        assert_eq!(rail_icon_x, flyout_icon_x);
+    }
+
+    #[test]
+    fn nav_mode_breakpoints_are_half_open_from_below() {
+        // Boundaries belong to the *wider* mode: exactly 900 is Full, exactly
+        // 560 is Rail. One pixel narrower drops to the next form down.
+        assert_eq!(nav_mode(1920.0), NavMode::Full);
+        assert_eq!(nav_mode(BP_RAIL), NavMode::Full);
+        assert_eq!(nav_mode(BP_RAIL - 1.0), NavMode::Rail);
+        assert_eq!(nav_mode(BP_MOBILE), NavMode::Rail);
+        assert_eq!(nav_mode(BP_MOBILE - 1.0), NavMode::Mobile);
+        // The narrowest window the platform will let us have, and a degenerate
+        // width from a minimized/zero-sized surface.
+        assert_eq!(nav_mode(380.0), NavMode::Mobile);
+        assert_eq!(nav_mode(0.0), NavMode::Mobile);
+    }
+
+    #[test]
+    fn every_mode_leaves_room_for_content() {
+        // The point of the exercise: at the narrowest window each mode can be
+        // asked to draw, the central panel still gets a usable width. 320px is
+        // roughly two cards' worth of readable text at the card padding.
+        for (mode, narrowest) in [
+            (NavMode::Full, BP_RAIL),
+            (NavMode::Rail, BP_MOBILE),
+            (NavMode::Mobile, 380.0),
+        ] {
+            let content = narrowest - mode.side_panel_w() - 2.0 * content_margin(mode);
+            assert!(
+                content >= 320.0,
+                "{mode:?} at {narrowest}px leaves only {content}px of content"
+            );
+        }
+    }
 
     #[test]
     fn relative_luminance_spans_black_to_white() {
