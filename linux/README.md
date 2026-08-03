@@ -38,6 +38,17 @@ sudo install -m 0755 diskoria /usr/local/bin/diskoria   # if not already there
 sudo ./install-service.sh /usr/local/bin/diskoria
 ```
 
+That installs **two** units, deliberately as a pair — drive health should never
+be collected without something in your session saying so:
+
+| unit | scope | what it does |
+|------|-------|--------------|
+| `diskoria-monitor.service` | system (root) | reads SMART, writes `/var/lib/diskoria/history.db`, nothing else |
+| `diskoria-tray.service` | user | the tray icon — shows collection is happening and can stop it |
+
+Run it from your normal account with `sudo` (not from a root login), so the
+script knows whose session gets the tray icon.
+
 Check it and remove it with:
 
 ```sh
@@ -84,11 +95,13 @@ stop it*:
 - **Close-to-tray is forced on while monitoring is enabled**, since the tray is
   where you see and stop collection. Your stored preference is untouched and
   returns when monitoring goes off.
-- **Diskoria enables its own autostart entry whenever the service is running**,
-  so the tray is there after a reboot, and holds the "Launch at startup" toggle
-  on while it collects. The entry records the path of the binary that was
-  running, so start the copy you intend to keep (e.g. `/usr/local/bin/diskoria`)
-  rather than one in a temporary directory.
+- **The tray is installed as a systemd user unit alongside the collector**, so
+  the two move together: `install-service.sh` starts both, an icon appears
+  immediately and at every login, and it comes back if it crashes. Settings'
+  "Launch at startup" is held on while collection is running. Disable the tray
+  half on its own with
+  `systemctl --user disable --now diskoria-tray.service` — though with nothing
+  in your session to stop it, you probably want to turn collection off instead.
 
 **What it deliberately does not do.** It opens no sockets, accepts no commands,
 and never writes to a block device. Starting a sector scan, destructive test or

@@ -48,6 +48,26 @@ fn invoking_home() -> Option<PathBuf> {
     std::env::var("HOME").ok().map(PathBuf::from)
 }
 
+/// The systemd *user* unit installed by `linux/install-service.sh`, when it is
+/// enabled for login.
+///
+/// It does the same job as the XDG entry, so when it is present that entry must
+/// not also be written — both would launch Diskoria twice at login, and the
+/// second launch raises a window rather than doing nothing. The unit wins: it
+/// can be started immediately (an XDG entry only takes effect at the *next*
+/// login, which is no use when collection is starting now) and it comes back
+/// if the tray crashes.
+///
+/// Detected by the enablement symlink rather than by running `systemctl`, so
+/// this stays a cheap filesystem check with no subprocess.
+fn tray_unit_enabled() -> bool {
+    invoking_home().is_some_and(|home| {
+        home.join(".config/systemd/user/default.target.wants/diskoria-tray.service")
+            .symlink_metadata()
+            .is_ok()
+    })
+}
+
 fn entry_path() -> Option<PathBuf> {
     Some(invoking_home()?.join(".config/autostart").join(ENTRY_NAME))
 }
@@ -69,6 +89,19 @@ pub(crate) fn desktop_entry(exe: &str) -> String {
 pub fn set_enabled(enabled: bool) -> std::io::Result<()> {
     let path = entry_path()
         .ok_or_else(|| std::io::Error::other("cannot resolve the user's home directory"))?;
+    if tray_unit_enabled() {
+        // Already guaranteed by the systemd user unit. Writing the XDG entry
+        // on top would double-launch; removing the unit is not ours to do from
+        // here, so say where the switch actually lives.
+        if !enabled {
+            log::info!(
+                target: "diskoria",
+                "launch-at-startup is managed by diskoria-tray.service; \
+                 disable it with: systemctl --user disable --now diskoria-tray.service"
+            );
+        }
+        return Ok(());
+    }
     if enabled {
         let exe = std::env::current_exe()?;
         if let Some(dir) = path.parent() {
@@ -92,9 +125,12 @@ pub fn set_enabled(enabled: bool) -> std::io::Result<()> {
     }
 }
 
-/// Whether the autostart entry currently exists (the source of truth).
+/// Whether Diskoria starts at login — by either mechanism.
+///
+/// The systemd user unit counts: it is what `install-service.sh` sets up, and
+/// treating only the XDG entry as "enabled" made the app write a duplicate.
 pub fn is_enabled() -> bool {
-    entry_path().is_some_and(|p| p.exists())
+    tray_unit_enabled() || entry_path().is_some_and(|p| p.exists())
 }
 
 #[cfg(test)]

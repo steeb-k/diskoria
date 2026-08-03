@@ -387,18 +387,30 @@ without a userspace presence that can see and stop it.*
    tray stays up meanwhile. If the stop is declined, fails or times out, a
    notification says so with the command to run, since there will be no tray
    left to check.
-5. **The service could run after a reboot with no tray at all.** Diskoria now
-   enables its own autostart entry whenever it sees the service running, and
-   the Settings "Launch at startup" toggle is held on (greyed, with the reason)
-   for as long as it is. Keyed off the *observed* state, not off the in-app
-   switch: the service is normally enabled by `install-service.sh` or a plain
-   `systemctl enable --now`, so hanging the guarantee off the app's own toggle
-   left the common path with no tray after a reboot — caught by installing the
-   service the documented way and finding no autostart entry.
+5. **The service could run with no tray at all.** Two wrong answers before the
+   right one, both from treating the tray as something the *user* launches:
 
-   Note the entry records `current_exe()`, so enabling collection from a
-   binary in a temporary location autostarts *that* path. Run the copy you
-   intend to keep (e.g. `/usr/local/bin/diskoria`).
+   - Enabling autostart only from the in-app toggle missed the documented
+     install path (`install-service.sh` / `systemctl enable --now`), so a
+     normal install had no tray after a reboot.
+   - Keying it off the observed service state fixed the reboot, but not *now*:
+     enable the service while Diskoria is closed and collection runs with
+     nothing in the session to show or stop it until the next login. An
+     autostart entry cannot start anything today.
+
+   The tray is now a **systemd user unit** (`linux/diskoria-tray.service`)
+   installed and started alongside the system service by `install-service.sh`,
+   so the pair moves together: enable collection and an icon appears
+   immediately and at every login, and it comes back if it crashes
+   (`Restart=on-failure`, not `always` — quitting from the tray is deliberate
+   and also stops the collector).
+
+   `autostart::is_enabled` counts the user unit as enabled and
+   `set_enabled` defers to it, because two mechanisms would launch Diskoria
+   twice at login and the second launch raises a window. The installer removes
+   any stale XDG entry for the same reason. The XDG entry remains the fallback
+   when the unit is not installed; it records `current_exe()`, so run the copy
+   you intend to keep.
 6. **`cancel_monitor()` on quit was `#[cfg(windows)]`.** The thread died with
    the process anyway, but the shutdown is now explicit on both.
 

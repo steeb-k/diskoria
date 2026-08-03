@@ -3,7 +3,7 @@
 # (see docs/releasing.md):
 #   releases/<ver>/diskoria-<ver>-linux-<arch>                  bare binary (updater target)
 #   releases/<ver>/diskoria-<ver>-portable-linux-<arch>.tar.gz  binary + polkit policy + .desktop
-#                                                               + systemd unit + install-service.sh + README
+#                                                               + systemd units + install-service.sh + README
 #
 # <arch> comes from `uname -m`, so this builds for the machine it runs on:
 # x86_64 here, aarch64 on an ARM box. Linux has no x64-on-ARM emulation, so
@@ -36,6 +36,7 @@ cp "$out_dir/$bin_name" "$stage/diskoria-$version/diskoria"
 cp "$repo_root/linux/com.diskoria.pkexec.policy" \
    "$repo_root/linux/diskoria.desktop" \
    "$repo_root/linux/diskoria-monitor.service" \
+   "$repo_root/linux/diskoria-tray.service" \
    "$repo_root/linux/install-service.sh" \
    "$repo_root/linux/README.md" \
    "$stage/diskoria-$version/"

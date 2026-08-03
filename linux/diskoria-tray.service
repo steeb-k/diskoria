@@ -1,0 +1,26 @@
+[Unit]
+Description=Diskoria tray — control surface for background drive monitoring
+Documentation=https://github.com/steeb-k/diskoria
+# A *user* unit, deliberately. The collector runs as root and has no business
+# talking to a session bus; this is the userspace half that shows what it is
+# doing and can stop it. Installed alongside the system service by
+# install-service.sh so the two can never get out of step: if drive health is
+# being collected, there is an icon in the tray saying so.
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+# ExecStart is rewritten by install-service.sh to the binary's real location.
+ExecStart=/usr/local/bin/diskoria --minimized
+# --minimized comes up tray-only and skips the pkexec relaunch, so a login
+# never produces an authentication prompt.
+Restart=on-failure
+RestartSec=5s
+
+# Not Restart=always: quitting from the tray is a deliberate act that also
+# stops the collector, and respawning the thing the user just closed would be
+# obnoxious. A crash still comes back.
+
+[Install]
+WantedBy=default.target
