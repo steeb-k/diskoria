@@ -309,6 +309,43 @@ call — the frame after a restore should log `full repaint: first/forced=true`
 and `100.0% of the window`. Anything partial, or `nothing damaged, frame
 skipped`, is the bug returning.
 
+## Responsive nav (window width)
+
+The nav has three forms and the window now goes down to 380x480, so resizing is
+a regression surface of its own. `--demo-nav-open` pins the collapsed nav open
+for inspection; `--demo-drives --demo-health` keeps it off real hardware.
+
+- [ ] Drag one edge slowly from full width down to the minimum. The sidebar
+      goes 240px → 72px rail at 900, → hamburger at 560. No flicker while the
+      edge sits *on* a breakpoint (there is no hysteresis by design; a flip is
+      fine, an oscillation is not).
+- [ ] At rail width, hover the rail → labelled overlay opens **over** the
+      content, which does not move. Move the pointer across the rail quickly on
+      the way to the page → it must not flash open.
+- [ ] Watch the *icons* as the overlay opens: they must not shift sideways at
+      all. `RAIL_W = 2 × NAV_ICON_X` is what guarantees it, so any change to
+      either constant needs this check.
+- [ ] Click a row in the overlay → page changes and the overlay collapses.
+- [ ] At rail width, open a confirm dialog, then hover the rail → the overlay
+      stays shut (it must not paint over the scrim).
+- [ ] At mobile width, the title bar shows hamburger + "Diskoria" and nothing
+      else. Drag the strip → window moves. Double-click it → maximize toggles.
+- [ ] Hamburger opens the full-window menu; Esc, the ✕, and picking a row all
+      close it. Dragging the menu's header still moves the window.
+- [ ] The menu's **Quit** row (below Settings) exits the process — it must not
+      hide to the tray, with `close_to_tray` either on or off. Check it also
+      works mid-test: it should cancel the test and exit, like the close button
+      it replaces. On Linux with the service running, expect the polkit prompt
+      the tray's Quit raises.
+- [ ] Resize back up with the menu open → it closes itself rather than being
+      stranded over the wide layout. Same for the rail overlay.
+- [ ] Two windows, one wide and one narrow → each draws its own form; the
+      narrow one's mode does not follow the wide one.
+- [ ] Windows, non-100% display scaling: at mobile width the top few pixels of
+      the hamburger must click, not resize (KI-51).
+- [ ] Every page at 380x480: no text runs off the right edge, no dialog hangs
+      off an edge. The Sector Write gate warning must be readable in full.
+
 ## Known non-regressions
 
 - `drive_enumeration.rs`: 2 pre-existing warnings (`releases_repo_page_url`

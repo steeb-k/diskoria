@@ -40,9 +40,18 @@ installer/             diskoria.iss — Inno Setup script (built by build-releas
                        via ISCC; produces releases/<ver>/diskoria-<ver>-setup.exe).
                        Writes the startup scheduled task and the
                        HKLM\Software\Diskoria\InstallDir marker read by install_mode.rs
-assets/                appicon2.ico (window + notification icon), trayicon.ico
-                       (tray only — simplified for 16-24px; looks flat rendered
-                       large, by design), applogo.png (in-app sidebar logo).
+assets/                appicon2.ico (window + notification icon, About page —
+                       deliberately a simpler mark than the sidebar image; the
+                       two are meant to differ, don't regenerate one from the
+                       other), appicon2.png + appicon2-64.png (the sidebar mark
+                       in every nav form, at 512 and 64 px; the 64px one is
+                       drawn at 32px in the rail and mobile headers,
+                       because the rasterizer point-samples and the 512px asset
+                       loses the icon's pins at that size), trayicon.ico (tray
+                       only — simplified for 16-24px; looks flat rendered large,
+                       by design), applogo.png (the wordmark sidebar logo; kept
+                       wired up behind FULL_SIDEBAR_USES_APP_ICON in app.rs,
+                       which can hand the 240px sidebar back to it).
                        All embedded at compile time.
   source/              Editable/alternate originals (.xcf, alt png/ico) — not embedded
 ```
@@ -74,7 +83,11 @@ assets/                appicon2.ico (window + notification icon), trayicon.ico
 - **`chrome.rs`** — title bar, the `WM_NCHITTEST` resize wndproc, DWM rounding,
   fonts, `WM_DEVICECHANGE` flag.
 - **`theme.rs`** — colors + shared layout constants (`TITLEBAR_H`, `BTN_W`,
-  `CONTROLS_W`, …). Single source of truth — don't redefine these elsewhere.
+  `CONTROLS_W`, …) and the responsive-nav breakpoints (`NavMode`, `nav_mode()`,
+  `RAIL_W`, `RAIL_FLYOUT_W`, `BP_RAIL`, `BP_MOBILE`, `NAV_ICON_X`,
+  `NAV_LABEL_X`, `content_margin()`). Single source of truth — don't redefine
+  these elsewhere. `RAIL_W == 2.0 * NAV_ICON_X` is load-bearing (const-asserted):
+  it is what keeps the rail's icons from shifting when the hover overlay opens.
   Anything drawn *on an accent fill* takes `Theme::txt_on_accent` (WCAG-contrast
   black or white) — never a hard-coded `Color32::WHITE`; the accent can be any
   color, including white (known-issues KI-19). **Keyboard focus rings are always
@@ -108,7 +121,9 @@ assets/                appicon2.ico (window + notification icon), trayicon.ico
   exposing real hardware. **Nothing in it touches a disk**: a "running" test sets
   the progress fields and leaves the worker channel `None`, so every `poll_*`
   early-returns. `--demo-confirm` exists so the destructive-test confirmation
-  dialog can be captured without arming a write. Any `--demo-*` implies
+  dialog can be captured without arming a write, and `--demo-nav-open` pins the
+  collapsed nav open (the rail's hover overlay, or the mobile menu, depending on
+  window width) — both are pointer-driven and otherwise uncapturable. Any `--demo-*` implies
   `--demo-drives` *and* `--demo-health` — once the drive list is invented its
   device paths (`\\.\PhysicalDrive0`) name the *host's* real disks, so the health
   readers must never be let near them. Demo mode also skips the single-instance
@@ -197,6 +212,9 @@ cargo run -- --page drive-health --demo-drive 1     # the SATA warning drive
 cargo run -- --page sector-read --demo-progress --demo-heatmap
 cargo run -- --page sector-write --demo-confirm     # the destructive dialog,
                                                     # WITHOUT arming a write
+cargo run -- --page drive-health --demo-nav-open    # the collapsed nav, held
+                                                    # open (rail overlay < 900px
+                                                    # wide, menu < 560px)
 ```
 
 Tests are pure-logic unit tests (`alert_engine`, `smart_reader`, `monitor`
@@ -236,6 +254,14 @@ stays local and signed (`docs/releasing.md`).
   `refactor-roadmap.md`.
 - **Paths** go through `paths.rs`, never inline `%PROGRAMDATA%`.
 - **Layout constants** come from `theme.rs`.
+- **Anything that varies with window width** branches on `theme::nav_mode()`,
+  never on a raw width. The window can be as narrow as 380x480: the sidebar
+  collapses to an icon rail and then to a title-bar hamburger
+  (`gui-architecture.md` § 10). New page body text goes through
+  `widgets::page_text_line` so it wraps rather than running off the edge — a
+  bare `ui.horizontal` sets egui's wrap mode to `Extend`, which is what
+  clipped half the pages at phone widths (known-issues KI-52). Check new
+  layout at 380 and 560 as well as full width.
 - **Background work** posts results over an `mpsc` channel and is drained in a
   `poll_*` method; call `ctx.request_repaint()` from the worker so unfocused
   windows update (see the repaint model in `gui-architecture.md`).

@@ -142,8 +142,16 @@ layout.
 egui `Area` in the `Foreground` order, drawn every frame.
 
 **Drag region** (`chrome.rs:324-340`): the top `TITLEBAR_H` strip, minus the
-width of the three control buttons. A drag sends
+reserves at each end — `chrome::titlebar_hit_reserve(mode)`. A drag sends
 `ViewportCommand::StartDrag`; a double-click toggles maximize.
+
+**Two bars, not one.** Below the mobile breakpoint (§10) `draw_titlebar` hands
+off to `draw_titlebar_mobile`: a hamburger and the app name, and **nothing on
+the right at all**. There is no room for five controls at 380px, and phone-style
+navigation puts what survives in the menu rather than the chrome — Quit is the
+last row of the nav menu. Maximize/restore is still a double-click on the drag
+strip, so a window dragged down to that size can always be restored, and Alt+F4
+is unaffected.
 
 **Control buttons** (`chrome.rs:342-420`): minimize, maximize/restore, close are
 **painter-drawn** (lines, rects, an X) — not egui `Button` widgets. Each is an
@@ -160,9 +168,12 @@ The viewport commands are consumed in `Renderer::paint` (`lib.rs:217-255`), whic
 maps them onto winit calls (`set_minimized`, `set_maximized`, `drag_window`, and
 a `close_requested` flag).
 
-> **KI-1:** the button geometry (`TITLEBAR_H`, `BTN_W`) lives both here (via
-> `theme.rs`) and as hardcoded `i32`s in the resize wndproc (§4). Keep them in
-> sync until Phase 3a unifies them.
+> **KI-1 (resolved):** the button geometry is no longer duplicated. Both the
+> title bar and the resize wndproc (§4) read `theme.rs` and call the same
+> `titlebar_hit_reserve(mode)`, so the strip you can click and the strip that
+> swallows the resize border cannot disagree. The wndproc derives `mode` from
+> the window's own width, and scales the logical constants by the window DPI
+> before comparing them with physical hit-test coordinates (KI-51).
 
 ---
 
@@ -309,11 +320,99 @@ race noted in KI-6. `raise_window` (`lib.rs:401-419`) combines
 ## 9. Layout constants
 
 Shared style/layout tokens live in `theme.rs` (`TITLEBAR_H`, `BTN_W`,
-`CLOSE_HOVER_BG`, spacing, dark/light + accent colors). The egui side imports
-these. **The exception is the resize wndproc**, which currently redefines
-`TITLEBAR_H`/`BTN_W`/`CONTROLS_W` as local `i32`s (`chrome.rs:191-193`) — see
-KI-1. Until that's unified, treat `theme.rs` as the source of truth and update
-both sites together.
+`CLOSE_HOVER_BG`, the `RAIL_*` / `BP_*` responsive constants, spacing,
+dark/light + accent colors). Everything else imports them, the resize wndproc
+included (§4). `theme.rs` is the source of truth — don't redefine a layout
+number anywhere else.
+
+---
+
+## 10. Responsive nav
+
+The sidebar has three forms. Which one a window draws depends **only on that
+window's own width**, so two windows of different sizes disagree happily — the
+mode is recomputed once per frame in `draw` and passed down, never stored.
+
+| Mode | Window width | Sidebar |
+|------|--------------|---------|
+| `NavMode::Full` | ≥ `BP_RAIL` (900) | 240px, mark + wordmark + labelled rows |
+| `NavMode::Rail` | 560–899 | 48px icon rail; hover expands a 220px overlay |
+| `NavMode::Mobile` | < `BP_MOBILE` (560) | none; hamburger in the title bar |
+
+`theme::nav_mode(screen_w)` is the only place that maps width to form. It has
+**no hysteresis on purpose**: the mode never feeds back into the window width,
+so parking a drag exactly on a breakpoint can flip the sidebar but cannot
+oscillate. `NavMode::side_panel_w()` gives the width the layout reserves, and
+the `SidePanel` is built from that same number.
+
+**`RAIL_W` is exactly `2 × NAV_ICON_X`, and that is not a coincidence.** A nav
+row draws its icon at `NAV_ICON_X` from the row's left edge in every form, so
+making the rail twice that width puts the icon simultaneously at the rail's
+centre and at the same x the expanded overlay uses. Any other rail width makes
+every icon visibly jump sideways the moment the overlay opens. The rail was
+72px at first, sized to fit the `applogo.png` wordmark; switching the header to
+`appicon2.ico` — drawn for icon sizes, where the wordmark logo is mush — let it
+shrink to where the icons line up.
+
+**The header mark** is `draw_nav_header`, shared by all three forms. `name_at`
+adds the app name beside the icon, which the expanded overlay passes
+`NAV_LABEL_X` for so the wordmark sits on the same left edge as the row labels
+below it. The rail passes `None` — the same icon, in the same place, with the
+name appearing as the panel opens. `FULL_SIDEBAR_USES_APP_ICON` (a plain `const`
+branch, both sides compiled, so no dead code either way) decides whether the
+240px sidebar shows that mark too or goes back to `applogo.png`.
+
+**Two sizes of the mark, because the rasterizer point-samples.**
+`tex_mgr::TexEntry::sample` is one floored texel lookup (§1) — the
+`TextureOptions::LINEAR` handed to egui never reaches a GPU sampler, so it does
+nothing. A texture drawn well below its native size therefore keeps one texel
+per NxN block and drops the rest: at 512 → 32 the icon's contact pins vanish
+into blobs. `paint_nav_icon` picks `appicon2-64.png` at or below
+`NAV_ICON_SMALL_MAX` and `appicon2.png` above it. **Any future art drawn much
+smaller than its source needs the same treatment** — there is no filtering to
+fall back on.
+
+**The hover overlay is an `Area`, not a wider panel** (`draw_rail_flyout`).
+Widening the `SidePanel` would reflow the whole page every time the pointer
+crossed the rail — text moving under the cursor, and a full relayout per hover
+on a CPU rasterizer. Instead the labelled panel is painted in `Order::Foreground`
+over the content, which keeps the width it had. It claims its own rect with
+`allocate_rect` so clicks don't fall through to the page beneath.
+
+Open and close are delayed (`NAV_RAIL_OPEN_DELAY` 120ms, `NAV_RAIL_CLOSE_DELAY`
+200ms) so a pointer crossing the rail on its way somewhere else doesn't flash a
+panel over the page. The decision is `app::rail_hover_step`, a pure function so
+the delays are unit-tested without a window; the caller feeds it the pointer
+state and schedules `request_repaint_after` for the pending transition — a
+pointer that has come to rest generates no further events, so the transition has
+to book its own frame.
+
+**The mobile menu covers the whole window**, title bar included, and is drawn
+*after* the content so it wins the input — but *before* the modals, which still
+have to be able to cover it. Its header strip keeps the drag gesture so the
+window can still be moved while the menu is up. Esc closes it, as does picking a
+row.
+
+Its last row is **Quit**, standing in for the close button the phone-width title
+bar gives up. It sends `UserEvent::QuitRequested` — the tray's Quit path, which
+cancels in-flight tests and the monitor — rather than
+`ViewportCommand::Close`: with `close_to_tray` on, closing hides the window and
+keeps collecting, which is not what a row labelled Quit should do. Like the
+button it replaces it stays live while a test is running. Row chrome comes from
+`paint_nav_row`, shared with the page rows so the two cannot drift apart.
+
+`sync_nav_mode` resets the state belonging to a mode as soon as the window
+leaves it, so a resize cannot strand an expanded overlay or an open menu on
+screen. `--demo-nav-open` pins whichever collapsed form the current width uses:
+both are pointer-driven and a capture has no other way to reach them (same
+reason `--demo-confirm` exists).
+
+**Content below 780px.** That used to be the minimum window width, so no page
+had ever been laid out narrower and several clipped rather than wrapped when the
+minimum dropped to 380. Page body text goes through `widgets::page_text_line`
+(a bare `ui.horizontal` has egui's wrap mode set to `Extend`, which is what
+produced the clipping); dialogs are fitted to the window by
+`modal_confirm::fit_dialog`. See KI-52 for the full list.
 
 ---
 

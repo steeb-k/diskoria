@@ -523,6 +523,56 @@ frame covering 100.0%.
 minimizing changes the window size while hiding to the tray does not. That
 difference is the whole reason this was reachable only from the tray.
 
+### KI-51 — Title-bar hit test compared logical constants against physical pixels `bug` `windows` `fixed`
+`chrome.rs` `win32_resize::wndproc` carved the window-control strip out of the
+resize border so the buttons stay clickable (KI-1, KI-9). It did that by
+comparing `CONTROLS_W` and `TITLEBAR_H` — logical px, what egui draws with —
+against `WM_NCHITTEST` coordinates and `GetWindowRect`, which are physical. At
+100% scaling the two are the same number and the bug is invisible; at 150% the
+strip is 396 physical px wide but only 264 were carved out, so the top edge of
+the "New Window" button returned `HTTOP` and resized the window instead of
+clicking it.
+
+Found while making the strip width depend on the nav mode (the mobile bar keeps
+only a close button), which is exactly the case where a wrong carve-out hurts —
+the hamburger sits at the *left* end of the same strip. Fixed by scaling both
+constants by `GetDpiForWindow(hwnd) / 96.0` before comparing, which also lets
+the hit test derive the nav mode from the window's own logical width and ask
+`chrome::titlebar_hit_reserve` for the same reserves the drawing code uses.
+Needs the `Win32_UI_HiDpi` feature on `windows-sys`.
+
+### KI-52 — Content clipped instead of reflowing below ~780px `bug` `fixed`
+The window's minimum used to be 780x580, wide enough that no page had ever been
+laid out narrower. Dropping it to 380x480 for the responsive nav exposed
+everything that had been sized for one width and clipped rather than wrapped:
+
+- **Page subtitles and status lines** sat in a bare `ui.horizontal`, where
+  egui's wrap mode is `Extend`. "Monitor drive health by viewing self-reported
+  diagnostics." simply ran off the right edge. ~15 sites across the four page
+  modules and the health page now go through `widgets::page_text_line`, which
+  wraps to the section width.
+- **The Sector Write Test gate warning** was eight hand-broken lines painted
+  with no wrapping, so at 380px it read "ALL EXISTING DATA ON THE DRIVE WILL BE
+  PERMANEN…". The worst possible sentence to truncate. Now four wrapped
+  paragraphs.
+- **The Vitals label column** was `(card_inner_w * 0.30).max(150.0)`. As an
+  unconditional floor, 150px took half a phone-width card and left the
+  temperature bar a ~40px stub. `vitals_label_col_w` keeps the desktop
+  behaviour exactly and lets the floor give way below ~375px of card;
+  `vitals_temp_caption` drops the `(0 - 70°C)` range there, which costs more
+  room than the bar it describes.
+- **Confirm dialogs** were centred at a fixed 420px, hanging off both edges of a
+  380px window with the Continue button off-screen. `modal_confirm::fit_dialog`
+  caps the width at the window, then *grows* the height to fit the newly
+  wrapped text, capped at the window in turn.
+- **Drive-selector chips** were painted left to right with no bound. Nothing
+  real overflows at 380px, but there was no clamp; overflowing chips are now
+  dropped rather than painted outside the card.
+
+Verified by screenshotting every page at 380x480 and 560x640. The pure parts
+(label column, temperature caption, dialog fitting) have unit tests; the wide
+layouts are asserted unchanged rather than merely eyeballed.
+
 ## Resolved
 
 Condensed; see git history for full detail.

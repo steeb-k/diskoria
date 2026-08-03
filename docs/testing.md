@@ -35,6 +35,17 @@ display, no admin:
   settings save→load round-trip (uses a temp `PROGRAMDATA`).
 - `history_db.rs` — insert/query/prune against an in-memory database
   (pre-existing).
+- `theme.rs` — the responsive-nav breakpoints (`nav_mode`) and the invariant
+  that every mode still leaves the content a usable width at the narrowest
+  window it can be drawn in.
+- `app.rs` — `rail_hover_step`, the icon rail's hover open/close delays. Pure
+  so the timing is testable without a window: the interesting case is a pointer
+  brushing past, which must never open the overlay.
+- `smart_health_page.rs` — the Vitals label column and temperature caption at
+  narrow card widths, asserting the desktop layout is *unchanged* as well as
+  that the narrow one fits (KI-52).
+- `modal_confirm.rs` — dialog fitting: capped at the window, grown to fit
+  wrapped text, and never negative on a degenerate window size.
 
 > Note: `rusqlite` is an unconditional dependency since the linux-support work, so every unit test runs on both CI jobs.
 
