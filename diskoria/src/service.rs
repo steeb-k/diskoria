@@ -107,7 +107,9 @@ pub fn run() -> i32 {
                 ),
             }
         }
-        log::debug!(target: "diskoria::service", "wrote {written} snapshot(s)");
+        // Info, not debug: this is the line an operator checks to confirm the
+        // service is doing its job, and the shipped unit runs at info.
+        log::info!(target: "diskoria::service", "wrote {written} snapshot(s)");
 
         // Housekeeping once a pass; cheap and keeps the file from growing
         // without bound on a machine that is never rebooted.

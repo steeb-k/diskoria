@@ -294,7 +294,157 @@ fn report_to_json(report: &SmartReport) -> String {
     }
 }
 
+/// Rebuild a [`SmartReport`] from a snapshot's stored `raw_json`.
+///
+/// The inverse of [`report_to_json`], and the reason the Drive Health page
+/// works in an unelevated session: the root monitoring service already read
+/// this drive, so the page can render the service's reading instead of telling
+/// the user to relaunch as root for data that is sitting in the database.
+///
+/// Attribute `name` and `status` are derived rather than stored, so a
+/// reconstructed report is indistinguishable from a freshly read one.
+pub fn report_from_json(raw: &str) -> Option<SmartReport> {
+    let v: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let u64_of = |k: &str| v.get(k).and_then(|x| x.as_u64());
+    let u8_of = |k: &str| u64_of(k).map(|n| n as u8);
+    match v.get("type").and_then(|t| t.as_str())? {
+        "ata" => {
+            let attributes = v
+                .get("attributes")
+                .and_then(|a| a.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|a| {
+                            let g = |k: &str| a.get(k).and_then(|x| x.as_u64());
+                            Some(crate::smart_reader::ata_attribute_from_parts(
+                                g("id")? as u8,
+                                g("current")? as u8,
+                                g("worst")? as u8,
+                                g("threshold")? as u8,
+                                g("raw")?,
+                            ))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some(SmartReport::Ata(crate::smart_reader::AtaSmartData {
+                attributes,
+                power_on_hours: u64_of("power_on_hours"),
+                power_cycles: u64_of("power_cycles"),
+                temperature_c: v.get("temperature_c").and_then(|x| x.as_i64()).map(|n| n as i32),
+            }))
+        }
+        "nvme" => Some(SmartReport::Nvme(crate::smart_reader::NvmeHealthData {
+            temperature_c: v.get("temperature_c").and_then(|x| x.as_i64())? as i16,
+            percentage_used: u8_of("percentage_used")?,
+            available_spare_pct: u8_of("available_spare_pct")?,
+            available_spare_threshold: u8_of("available_spare_threshold")?,
+            power_on_hours: u64_of("power_on_hours")?,
+            power_cycles: u64_of("power_cycles")?,
+            data_units_written: u64_of("data_units_written")?,
+            unsafe_shutdowns: u64_of("unsafe_shutdowns")?,
+            media_errors: u64_of("media_errors")?,
+            critical_warning: u8_of("critical_warning")?,
+        })),
+        "ufs" => Some(SmartReport::Ufs(crate::smart_reader::UfsHealthData {
+            pre_eol_info: u8_of("pre_eol_info")?,
+            life_time_est_a: u8_of("life_time_est_a")?,
+            life_time_est_b: u8_of("life_time_est_b")?,
+        })),
+        // "unavailable" round-trips to nothing on purpose: there is no reading
+        // to show, and the caller should keep its own error message.
+        _ => None,
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod json_roundtrip_tests {
+    use super::{report_from_json, report_to_json};
+    use crate::smart_reader::{
+        ata_attribute_from_parts, AtaSmartData, NvmeHealthData, SmartReport, UfsHealthData,
+    };
+
+    #[test]
+    fn nvme_survives_a_round_trip() {
+        let original = SmartReport::Nvme(NvmeHealthData {
+            temperature_c: 45,
+            percentage_used: 3,
+            available_spare_pct: 100,
+            available_spare_threshold: 10,
+            power_on_hours: 320,
+            power_cycles: 412,
+            data_units_written: 123_456,
+            unsafe_shutdowns: 7,
+            media_errors: 0,
+            critical_warning: 0,
+        });
+        let back = report_from_json(&report_to_json(&original)).expect("nvme rebuilds");
+        let SmartReport::Nvme(n) = back else { panic!("wrong variant") };
+        assert_eq!(n.temperature_c, 45);
+        assert_eq!(n.percentage_used, 3);
+        assert_eq!(n.available_spare_pct, 100);
+        assert_eq!(n.power_on_hours, 320);
+        assert_eq!(n.data_units_written, 123_456);
+        assert_eq!(n.unsafe_shutdowns, 7);
+    }
+
+    /// Attribute `name` and `status` are derived, not stored — a rebuilt row
+    /// has to come out identical to a freshly read one or the Drive Health
+    /// table would render differently depending on where the data came from.
+    #[test]
+    fn ata_attributes_rebuild_with_derived_name_and_status() {
+        let fresh = ata_attribute_from_parts(0x05, 100, 100, 10, 0);
+        let original = SmartReport::Ata(AtaSmartData {
+            attributes: vec![
+                fresh.clone(),
+                ata_attribute_from_parts(0xC5, 200, 200, 0, 4),
+                ata_attribute_from_parts(0x09, 95, 95, 0, 320),
+            ],
+            power_on_hours: Some(320),
+            power_cycles: Some(412),
+            temperature_c: Some(38),
+        });
+        let back = report_from_json(&report_to_json(&original)).expect("ata rebuilds");
+        let SmartReport::Ata(a) = back else { panic!("wrong variant") };
+        assert_eq!(a.attributes.len(), 3);
+        assert_eq!(a.temperature_c, Some(38));
+        assert_eq!(a.power_on_hours, Some(320));
+
+        assert_eq!(a.attributes[0].id, fresh.id);
+        assert_eq!(a.attributes[0].name, fresh.name);
+        assert_eq!(a.attributes[0].status, fresh.status);
+        assert_eq!(a.attributes[0].is_critical, fresh.is_critical);
+        assert_eq!(a.attributes[0].raw, fresh.raw);
+        // A pending-sector count of 4 must still read as a problem after a
+        // round trip through the database.
+        assert!(a.attributes[1].is_critical);
+        assert_eq!(a.attributes[1].raw, 4);
+    }
+
+    #[test]
+    fn ufs_survives_a_round_trip() {
+        let original = SmartReport::Ufs(UfsHealthData {
+            pre_eol_info: 2,
+            life_time_est_a: 3,
+            life_time_est_b: 4,
+        });
+        let back = report_from_json(&report_to_json(&original)).expect("ufs rebuilds");
+        let SmartReport::Ufs(u) = back else { panic!("wrong variant") };
+        assert_eq!((u.pre_eol_info, u.life_time_est_a, u.life_time_est_b), (2, 3, 4));
+    }
+
+    /// "Unavailable" carries no reading, so it must not rebuild into one — the
+    /// caller keeps its own error message instead.
+    #[test]
+    fn unavailable_and_junk_do_not_rebuild() {
+        let original = SmartReport::Unavailable { reason: "nope".into() };
+        assert!(report_from_json(&report_to_json(&original)).is_none());
+        assert!(report_from_json("not json").is_none());
+        assert!(report_from_json("{}").is_none());
+    }
+}
 
 #[cfg(test)]
 mod tests {

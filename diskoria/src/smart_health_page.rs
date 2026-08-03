@@ -1524,6 +1524,8 @@ impl DiskoriaApp {
         let drive = &self.drives[sel];
         let device_path = drive.device_id.clone();
         let bus = drive.bus;
+        #[cfg(target_os = "linux")]
+        let serial = drive.serial.clone();
 
         self.health_report_drive = Some(sel);
         self.health_poll_running = true;
@@ -1533,7 +1535,25 @@ impl DiskoriaApp {
         log::info!(target: "diskoria", "health: polling SMART data for {device_path}");
 
         std::thread::spawn(move || {
-            let report = crate::smart_reader::query_smart_detail(&device_path, bus);
+            #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+            let mut report = crate::smart_reader::query_smart_detail(&device_path, bus);
+            // Unelevated session with the root monitoring service installed:
+            // the ioctls are refused, but the service has already read this
+            // drive. Render its data rather than telling the user to relaunch
+            // as root for something sitting in the database.
+            #[cfg(target_os = "linux")]
+            if matches!(report, crate::smart_reader::SmartReport::Unavailable { .. }) {
+                if let Some(from_service) = crate::history_db::open_system_readonly()
+                    .and_then(|db| crate::history_db::load_last_snapshot(&db, &serial).ok().flatten())
+                    .and_then(|snap| crate::monitor::report_from_json(&snap.raw_json))
+                {
+                    log::info!(
+                        target: "diskoria",
+                        "health: using the monitoring service's reading for {device_path}"
+                    );
+                    report = from_service;
+                }
+            }
             let _ = tx.send(report);
         });
 

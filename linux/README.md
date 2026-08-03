@@ -46,10 +46,14 @@ journalctl -u diskoria-monitor.service -f
 sudo ./install-service.sh --uninstall
 ```
 
-The desktop app picks the service up automatically — no setting to flip. If the
-service is stopped, readings older than three poll intervals are ignored and the
-app falls back to polling for itself, so a dead service shows as missing data
-rather than a stale number frozen on screen.
+The desktop app picks the service up automatically — no setting to flip. The
+tray, temperature history, alerts **and the Drive Health page** all work in an
+unelevated session while the service is running; the page renders the service's
+reading instead of asking you to relaunch as root.
+
+If the service is stopped, readings older than three poll intervals are ignored
+and the app falls back to polling for itself, so a dead service shows as missing
+data rather than a stale number frozen on screen.
 
 **What it deliberately does not do.** It opens no sockets, accepts no commands,
 and never writes to a block device. Starting a sector scan, destructive test or

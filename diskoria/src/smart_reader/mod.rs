@@ -80,6 +80,28 @@ pub struct NvmeHealthData {
 
 // ── Static attribute name table ───────────────────────────────────────────────
 
+/// Rebuild a full [`AtaAttribute`] from the fields that are persisted in a
+/// snapshot's `raw_json` — the name and status are *derived*, not stored, so a
+/// report reconstructed from the database is identical to a freshly read one.
+pub(crate) fn ata_attribute_from_parts(
+    id: u8,
+    current: u8,
+    worst: u8,
+    threshold: u8,
+    raw: u64,
+) -> AtaAttribute {
+    AtaAttribute {
+        id,
+        name: attr_name(id),
+        current,
+        worst,
+        threshold,
+        raw,
+        is_critical: is_critical(id),
+        status: compute_status(id, current, worst, threshold, raw),
+    }
+}
+
 fn attr_name(id: u8) -> &'static str {
     match id {
         0x01 => "Read Error Rate",
