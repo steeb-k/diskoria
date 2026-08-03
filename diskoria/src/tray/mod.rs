@@ -134,7 +134,14 @@ pub use windows::*;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
-pub use linux::TrayManager;
+pub use linux::{host_present, TrayManager};
+
+/// Windows always has a notification area to put the icon in, so there is no
+/// equivalent of the Linux "is a StatusNotifierWatcher running?" question.
+#[cfg(windows)]
+pub fn host_present() -> bool {
+    true
+}
 
 #[cfg(test)]
 mod tests {

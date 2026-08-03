@@ -13,6 +13,25 @@ use crate::UserEvent;
 
 use ksni::blocking::TrayMethods;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Is a StatusNotifierWatcher actually on the bus right now?
+///
+/// `assume_sni_available` keeps our service alive when no watcher exists yet
+/// (KI-45), which means `TrayManager` being `Some` no longer implies a visible
+/// icon. Hiding the last window to a tray that is not there would strand the
+/// app with no way back — on Wayland the window is destroyed, not hidden — so
+/// the close-to-tray decision asks this instead (KI-47).
+///
+/// Optimistic until told otherwise: ksni calls `watcher_offline` when
+/// registration fails, and `watcher_online` when one appears.
+static WATCHER_ONLINE: AtomicBool = AtomicBool::new(true);
+
+/// Whether an SNI host is present to show our icon.
+pub fn host_present() -> bool {
+    WATCHER_ONLINE.load(Ordering::Relaxed)
+}
+
 struct DriveTemp {
     serial: String,
     model: String,
@@ -96,6 +115,7 @@ impl ksni::Tray for SniTray {
     /// re-registers the item for us; the host then re-reads every property, so
     /// the icon repaints itself with no work here.
     fn watcher_online(&self) {
+        WATCHER_ONLINE.store(true, Ordering::Relaxed);
         log::info!(target: "diskoria::tray", "StatusNotifierWatcher online — tray item (re)registered");
     }
 
@@ -103,6 +123,7 @@ impl ksni::Tray for SniTray {
     /// alive so it can register once the watcher shows up — which is the whole
     /// point at login, when we start before the panel does (KI-45).
     fn watcher_offline(&self, reason: ksni::OfflineReason) -> bool {
+        WATCHER_ONLINE.store(false, Ordering::Relaxed);
         log::info!(
             target: "diskoria::tray",
             "no StatusNotifierWatcher yet ({reason:?}) — waiting for the desktop to provide one"
@@ -170,24 +191,32 @@ impl ksni::Tray for SniTray {
                 }
                 .into(),
             );
+            // Starting is offered only when Settings' master switch agrees;
+            // otherwise this menu could turn a root service back on behind the
+            // back of the setting that says nothing should be collecting.
+            // Stopping is always available — an off switch should never be
+            // conditional.
             let turning_on = !svc.running;
-            items.push(
-                StandardItem {
-                    label: if turning_on {
-                        "Start background collection".into()
-                    } else {
-                        "Stop background collection".into()
-                    },
-                    // Greyed while a previous start/stop is still in flight,
-                    // so a slow polkit prompt cannot be double-fired.
-                    enabled: !crate::service_control::busy(),
-                    activate: Box::new(move |_t: &mut SniTray| {
-                        crate::service_control::set_enabled(turning_on);
-                    }),
-                    ..Default::default()
-                }
-                .into(),
-            );
+            if !turning_on || crate::service_control::master_enabled() {
+                items.push(
+                    StandardItem {
+                        label: if turning_on {
+                            "Start background collection".into()
+                        } else {
+                            "Stop background collection".into()
+                        },
+                        // Greyed while a previous start/stop is still in
+                        // flight, so a slow polkit prompt cannot be
+                        // double-fired.
+                        enabled: !crate::service_control::busy(),
+                        activate: Box::new(move |_t: &mut SniTray| {
+                            crate::service_control::set_enabled(turning_on);
+                        }),
+                        ..Default::default()
+                    }
+                    .into(),
+                );
+            }
             items.push(MenuItem::Separator);
         }
 

@@ -71,6 +71,22 @@ The unit's state is the source of truth — there is no separate persisted
 setting to drift out of sync with it, so `systemctl` on the command line and the
 app's toggle always agree.
 
+Some rules follow from *nothing collects without a userspace presence that can
+stop it*:
+
+- **Quitting Diskoria stops collection** (`systemctl stop`) — but leaves it
+  enabled, so a reboot brings it back. Closing a window is not a decision to
+  undo the setup you installed. If you decline the authentication prompt, a
+  notification tells you it is still running and how to stop it.
+- **Settings → Monitoring → "Enable background monitoring" is the master
+  switch.** Turning it off stops *and* disables the service; the service card
+  and the tray's Start item follow it. Stopping is never gated.
+- **Close-to-tray is forced on while monitoring is enabled**, since the tray is
+  where you see and stop collection. Your stored preference is untouched and
+  returns when monitoring goes off.
+- **Turning collection on also enables Diskoria's autostart entry**, so the tray
+  is there after a reboot when the service is.
+
 **What it deliberately does not do.** It opens no sockets, accepts no commands,
 and never writes to a block device. Starting a sector scan, destructive test or
 benchmark still goes through `pkexec`, because that is the point where raw

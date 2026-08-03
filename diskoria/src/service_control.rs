@@ -67,6 +67,19 @@ static CACHE: Mutex<Cache> = Mutex::new(Cache {
     busy: false,
 });
 
+/// Mirrors the Settings "Enable background monitoring" master switch, so the
+/// tray menu — which has no access to app state — can stay consistent with it
+/// and not offer to start a service the master switch says should be off.
+static MASTER_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+pub fn set_master_enabled(on: bool) {
+    MASTER_ENABLED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn master_enabled() -> bool {
+    MASTER_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Last known state. `None` until the first refresh completes; never blocks.
 pub fn status() -> Option<ServiceStatus> {
     CACHE.lock().ok().and_then(|c| c.status)
@@ -145,6 +158,32 @@ pub fn spawn_status_worker() {
 /// service that silently comes back at the next boot would defeat the point of
 /// having the control at all. `--now` on enable/disable is exactly that pairing.
 pub fn set_enabled(on: bool) {
+    let verb = if on { "enable" } else { "disable" };
+    spawn_action(&[verb, "--now", UNIT]);
+    if on {
+        // Never collect without a userspace presence: the tray app is the only
+        // thing that can show the service is running and stop it, so turning
+        // collection on makes sure it will be there after the next login too.
+        match crate::autostart::set_enabled(true) {
+            Ok(()) => log::info!(
+                target: "diskoria::service",
+                "enabled Diskoria autostart so the tray is present whenever the service is"
+            ),
+            Err(e) => log::warn!(target: "diskoria::service", "could not enable autostart: {e}"),
+        }
+    }
+}
+
+/// Stop collection *without* touching whether it starts at boot.
+///
+/// This is what quitting does. Quit should mean nothing is still collecting,
+/// but it should not silently undo the boot-time setup the user deliberately
+/// installed — closing a window is not a decision to stop monitoring forever.
+pub fn stop_now() {
+    spawn_action(&["stop", UNIT]);
+}
+
+fn spawn_action(args: &[&str]) {
     {
         let mut c = match CACHE.lock() {
             Ok(c) => c,
@@ -157,21 +196,19 @@ pub fn set_enabled(on: bool) {
         c.last_error = None;
     }
 
+    let owned: Vec<String> = args.iter().map(|a| a.to_string()).collect();
     let _ = std::thread::Builder::new()
         .name("diskoria-svcctl".into())
         .spawn(move || {
-            let verb = if on { "enable" } else { "disable" };
-            log::info!(target: "diskoria::service", "{verb} --now {UNIT}");
-            let result = std::process::Command::new("systemctl")
-                .args([verb, "--now", UNIT])
-                .output();
+            log::info!(target: "diskoria::service", "systemctl {}", owned.join(" "));
+            let result = std::process::Command::new("systemctl").args(&owned).output();
 
             let err = match result {
                 Ok(o) if o.status.success() => None,
                 Ok(o) => {
                     let msg = String::from_utf8_lossy(&o.stderr).trim().to_string();
                     Some(if msg.is_empty() {
-                        format!("systemctl {verb} failed")
+                        format!("systemctl {} failed", owned.join(" "))
                     } else {
                         msg
                     })
@@ -179,7 +216,7 @@ pub fn set_enabled(on: bool) {
                 Err(e) => Some(format!("could not run systemctl: {e}")),
             };
             if let Some(ref e) = err {
-                log::warn!(target: "diskoria::service", "{verb} failed: {e}");
+                log::warn!(target: "diskoria::service", "{} failed: {e}", owned.join(" "));
             }
 
             // Reflect the new state immediately rather than waiting out the

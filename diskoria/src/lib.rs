@@ -1121,6 +1121,13 @@ struct App {
     /// `tests/boot_smoke.rs` harness to catch startup/wiring regressions without
     /// a real display driver or admin rights. `None` in normal operation.
     smoke_remaining: Option<u32>,
+    /// Set while a quit is waiting for the root monitoring service to stop.
+    /// Quitting promises nothing is still collecting, but stopping the service
+    /// needs authentication — exiting underneath the polkit prompt would kill
+    /// it and leave the service running. Holds the give-up time so a prompt
+    /// nobody answers cannot wedge the app forever.
+    #[cfg(target_os = "linux")]
+    quit_deadline: Option<std::time::Instant>,
     /// Debounce deadline for `WM_DEVICECHANGE`-driven drive re-enumeration.
     /// Device-tree changes arrive in bursts; we coalesce them and re-scan once
     /// the burst settles. `None` when no re-scan is pending.
@@ -1357,8 +1364,14 @@ enum CloseDisposition { None, Exit, DropThis, HideThis }
         // trade-off shown under the Settings toggle.
         #[cfg(any(windows, target_os = "linux"))]
         let can_hide_to_tray = self.shared.pro_edition
-            && self.shared.settings_snapshot().close_to_tray
-            && self.tray.is_some();
+            && self.shared.settings_snapshot().close_to_tray_effective()
+            && self.tray.is_some()
+            // A tray object is not the same as a visible icon: the SNI service
+            // stays alive with no watcher on the bus so it can register later
+            // (KI-45), and Wayland *destroys* the window rather than hiding it,
+            // so trusting `is_some()` alone could strand the app with no icon
+            // to bring it back (KI-47).
+            && crate::tray::host_present();
         // No tray on other platforms, so hiding the last window would strand it.
         #[cfg(not(any(windows, target_os = "linux")))]
         let can_hide_to_tray = false;
@@ -1538,9 +1551,26 @@ enum CloseDisposition { None, Exit, DropThis, HideThis }
                 for r in self.renderers.values() {
                     r.app.cancel_all_tests();
                 }
-                // Cancel the monitor thread.
-                #[cfg(windows)]
+                // Cancel the monitor thread. Quitting means nothing of ours is
+                // still collecting — the process exit would take the thread
+                // with it anyway, but saying so keeps the shutdown ordered.
+                #[cfg(any(windows, target_os = "linux"))]
                 self.shared.cancel_monitor();
+                // Same promise for the root service: quit means nothing is
+                // collecting. `stop`, not `disable` — closing a window is not
+                // a decision to undo the boot-time setup. This needs
+                // authentication, so the exit waits for it below rather than
+                // killing the prompt by exiting underneath it.
+                #[cfg(target_os = "linux")]
+                if crate::service_control::status().is_some_and(|s| s.running) {
+                    log::info!(
+                        target: "diskoria::service",
+                        "quitting — stopping background collection"
+                    );
+                    crate::service_control::stop_now();
+                    self.quit_deadline =
+                        Some(std::time::Instant::now() + std::time::Duration::from_secs(90));
+                }
                 // Drop every renderer so per-window resources release before
                 // the singletons below.
                 self.renderers.clear();
@@ -1552,6 +1582,13 @@ enum CloseDisposition { None, Exit, DropThis, HideThis }
                     self.flyout = None;
                     self.context_menu = None;
                     self.drive_context_menu = None;
+                }
+                // The tray outlives the renderers while a stop is pending, so
+                // there is still something on screen saying Diskoria is
+                // finishing up rather than a silently lingering process.
+                #[cfg(target_os = "linux")]
+                if self.quit_deadline.is_some() {
+                    return;
                 }
                 #[cfg(any(windows, target_os = "linux"))]
                 {
@@ -1795,6 +1832,43 @@ impl App {
             self.device_change_deadline =
                 Some(std::time::Instant::now() + std::time::Duration::from_millis(800));
         }
+        // Finish a quit that is waiting on the service to stop.
+        #[cfg(target_os = "linux")]
+        if let Some(deadline) = self.quit_deadline {
+            let timed_out = std::time::Instant::now() >= deadline;
+            if !crate::service_control::busy() || timed_out {
+                self.quit_deadline = None;
+                let still_running =
+                    crate::service_control::status().is_some_and(|s| s.running);
+                if still_running {
+                    // Declined, failed, or timed out. Say so — the whole point
+                    // of the control is that collection never continues
+                    // unnoticed, and there will be no tray left to check.
+                    let why = crate::service_control::last_error()
+                        .unwrap_or_else(|| "authentication was not completed".to_string());
+                    log::warn!(
+                        target: "diskoria::service",
+                        "quitting with background collection still running: {why}"
+                    );
+                    crate::toast::send_toast(
+                        "Diskoria — background collection still running",
+                        &format!(
+                            "The monitoring service was not stopped ({why}). Stop it with: systemctl stop {}",
+                            crate::service_control::UNIT
+                        ),
+                    );
+                } else {
+                    log::info!(target: "diskoria::service", "background collection stopped");
+                }
+                self.tray = None;
+                event_loop.exit();
+                return;
+            }
+            // Keep the loop turning while we wait for the prompt.
+            let soon = std::time::Instant::now() + std::time::Duration::from_millis(250);
+            wake_at = Some(wake_at.map_or(soon, |w: std::time::Instant| w.min(soon)));
+        }
+
         if let Some(dl) = self.device_change_deadline {
             if std::time::Instant::now() >= dl {
                 self.device_change_deadline = None;
@@ -2293,6 +2367,8 @@ pub fn run() {
         any_visible_flag: AnyVisibleFlag::new(),
         next_repaint: None,
         smoke_remaining,
+        #[cfg(target_os = "linux")]
+        quit_deadline: None,
         device_change_deadline: None,
         #[cfg(any(windows, target_os = "linux"))]
         tray_toast_shown: false,

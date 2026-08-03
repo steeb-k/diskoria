@@ -3481,7 +3481,14 @@ impl DiskoriaApp {
     }
 
     fn settings_window_slot_count(&self) -> usize {
-        #[cfg(any(windows, target_os = "linux"))]
+        #[cfg(target_os = "linux")]
+        {
+            // Forced on while monitoring is enabled, so it is not focusable —
+            // trapping tab focus on a control that cannot change is worse than
+            // skipping it.
+            usize::from(!self.monitoring_enabled)
+        }
+        #[cfg(windows)]
         {
             1
         }
@@ -3544,7 +3551,10 @@ impl DiskoriaApp {
         {
             usize::from(
                 crate::service_control::status().is_some_and(|s| s.installed)
-                    && !crate::service_control::busy(),
+                    && !crate::service_control::busy()
+                    // Inert while the master switch is off, so tab focus must
+                    // skip it rather than land on a control that does nothing.
+                    && self.monitoring_enabled,
             )
         }
         #[cfg(not(target_os = "linux"))]
@@ -5184,6 +5194,12 @@ impl DiskoriaApp {
     pub fn draw(&mut self, ctx: &egui::Context) {
         self.scroll_focus_frames = self.scroll_focus_frames.saturating_sub(1);
 
+        // Publish the monitoring master switch for the tray menu, which has no
+        // access to app state. A relaxed store per frame is free, and it cannot
+        // drift the way a copy updated at settings-change sites would.
+        #[cfg(target_os = "linux")]
+        crate::service_control::set_master_enabled(self.monitoring_enabled);
+
         // Frameless-window resize borders. Windows handles this in the
         // WM_NCHITTEST subclass (chrome::install_win32_resize); everywhere
         // else the hit-test is egui-side and starts a compositor resize.
@@ -5539,7 +5555,18 @@ impl DiskoriaApp {
         let inner_x = card.inner_x();
         let slot = self.settings_window_slot();
 
-        let enabled = self.shared.settings_snapshot().close_to_tray;
+        // Linux: the tray is where background collection is shown and stopped,
+        // so it cannot be optional while monitoring is on. Turning it off would
+        // mean closing the last window either kills monitoring silently, or —
+        // with the service installed — leaves it collecting with nothing on
+        // screen to stop it. Forced on and greyed rather than hidden, so the
+        // reason is visible (KI-47).
+        #[cfg(target_os = "linux")]
+        let forced = self.monitoring_enabled;
+        #[cfg(not(target_os = "linux"))]
+        let forced = false;
+
+        let enabled = self.shared.settings_snapshot().close_to_tray_effective();
         let row_rect = card.row(row_h);
         let toggle_rect = Rect::from_min_size(
             Pos2::new(card.right() - card.pad() - 44.0, row_rect.top() + (row_h - 24.0) / 2.0),
@@ -5559,7 +5586,9 @@ impl DiskoriaApp {
         ui.painter().text(
             Pos2::new(inner_x, row_rect.center().y + 9.0),
             Align2::LEFT_CENTER,
-            if enabled {
+            if forced {
+                "Required while background monitoring is on — the tray is how you stop it"
+            } else if enabled {
                 "Closing the last window keeps Diskoria monitoring from the tray"
             } else {
                 "Closing the last window quits Diskoria and stops monitoring"
@@ -5572,7 +5601,7 @@ impl DiskoriaApp {
         crate::widgets::paint_toggle(ui, t, toggle_rect, enabled);
 
         let kb = page_keys && keyboard_activate(ui, focused);
-        if toggle_resp.clicked() || kb {
+        if !forced && (toggle_resp.clicked() || kb) {
             self.shared.update_settings(|s| s.close_to_tray = !s.close_to_tray);
         }
         if focused {
@@ -5788,7 +5817,11 @@ impl DiskoriaApp {
         let page_keys = !self.blocks_content_interaction();
         let section_w = content_w - margin * 2.0;
         let row_h = 40.0_f32;
-        let busy = crate::service_control::busy();
+        // Subordinate to the Monitoring master switch: with that off, nothing
+        // should be collecting, so this cannot be used to turn a root service
+        // back on behind its back.
+        let master_on = self.monitoring_enabled;
+        let busy = crate::service_control::busy() || !master_on;
 
         let mut card = CardLayout::builder(content_x + margin, section_w)
             .title("Background service")
@@ -5812,6 +5845,7 @@ impl DiskoriaApp {
         );
         let subtitle = match crate::service_control::last_error() {
             Some(e) => format!("Could not change it: {e}"),
+            None if !master_on => "Turn on background monitoring above to use this".to_string(),
             None if busy => "Applying…".to_string(),
             None => format!(
                 "{} — runs as root, collects health even when Diskoria is closed",
@@ -5909,6 +5943,16 @@ impl DiskoriaApp {
                 self.save_app_settings();
                 if !self.monitoring_enabled {
                     self.shared.cancel_monitor();
+                }
+                // This is *the* background-monitoring switch, so it governs the
+                // root service as well — otherwise turning monitoring off would
+                // leave a root daemon still writing health data, which is
+                // exactly the incoherence this setting is supposed to prevent.
+                // `enable/disable --now` because a settings change is meant to
+                // survive a reboot (unlike quitting, which only stops it).
+                #[cfg(target_os = "linux")]
+                if crate::service_control::status().is_some_and(|s| s.installed) {
+                    crate::service_control::set_enabled(self.monitoring_enabled);
                 }
             }
             if focused {

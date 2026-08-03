@@ -96,6 +96,32 @@ fn settings_path() -> PathBuf {
     crate::paths::settings_file()
 }
 
+impl Settings {
+    /// Whether closing the last window keeps Diskoria alive in the tray.
+    ///
+    /// On Linux this is **forced on while background monitoring is enabled**.
+    /// The tray is the only place the monitoring service's state is visible and
+    /// stoppable, so letting it be turned off would mean closing the last
+    /// window either stops monitoring silently, or — with the root service
+    /// installed — leaves it collecting with nothing on screen to stop it
+    /// (KI-47). The stored preference is left untouched, so turning monitoring
+    /// back off restores whatever the user had chosen.
+    ///
+    /// Windows keeps the raw preference: monitoring there is in-process, and
+    /// "closing the last window stops monitoring" is a deliberate, documented
+    /// trade-off shown under the toggle.
+    pub fn close_to_tray_effective(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            self.close_to_tray || self.monitoring_enabled
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.close_to_tray
+        }
+    }
+}
+
 pub fn load_settings() -> Settings {
     // Seed the tray behaviour from how this build was distributed. A `close_to_tray=`
     // line below overrides it, so this only applies until the user first touches the
@@ -218,6 +244,52 @@ pub fn initial_accent_color(s: &Settings) -> Color32 {
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod close_to_tray_rule_tests {
+    use super::Settings;
+
+    fn settings(close_to_tray: bool, monitoring_enabled: bool) -> Settings {
+        Settings { close_to_tray, monitoring_enabled, ..Default::default() }
+    }
+
+    #[test]
+    fn the_preference_is_honoured_when_monitoring_is_off() {
+        assert!(settings(true, false).close_to_tray_effective());
+        assert!(!settings(false, false).close_to_tray_effective());
+    }
+
+    /// The whole point: with monitoring on, closing the last window must not
+    /// be able to quit. Otherwise it either stops monitoring silently or —
+    /// with the root service installed — leaves it collecting with no tray to
+    /// stop it from (KI-47).
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn monitoring_forces_it_on_regardless_of_the_preference() {
+        assert!(settings(false, true).close_to_tray_effective());
+        assert!(settings(true, true).close_to_tray_effective());
+    }
+
+    /// Forcing must not *rewrite* the stored preference — turning monitoring
+    /// back off has to restore whatever the user chose.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn the_stored_preference_survives_being_overridden() {
+        let s = settings(false, true);
+        assert!(s.close_to_tray_effective(), "overridden while monitoring is on");
+        assert!(!s.close_to_tray, "but the user's choice is untouched");
+        let s = settings(false, false);
+        assert!(!s.close_to_tray_effective(), "and comes back when monitoring goes off");
+    }
+
+    /// Windows monitors in-process and documents the trade-off under the
+    /// toggle, so the preference is taken at face value there.
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn other_platforms_take_the_preference_at_face_value() {
+        assert!(!settings(false, true).close_to_tray_effective());
+    }
+}
 
 #[cfg(test)]
 mod tests {

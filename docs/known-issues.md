@@ -354,6 +354,49 @@ than a brick. Arch tokens cover the usual spellings (`x86_64`/`amd64`,
 `aarch64`/`arm64`, …), and the matcher takes the architecture as a parameter so
 the ARM cases are unit-tested from an x86-64 host.
 
+### KI-47 — Incoherent states around the tray, monitoring and the service `bug` `linux` `fixed`
+Adding the root service left several combinations that should not have been
+reachable. Fixed together, since they are one question: *nothing collects
+without a userspace presence that can see and stop it.*
+
+1. **Close-to-tray could be turned off with monitoring on.** Closing the last
+   window then either stopped monitoring silently, or — with the service
+   installed — left it collecting with nothing on screen to stop it. It is now
+   forced on while monitoring is enabled (`Settings::close_to_tray_effective`,
+   the single rule both the settings card and the close decision read; the
+   stored preference is left untouched so it returns when monitoring goes off).
+   The toggle is greyed with the reason, and drops out of the tab order rather
+   than trapping focus on a control that cannot change.
+2. **`assume_sni_available` made "has a tray" mean less than it used to.**
+   After KI-45 the SNI service stays alive with no watcher on the bus, so
+   `tray.is_some()` no longer implies a *visible* icon — and on Wayland
+   close-to-tray destroys the window rather than hiding it. Closing the last
+   window could therefore strand the app with no icon to bring it back. The
+   decision now also requires `tray::host_present()`, tracked from ksni's
+   `watcher_online`/`watcher_offline`.
+3. **Two switches both meaning "background monitoring".** Settings' *Enable
+   background monitoring* is now the master: it governs the in-process thread
+   *and* the service (`enable/disable --now`, so a settings change survives a
+   reboot). The Background service card is subordinate — inert and unfocusable
+   while the master is off — and the tray offers *Start* only when the master
+   agrees. Stopping is never conditional; an off switch should always work.
+4. **Quitting left the service collecting.** Quit now runs `systemctl stop` —
+   stop, not disable, because closing a window is not a decision to undo the
+   boot-time setup. That needs authentication, so the exit waits for it (90 s
+   cap) instead of exiting underneath the polkit prompt and killing it; the
+   tray stays up meanwhile. If the stop is declined, fails or times out, a
+   notification says so with the command to run, since there will be no tray
+   left to check.
+5. **The service could run after a reboot with no tray at all.** Turning
+   collection on now also enables Diskoria's autostart entry, so a presence
+   exists whenever the service does.
+6. **`cancel_monitor()` on quit was `#[cfg(windows)]`.** The thread died with
+   the process anyway, but the shutdown is now explicit on both.
+
+Windows is deliberately untouched: monitoring there is in-process with no
+service, and "closing the last window stops monitoring" is a documented,
+intentional trade-off shown under the toggle.
+
 ## Resolved
 
 Condensed; see git history for full detail.
