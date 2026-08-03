@@ -45,6 +45,7 @@ mod smart_health_page;
 mod test_result_overlay;
 mod theme;
 mod update;
+mod watchdog;
 mod widgets;
 
 // Pro-Monitoring modules
@@ -503,6 +504,7 @@ impl Renderer {
         // the startup update prompt must not fire into a hidden window.
         self.app.window_visible = self.window.is_visible().unwrap_or(true);
 
+        crate::watchdog::enter(crate::watchdog::Phase::PaintUi);
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
             self.app.draw(ctx);
         });
@@ -599,6 +601,7 @@ impl Renderer {
         }
 
         let t_before_tess = std::time::Instant::now();
+        crate::watchdog::enter(crate::watchdog::Phase::PaintTessellate);
         let ppp = full_output.pixels_per_point;
         let clipped = self.egui_ctx.tessellate(full_output.shapes, ppp);
         let t_tess = t_before_tess.elapsed();
@@ -617,6 +620,7 @@ impl Renderer {
         // window takes a Wayland round trip thousands of times a second, on the
         // event-loop thread, which is what froze every window during a sector
         // scan (KI-42).
+        crate::watchdog::enter(crate::watchdog::Phase::PaintDamage);
         let prints: Vec<PrimPrint> = clipped
             .iter()
             .map(|p| prim_print(p, ppp, w, h))
@@ -677,6 +681,7 @@ impl Renderer {
             return;
         }
 
+        crate::watchdog::enter(crate::watchdog::Phase::PaintSurfaceAcquire);
         if self
             .surface
             .resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap())
@@ -725,6 +730,7 @@ impl Renderer {
         // 32 rows keeps tasks small enough for rayon to balance a frame whose
         // work sits mostly in a few large panels.
         const BAND_ROWS: u32 = 32;
+        crate::watchdog::enter(crate::watchdog::Phase::PaintRasterize);
         let tex_mgr = &self.tex_mgr;
         let damage_ref = &damage;
         let px_tested: u64 = buf
@@ -799,6 +805,7 @@ impl Renderer {
 
         let t_raster = t_before_raster.elapsed();
         let t_before_present = std::time::Instant::now();
+        crate::watchdog::enter(crate::watchdog::Phase::PaintPresent);
 
         let present_rects: Vec<softbuffer::Rect> = damage
             .iter()
@@ -1111,6 +1118,7 @@ impl App {
 
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        crate::watchdog::enter(crate::watchdog::Phase::Resumed);
         if self.renderers.is_empty() {
             #[cfg_attr(not(windows), allow(unused_mut))]
             let mut renderer = Renderer::new(event_loop, self.shared.clone());
@@ -1145,6 +1153,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
+        crate::watchdog::enter(crate::watchdog::Phase::NewEvents);
         if matches!(cause, StartCause::ResumeTimeReached { .. }) {
             for r in self.renderers.values() {
                 r.window.request_redraw();
@@ -1158,6 +1167,7 @@ impl ApplicationHandler<UserEvent> for App {
         window_id: WindowId,
         event: WindowEvent,
     ) {
+        crate::watchdog::enter(crate::watchdog::Phase::WindowEvent);
         // Dispatch to flyout first if the event belongs to it.
         #[cfg(windows)]
         if let Some(flyout) = &mut self.flyout {
@@ -1338,6 +1348,7 @@ enum CloseDisposition { None, Exit, DropThis, HideThis }
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
+        crate::watchdog::enter(crate::watchdog::Phase::UserEvent);
         match event {
             UserEvent::ShowWindowRequested => {
                 if self.renderers.is_empty() {
@@ -1443,13 +1454,17 @@ enum CloseDisposition { None, Exit, DropThis, HideThis }
             #[cfg(any(windows, target_os = "linux"))]
             UserEvent::TrayIconUpdate { serial, temp_c } => {
                 if let Some(tray) = &mut self.tray {
-                    tray.update_drive_icon(&serial, temp_c);
+                    crate::watchdog::scope(crate::watchdog::Phase::TrayUpdate, || {
+                        tray.update_drive_icon(&serial, temp_c)
+                    });
                 }
             }
             #[cfg(any(windows, target_os = "linux"))]
             UserEvent::DriveAlert { serial, is_critical } => {
                 if let Some(tray) = &mut self.tray {
-                    tray.set_drive_alert(&serial, is_critical);
+                    crate::watchdog::scope(crate::watchdog::Phase::TrayUpdate, || {
+                        tray.set_drive_alert(&serial, is_critical)
+                    });
                 }
             }
             #[cfg(windows)]
@@ -1560,6 +1575,7 @@ enum CloseDisposition { None, Exit, DropThis, HideThis }
     /// the last window closing when `close_to_tray` is off. Hiding to the tray
     /// is not an exit, so a staged update simply waits.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        crate::watchdog::enter(crate::watchdog::Phase::Exiting);
         #[cfg(any(windows, target_os = "linux"))]
         if let Some(staged) = self.shared.take_staged_update() {
             log::info!(
@@ -1597,6 +1613,19 @@ enum CloseDisposition { None, Exit, DropThis, HideThis }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        crate::watchdog::enter(crate::watchdog::Phase::AboutToWait);
+        self.about_to_wait_inner(event_loop);
+        // Every exit path lands here, so the watchdog sees "parked waiting for
+        // the next event" rather than a phase that never ends.
+        crate::watchdog::idle();
+    }
+}
+
+impl App {
+    /// The real `about_to_wait` body. Split out because it returns early in
+    /// several places and the watchdog must be told the loop went idle on all
+    /// of them.
+    fn about_to_wait_inner(&mut self, event_loop: &ActiveEventLoop) {
         // Boot-smoke mode: paint every window once per tick (driving the full
         // `draw()` path), then exit after the requested frame count. Bypasses the
         // normal repaint pacing — a few frames is enough to surface a panic.
@@ -1682,7 +1711,9 @@ enum CloseDisposition { None, Exit, DropThis, HideThis }
 
             if has_drives && self.shared.take_drive_icons_dirty() {
                 if let (Some(tray), Some(renderer)) = (&mut self.tray, self.renderers.values_mut().next()) {
-                    tray.rebuild_drive_icons(&renderer.app.drives);
+                    crate::watchdog::scope(crate::watchdog::Phase::TrayUpdate, || {
+                        tray.rebuild_drive_icons(&renderer.app.drives)
+                    });
                 }
             }
         }
@@ -2093,6 +2124,10 @@ pub fn run() {
     // must never block on a subprocess (KI-42).
     #[cfg(target_os = "linux")]
     crate::theme::spawn_portal_refresh();
+
+    // Notice — and name — anything that blocks the event-loop thread from here
+    // on (KI-42, KI-43).
+    crate::watchdog::start();
 
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()

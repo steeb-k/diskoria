@@ -170,8 +170,27 @@ impl ksni::Tray for SniTray {
     }
 }
 
+/// Work for the tray thread. Every mutation of the SNI item goes through this
+/// channel rather than being applied inline — see [`TrayManager`].
+enum TrayCmd {
+    Rebuild(Vec<(String, String)>),
+    Temp(String, Option<i32>),
+    Alert(bool),
+    ClearAlert,
+}
+
+/// Handle to the tray, usable from the event-loop thread.
+///
+/// `ksni::blocking::Handle::update` is not a fire-and-forget send: it is a
+/// `block_on` of an async-mutex acquire *plus* a oneshot round trip with the
+/// D-Bus service loop, so the caller is parked until the tray service and the
+/// panel on the other end are both done. Calling it from a winit callback put
+/// unbounded D-Bus I/O on the UI thread, where it froze every window at once
+/// for as long as the round trip took — once per drive per monitor tick
+/// (KI-43). Commands are queued to a dedicated thread instead; the event loop
+/// only ever does a non-blocking channel send.
 pub struct TrayManager {
-    handle: ksni::blocking::Handle<SniTray>,
+    tx: std::sync::mpsc::Sender<TrayCmd>,
 }
 
 impl TrayManager {
@@ -192,13 +211,35 @@ impl TrayManager {
         if dropped {
             crate::elevation::restore_thread_privileges();
         }
-        match spawned {
-            Ok(handle) => Some(Self { handle }),
+        let handle = match spawned {
+            Ok(handle) => handle,
             Err(e) => {
                 log::warn!(target: "diskoria::tray", "no system tray available: {e}");
-                None
+                return None;
             }
-        }
+        };
+
+        let (tx, rx) = std::sync::mpsc::channel::<TrayCmd>();
+        // Owns the handle: when `TrayManager` drops, the channel closes, this
+        // loop ends and the handle drops with it, removing the SNI item —
+        // the same teardown as when the manager held the handle directly.
+        std::thread::Builder::new()
+            .name("diskoria-tray".into())
+            .spawn(move || {
+                for cmd in rx {
+                    apply(&handle, cmd);
+                }
+                log::debug!(target: "diskoria::tray", "tray thread exiting");
+            })
+            .ok()?;
+
+        Some(Self { tx })
+    }
+
+    /// Queue a tray mutation. A closed channel means the tray thread is gone
+    /// (shutdown), which is not worth reporting per call.
+    fn send(&self, cmd: TrayCmd) {
+        let _ = self.tx.send(cmd);
     }
 
     /// Refresh the monitored-drive set (internal drives only, like Windows).
@@ -209,50 +250,19 @@ impl TrayManager {
             .map(|d| (d.serial.clone(), d.model.clone()))
             .collect();
         log::debug!(target: "diskoria::tray", "rebuild_drive_icons: {} monitored drive(s)", list.len());
-        self.handle.update(|t| {
-            // Keep temps for serials that survived the rebuild.
-            let old: Vec<DriveTemp> = std::mem::take(&mut t.drives);
-            t.drives = list
-                .into_iter()
-                .map(|(serial, model)| {
-                    let temp_c = old
-                        .iter()
-                        .find(|o| o.serial == serial)
-                        .and_then(|o| o.temp_c);
-                    DriveTemp { serial, model, temp_c }
-                })
-                .collect();
-        });
+        self.send(TrayCmd::Rebuild(list));
     }
 
     pub fn update_drive_icon(&mut self, serial: &str, temp_c: Option<i32>) {
-        let serial = serial.to_string();
-        self.handle.update(move |t| {
-            match t.drives.iter_mut().find(|d| d.serial == serial) {
-                Some(d) => {
-                    log::debug!(target: "diskoria::tray", "icon temp {serial} = {temp_c:?}°C");
-                    d.temp_c = temp_c;
-                }
-                // Would leave the thermometer stuck gray — the symptom of the
-                // drive list never reaching the tray.
-                None => log::warn!(
-                    target: "diskoria::tray",
-                    "temperature for unknown serial {serial}; tray has {} drive(s)",
-                    t.drives.len()
-                ),
-            }
-        });
+        self.send(TrayCmd::Temp(serial.to_string(), temp_c));
     }
 
     pub fn set_drive_alert(&mut self, _serial: &str, is_critical: bool) {
-        self.handle.update(move |t| {
-            // Escalate but never downgrade an active critical alert.
-            t.alert = Some(t.alert.unwrap_or(false) || is_critical);
-        });
+        self.send(TrayCmd::Alert(is_critical));
     }
 
     pub fn clear_drive_flash(&mut self, _serial: &str) {
-        self.handle.update(|t| t.alert = None);
+        self.send(TrayCmd::ClearAlert);
     }
 
     /// SNI has no flash animation — attention is a status, not a timer.
@@ -262,5 +272,54 @@ impl TrayManager {
 
     pub fn is_flashing(&self) -> bool {
         false
+    }
+}
+
+/// Apply one command to the SNI item. Runs on the tray thread only — every
+/// `handle.update` in here blocks until the D-Bus service loop acknowledges.
+fn apply(handle: &ksni::blocking::Handle<SniTray>, cmd: TrayCmd) {
+    match cmd {
+        TrayCmd::Rebuild(list) => {
+            handle.update(|t| {
+                // Keep temps for serials that survived the rebuild.
+                let old: Vec<DriveTemp> = std::mem::take(&mut t.drives);
+                t.drives = list
+                    .into_iter()
+                    .map(|(serial, model)| {
+                        let temp_c = old
+                            .iter()
+                            .find(|o| o.serial == serial)
+                            .and_then(|o| o.temp_c);
+                        DriveTemp { serial, model, temp_c }
+                    })
+                    .collect();
+            });
+        }
+        TrayCmd::Temp(serial, temp_c) => {
+            handle.update(move |t| {
+                match t.drives.iter_mut().find(|d| d.serial == serial) {
+                    Some(d) => {
+                        log::debug!(target: "diskoria::tray", "icon temp {serial} = {temp_c:?}°C");
+                        d.temp_c = temp_c;
+                    }
+                    // Would leave the thermometer stuck gray — the symptom of
+                    // the drive list never reaching the tray.
+                    None => log::warn!(
+                        target: "diskoria::tray",
+                        "temperature for unknown serial {serial}; tray has {} drive(s)",
+                        t.drives.len()
+                    ),
+                }
+            });
+        }
+        TrayCmd::Alert(is_critical) => {
+            handle.update(move |t| {
+                // Escalate but never downgrade an active critical alert.
+                t.alert = Some(t.alert.unwrap_or(false) || is_critical);
+            });
+        }
+        TrayCmd::ClearAlert => {
+            handle.update(|t| t.alert = None);
+        }
     }
 }

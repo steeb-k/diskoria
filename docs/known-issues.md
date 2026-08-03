@@ -221,6 +221,49 @@ the replay read empty entries instead of the frames actually drawn and left
 most of the window stale. `DISKORIA_DAMAGE_VERIFY=1` caught it (3.4 M pixels
 adrift); history now records only drawn frames.
 
+### KI-43 — UI still froze during a sector scan after KI-42 `bug` `linux` `open`
+The KI-42 fixes did not clear it. Re-reported as: freezes ~1:06 and ~1:52 into a
+scan, one brief recovery in between, then the scan *finished* — pass message and
+all — with the GUI still frozen. Two drives were under test; the slow USB one was
+unaffected, the boot drive was not.
+
+Two observations narrow it sharply. Both windows freeze together, so it is the
+shared event-loop thread again, not a window or a renderer. And the scan's own
+throughput chart shows no dip while the UI is dead, so the thread is **parked,
+not busy** — a blocking syscall or a lock wait, not slow rasterization. The
+~46 s spacing matches nothing periodic in the app (the monitor's default tick is
+3 minutes), so a load-dependent block is likelier than a scheduled one.
+
+Two provable offenders on that thread were found by reading sources rather than
+by reproducing, and both are fixed:
+
+1. **`ksni::blocking::Handle::update` called from winit callbacks.** It is not a
+   fire-and-forget send: it is a `block_on` of an async-mutex acquire *plus* a
+   oneshot round trip with the D-Bus service loop, so the caller is parked until
+   the tray service and the panel on the other end are both done. It ran on the
+   event loop once per drive per monitor tick and on every drive-list rebuild.
+   Tray mutations are now queued to a dedicated thread; the event loop only does
+   a non-blocking channel send.
+2. **`SharedAppState::update_settings` wrote settings to disk under the write
+   guard.** Every window reads settings during `draw()`, so the file write
+   parked the whole UI for as long as the disk took — unbounded when a scan is
+   saturating that same disk. The write now happens outside the guard.
+
+Neither is *confirmed* to be the reported freeze — under 100 s of 8-way
+`O_DIRECT` load with monitor ticks running, the watchdog below stayed silent, so
+the fault still has not been reproduced off the reporter's hardware. Both are
+real UI-thread blocks regardless.
+
+To settle it rather than guess a third time, the event loop now reports where it
+is (`watchdog.rs`): each winit callback and each paint stage marks a phase, and
+a background thread warns when a non-idle phase outlasts `DISKORIA_STALL_MS`
+(default 1000, `0` disables), naming the phase and, on recovery, the total.
+So the next occurrence reports e.g. `event loop stalled 41.0 s in
+`paint:surface-acquire`` instead of looking like a hang. Cost is two relaxed
+atomic stores per callback, so it stays on in release builds — this only appears
+under real load on real hardware, which is exactly where an opt-in flag would be
+switched off.
+
 ## Resolved
 
 Condensed; see git history for full detail.

@@ -82,6 +82,21 @@ damage tracking produced — the failure mode of partial redraw is a stale pixel
 that depends on the *sequence* of frames, which comparing two separate runs
 cannot catch. All three are free when unset.
 
+**Stall watchdog (`watchdog.rs`):** the UI is single-threaded — winit callbacks,
+egui's layout pass and the rasterizer all run on the event-loop thread — so any
+blocking call that reaches it freezes *every* window at once. That symptom looks
+identical whatever the cause, and it only shows up under load that is awkward to
+reproduce (KI-42, KI-43). So each callback and each paint stage marks a phase
+(`watchdog::enter` / `scope`, with `idle()` when the loop parks), and a
+background thread warns when a non-idle phase outlasts `DISKORIA_STALL_MS`
+(default 1000 ms; `0` disables), naming the phase and, on recovery, the total
+stall. Unlike the three flags above this is **on by default** — two relaxed
+atomic stores per callback, and the bugs it catches only occur on real hardware
+under real load, where an opt-in flag would be off. When adding work to the
+event loop, keep it non-blocking: anything that waits on a disk, a subprocess,
+a D-Bus peer or a compositor belongs on a worker thread feeding an `mpsc`
+channel.
+
 **Gamma note (KI-5):** the blend approximates gamma 2.0 (square / sqrt) rather
 than true sRGB ~2.2 (`lib.rs:348-358`). Acceptable, but not color-exact.
 

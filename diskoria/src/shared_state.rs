@@ -155,7 +155,7 @@ impl SharedAppState {
     /// `App::user_event` cancels the thread so the next draw can respawn
     /// it with fresh thresholds.
     pub fn update_settings<R>(&self, f: impl FnOnce(&mut Settings) -> R) -> R {
-        let (r, restart_monitor) = {
+        let (r, restart_monitor, to_save) = {
             let mut guard = self.settings.write().expect("settings poisoned");
             let before = guard.clone();
             let r = f(&mut guard);
@@ -164,9 +164,13 @@ impl SharedAppState {
                 || before.alert_temp_warn != guard.alert_temp_warn
                 || before.alert_temp_critical != guard.alert_temp_critical
                 || before.alert_wear_threshold != guard.alert_wear_threshold;
-            app_settings::save_settings(&guard);
-            (r, restart_monitor)
+            (r, restart_monitor, guard.clone())
         };
+        // Persist *outside* the guard. Every window reads settings during
+        // `draw()`, so holding the write lock across a file write parked the
+        // whole UI for as long as the disk took — which, with a sector scan
+        // saturating that same disk, is unbounded (KI-43).
+        app_settings::save_settings(&to_save);
         let _ = self
             .event_proxy
             .send_event(crate::UserEvent::SettingsChanged { restart_monitor });
