@@ -9,6 +9,7 @@ use egui::{CornerRadius, Frame, Key, Modifiers, Sense, Stroke, StrokeKind};
 use crate::drive_selector::{self, ChipSpec, DriveEntry};
 use crate::theme::Theme;
 use crate::theme::CLOSE_HOVER_BG;
+use crate::widgets::page_text_line;
 
 use super::super::{paint_speed_metric_cell, SPEED_PAGE_BOTTOM_PAD};
 use super::super::SPEED_PAGE_SECTION_GAP;
@@ -37,49 +38,41 @@ impl crate::app::DiskoriaApp {
         );
         ui.add_space(32.0);
 
-        ui.horizontal(|ui| {
-            let pad = (content_x + margin) - ui.min_rect().left();
-            if pad > 0.0 {
-                ui.add_space(pad);
-            }
-            ui.label(
-                egui::RichText::new(subtitle)
-                    .size(14.0)
-                    .color(t.txt_sec),
-            );
-        });
+        let section_w = content_w - margin * 2.0;
+        let left = content_x + margin;
+
+        page_text_line(
+            ui,
+            left,
+            section_w,
+            egui::RichText::new(subtitle).size(14.0).color(t.txt_sec),
+        );
         ui.add_space(20.0);
 
         if let Some(ref err) = self.drives_error {
-            ui.horizontal(|ui| {
-                let pad = (content_x + margin) - ui.min_rect().left();
-                if pad > 0.0 {
-                    ui.add_space(pad);
-                }
-                ui.label(
-                    egui::RichText::new(format!("Could not enumerate drives: {err}"))
-                        .size(13.0)
-                        .color(Color32::from_rgb(231, 76, 60)),
-                );
-            });
+            page_text_line(
+                ui,
+                left,
+                section_w,
+                egui::RichText::new(format!("Could not enumerate drives: {err}"))
+                    .size(13.0)
+                    .color(Color32::from_rgb(231, 76, 60)),
+            );
             ui.add_space(12.0);
         }
 
         if let Some(ref msg) = self.speed_drive_removed_msg {
-            ui.horizontal(|ui| {
-                let pad = (content_x + margin) - ui.min_rect().left();
-                if pad > 0.0 {
-                    ui.add_space(pad);
-                }
-                ui.label(
-                    egui::RichText::new(msg)
-                        .size(13.0)
-                        .color(Color32::from_rgb(231, 76, 60)),
-                );
-            });
+            page_text_line(
+                ui,
+                left,
+                section_w,
+                egui::RichText::new(msg)
+                    .size(13.0)
+                    .color(Color32::from_rgb(231, 76, 60)),
+            );
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                let pad = (content_x + margin) - ui.min_rect().left();
+                let pad = left - ui.min_rect().left();
                 if pad > 0.0 {
                     ui.add_space(pad);
                 }
@@ -91,20 +84,17 @@ impl crate::app::DiskoriaApp {
         }
 
         if let Some(ref err) = self.speed_error_msg {
-            ui.horizontal(|ui| {
-                let pad = (content_x + margin) - ui.min_rect().left();
-                if pad > 0.0 {
-                    ui.add_space(pad);
-                }
-                ui.label(
-                    egui::RichText::new(err)
-                        .size(13.0)
-                        .color(Color32::from_rgb(231, 76, 60)),
-                );
-            });
+            page_text_line(
+                ui,
+                left,
+                section_w,
+                egui::RichText::new(err)
+                    .size(13.0)
+                    .color(Color32::from_rgb(231, 76, 60)),
+            );
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                let pad = (content_x + margin) - ui.min_rect().left();
+                let pad = left - ui.min_rect().left();
                 if pad > 0.0 {
                     ui.add_space(pad);
                 }
@@ -116,24 +106,18 @@ impl crate::app::DiskoriaApp {
         }
 
         if !self.drives_loading && self.drives.is_empty() && self.drives_error.is_none() {
-            ui.horizontal(|ui| {
-                let pad = (content_x + margin) - ui.min_rect().left();
-                if pad > 0.0 {
-                    ui.add_space(pad);
-                }
-                ui.label(
-                    egui::RichText::new("No physical disks found.")
-                        .size(14.0)
-                        .color(t.txt_sec),
-                );
-            });
+            page_text_line(
+                ui,
+                left,
+                section_w,
+                egui::RichText::new("No physical disks found.")
+                    .size(14.0)
+                    .color(t.txt_sec),
+            );
             ui.add_space(16.0);
         }
 
-        let section_w = content_w - margin * 2.0;
-
         // Refresh icon button (left) and the two-row volume card (right) share a row.
-        let left = content_x + margin;
         let y_row = ui.cursor().min.y;
         let btn_rect = Rect::from_min_size(
             Pos2::new(left, y_row + (drive_selector::ROW_H - drive_selector::REFRESH_W) * 0.5),
@@ -261,53 +245,46 @@ impl crate::app::DiskoriaApp {
 
         if self.speed_target_busy_elsewhere() {
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                let pad = (content_x + margin) - ui.min_rect().left();
-                if pad > 0.0 { ui.add_space(pad); }
-                ui.label(
-                    egui::RichText::new("This drive is being tested in another window.")
-                        .size(13.0)
-                        .color(Color32::from_rgb(241, 196, 15)),
-                );
-            });
+            page_text_line(
+                ui,
+                left,
+                section_w,
+                egui::RichText::new("This drive is being tested in another window.")
+                    .size(13.0)
+                    .color(Color32::from_rgb(241, 196, 15)),
+            );
         }
 
         match target {
             Some((di, pi)) if self.drives[di].partitions[pi].is_encryption_locked() => {
-                ui.horizontal(|ui| {
-                    let pad = (content_x + margin) - ui.min_rect().left();
-                    if pad > 0.0 {
-                        ui.add_space(pad);
-                    }
-                    ui.label(
-                        egui::RichText::new(if cfg!(windows) {
-                            "This volume is BitLocker-locked. Speed tests cannot run on locked volumes."
-                        } else {
-                            "This volume is an encrypted (locked) container. Speed tests cannot run on locked volumes."
-                        })
-                        .size(13.0)
-                        .color(Color32::from_rgb(231, 76, 60)),
-                    );
-                });
+                page_text_line(
+                    ui,
+                    left,
+                    section_w,
+                    egui::RichText::new(if cfg!(windows) {
+                        "This volume is BitLocker-locked. Speed tests cannot run on locked volumes."
+                    } else {
+                        "This volume is an encrypted (locked) container. Speed tests cannot run on locked volumes."
+                    })
+                    .size(13.0)
+                    .color(Color32::from_rgb(231, 76, 60)),
+                );
                 ui.add_space(10.0);
             }
             // Reachable now that the page no longer repoints the selection away
             // from a partition-less drive (KI-15); Start stays disabled until the
             // user picks a volume above.
             None if !self.drives.is_empty() => {
-                ui.horizontal(|ui| {
-                    let pad = (content_x + margin) - ui.min_rect().left();
-                    if pad > 0.0 {
-                        ui.add_space(pad);
-                    }
-                    ui.label(
-                        egui::RichText::new(
-                            "No mounted volume on this disk. Choose a volume above to benchmark.",
-                        )
-                        .size(13.0)
-                        .color(t.txt_sec),
-                    );
-                });
+                page_text_line(
+                    ui,
+                    left,
+                    section_w,
+                    egui::RichText::new(
+                        "No mounted volume on this disk. Choose a volume above to benchmark.",
+                    )
+                    .size(13.0)
+                    .color(t.txt_sec),
+                );
                 ui.add_space(10.0);
             }
             _ => {}

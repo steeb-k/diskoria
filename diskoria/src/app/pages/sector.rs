@@ -10,6 +10,7 @@ use crate::detected_drive::DetectedDrive;
 use crate::drive_selector::{self, ChipSpec, DriveEntry};
 use crate::theme::Theme;
 use crate::theme::CLOSE_HOVER_BG;
+use crate::widgets::page_text_line;
 
 impl crate::app::DiskoriaApp {
     pub(crate) fn draw_sector_page(
@@ -33,65 +34,61 @@ impl crate::app::DiskoriaApp {
 
         let subtitle = "Read-only scan — checks every sector for errors";
         let section_w = content_w - margin * 2.0;
+        let left = content_x + margin;
 
-        ui.horizontal(|ui| {
-            let pad = (content_x + margin) - ui.min_rect().left();
-            if pad > 0.0 {
-                ui.add_space(pad);
-            }
-            ui.label(egui::RichText::new(subtitle).size(14.0).color(t.txt_sec));
-        });
+        page_text_line(
+            ui,
+            left,
+            section_w,
+            egui::RichText::new(subtitle).size(14.0).color(t.txt_sec),
+        );
         ui.add_space(20.0);
 
         if let Some(ref err) = self.drives_error {
-            ui.horizontal(|ui| {
-                let pad = (content_x + margin) - ui.min_rect().left();
-                if pad > 0.0 { ui.add_space(pad); }
-                ui.label(
-                    egui::RichText::new(format!("Could not enumerate drives: {err}"))
-                        .size(13.0)
-                        .color(Color32::from_rgb(231, 76, 60)),
-                );
-            });
+            page_text_line(
+                ui,
+                left,
+                section_w,
+                egui::RichText::new(format!("Could not enumerate drives: {err}"))
+                    .size(13.0)
+                    .color(Color32::from_rgb(231, 76, 60)),
+            );
             ui.add_space(12.0);
         }
 
         if !self.drives_loading && self.drives.is_empty() && self.drives_error.is_none() {
-            ui.horizontal(|ui| {
-                let pad = (content_x + margin) - ui.min_rect().left();
-                if pad > 0.0 { ui.add_space(pad); }
-                ui.label(
-                    egui::RichText::new("No physical disks found.")
-                        .size(14.0)
-                        .color(t.txt_sec),
-                );
-            });
+            page_text_line(
+                ui,
+                left,
+                section_w,
+                egui::RichText::new("No physical disks found.")
+                    .size(14.0)
+                    .color(t.txt_sec),
+            );
             ui.add_space(16.0);
         }
 
         if let Some(ref msg) = self.surface_drive_removed_msg {
-            ui.horizontal(|ui| {
-                let pad = (content_x + margin) - ui.min_rect().left();
-                if pad > 0.0 { ui.add_space(pad); }
-                ui.label(
-                    egui::RichText::new(msg)
-                        .size(13.0)
-                        .color(Color32::from_rgb(241, 196, 15)),
-                );
-            });
+            page_text_line(
+                ui,
+                left,
+                section_w,
+                egui::RichText::new(msg)
+                    .size(13.0)
+                    .color(Color32::from_rgb(241, 196, 15)),
+            );
             ui.add_space(8.0);
         }
 
         if let Some(ref err) = self.surface_last_error {
-            ui.horizontal(|ui| {
-                let pad = (content_x + margin) - ui.min_rect().left();
-                if pad > 0.0 { ui.add_space(pad); }
-                ui.label(
-                    egui::RichText::new(format!("Sector test error: {err}"))
-                        .size(13.0)
-                        .color(Color32::from_rgb(231, 76, 60)),
-                );
-            });
+            page_text_line(
+                ui,
+                left,
+                section_w,
+                egui::RichText::new(format!("Sector test error: {err}"))
+                    .size(13.0)
+                    .color(Color32::from_rgb(231, 76, 60)),
+            );
             ui.add_space(8.0);
         }
 
@@ -171,15 +168,14 @@ impl crate::app::DiskoriaApp {
 
         if self.selected_drive_busy_elsewhere() {
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                let pad = (content_x + margin) - ui.min_rect().left();
-                if pad > 0.0 { ui.add_space(pad); }
-                ui.label(
-                    egui::RichText::new("This drive is being tested in another window.")
-                        .size(13.0)
-                        .color(Color32::from_rgb(241, 196, 15)),
-                );
-            });
+            page_text_line(
+                ui,
+                left,
+                section_w,
+                egui::RichText::new("This drive is being tested in another window.")
+                    .size(13.0)
+                    .color(Color32::from_rgb(241, 196, 15)),
+            );
         }
 
         self.draw_smart_health_card(ui, t, dark, content_x, margin, section_w);

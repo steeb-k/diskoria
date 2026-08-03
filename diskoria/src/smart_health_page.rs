@@ -298,6 +298,27 @@ fn draw_section_label(
 
 // ── Vitals key/value row (absolute-Y version — no cursor side-effects) ────────
 
+/// Width of the right-aligned label column every Vitals row shares.
+///
+/// 30% of the card, with 150px as a floor that fits the longest label
+/// ("Unsafe Shutdowns") at desktop widths. As an *unconditional* floor it took
+/// half of a 380px-wide card and squeezed the temperature bar to a stub, so
+/// below ~375px of card the floor gives way in proportion (known-issues KI-52).
+fn vitals_label_col_w(card_inner_w: f32) -> f32 {
+    (card_inner_w * 0.30).max((card_inner_w * 0.40).min(150.0))
+}
+
+/// The temperature row's trailing caption and the width to reserve for it.
+/// The `(0 - 70°C)` range is dropped on a narrow card, where spelling it out
+/// costs more room than the bar it describes.
+fn vitals_temp_caption(card_inner_w: f32, temp_c: i32) -> (String, f32) {
+    if card_inner_w < 360.0 {
+        (format!("{temp_c}°C"), 46.0)
+    } else {
+        (format!("{temp_c}°C  (0 - 70°C)"), 110.0)
+    }
+}
+
 /// Paint a label/value row at an explicit Y coordinate.
 /// Does NOT advance the cursor; caller controls layout entirely.
 fn paint_vitals_kv(
@@ -315,7 +336,7 @@ fn paint_vitals_kv(
 ) {
     // Fixed label column: wide enough for the longest label ("Unsafe Shutdowns")
     // but no wider so the value column has plenty of room.
-    let label_col_w = (card_inner_w * 0.30).max(150.0);
+    let label_col_w = vitals_label_col_w(card_inner_w);
     let cy = row_y + row_h * 0.5;
 
     ui.painter().text(
@@ -356,7 +377,7 @@ fn paint_wear_bar(
     row_h: f32,
     pct_used: u8,
 ) {
-    let label_col_w = (card_inner_w * 0.30).max(150.0);
+    let label_col_w = vitals_label_col_w(card_inner_w);
     let bar_h = 8.0_f32;
     let range_reserve = 50.0_f32;   // "100%" is short — only needs ~40px
     let bar_x = card_x + pad + label_col_w + 8.0;
@@ -412,10 +433,9 @@ fn paint_temp_bar(
     temp_c: i32,
 ) {
     // Match the same label column width as paint_vitals_kv
-    let label_col_w = (card_inner_w * 0.30).max(150.0);
+    let label_col_w = vitals_label_col_w(card_inner_w);
     let bar_h = 8.0_f32;
-    // Reserve 110px on the right for the "37°C  (0 - 70°C)" range label
-    let range_reserve = 110.0_f32;
+    let (temp_caption, range_reserve) = vitals_temp_caption(card_inner_w, temp_c);
     let bar_x = card_x + pad + label_col_w + 8.0;
     // Bar spans from bar_x to the start of the range label area
     let full_bar_w = (card_inner_w - label_col_w - 8.0 - range_reserve).max(20.0);
@@ -456,7 +476,7 @@ fn paint_temp_bar(
     ui.painter().text(
         Pos2::new(right_inner, row_y + row_h * 0.5),
         Align2::RIGHT_CENTER,
-        format!("{}°C  (0 - 70°C)", temp_c),
+        temp_caption,
         FontId::proportional(12.0),
         t.txt_sec,
     );
@@ -673,7 +693,7 @@ fn paint_ufs_lifetime_bar(
     label: &str,
     value: u8,
 ) {
-    let label_col_w = (card_inner_w * 0.30).max(150.0);
+    let label_col_w = vitals_label_col_w(card_inner_w);
     let bar_h = 8.0_f32;
     let range_reserve = 120.0_f32;
     let bar_x = card_x + pad + label_col_w + 8.0;
@@ -1371,25 +1391,26 @@ impl DiskoriaApp {
         }
 
         // ── Subtitle + refresh button ─────────────────────────────────────────
-        ui.horizontal(|ui| {
-            let pad = (content_x + margin) - ui.min_rect().left();
-            if pad > 0.0 { ui.add_space(pad); }
-
-            ui.label(
-                RichText::new("Monitor drive health by viewing self-reported diagnostics.")
-                    .size(14.0)
-                    .color(t.txt_sec),
-            );
-        });
+        crate::widgets::page_text_line(
+            ui,
+            content_x + margin,
+            section_w,
+            RichText::new("Monitor drive health by viewing self-reported diagnostics.")
+                .size(14.0)
+                .color(t.txt_sec),
+        );
         ui.add_space(20.0);
 
         // Error state (shown above the selector row).
         if let Some(ref err) = self.drives_error {
-            ui.horizontal(|ui| {
-                let pad = (content_x + margin) - ui.min_rect().left();
-                if pad > 0.0 { ui.add_space(pad); }
-                ui.label(RichText::new(format!("Could not enumerate drives: {err}")).size(13.0).color(Color32::from_rgb(231, 76, 60)));
-            });
+            crate::widgets::page_text_line(
+                ui,
+                content_x + margin,
+                section_w,
+                RichText::new(format!("Could not enumerate drives: {err}"))
+                    .size(13.0)
+                    .color(Color32::from_rgb(231, 76, 60)),
+            );
             ui.add_space(12.0);
         }
 
@@ -1794,6 +1815,77 @@ fn draw_temperature_history(
     });
 
     ui.add_space(16.0);
+}
+
+#[cfg(test)]
+mod vitals_layout_tests {
+    use super::{vitals_label_col_w, vitals_temp_caption};
+
+    /// Card inner width for a window of `win_w`, via the real layout chain:
+    /// content = window − sidebar − 2×margin, card inner = content − 2×CARD_PAD.
+    fn card_inner_for(win_w: f32) -> f32 {
+        let mode = crate::theme::nav_mode(win_w);
+        let content = (win_w - mode.side_panel_w()).min(crate::theme::MAX_CONTENT_W)
+            - 2.0 * crate::theme::content_margin(mode);
+        content - 2.0 * crate::theme::CARD_PAD
+    }
+
+    #[test]
+    fn desktop_label_column_is_unchanged() {
+        // The old rule was `(inner * 0.30).max(150)`; anywhere it was already
+        // giving 150 or more, it still does.
+        for win_w in [900.0_f32, 1100.0, 1400.0, 1920.0] {
+            let inner = card_inner_for(win_w);
+            let old = (inner * 0.30).max(150.0);
+            assert_eq!(
+                vitals_label_col_w(inner),
+                old,
+                "wide layout moved at {win_w}px"
+            );
+        }
+    }
+
+    #[test]
+    fn narrow_label_column_leaves_the_bar_more_room_than_the_label() {
+        // The regression: at 380px the 150px floor took half the card and the
+        // temperature bar collapsed to a stub.
+        let inner = card_inner_for(380.0);
+        let col = vitals_label_col_w(inner);
+        assert!(col < 150.0, "floor should give way on a {inner}px card");
+        let (_, reserve) = vitals_temp_caption(inner, 41);
+        let bar = inner - col - 8.0 - reserve;
+        assert!(
+            bar > col * 0.8,
+            "bar {bar}px vs label column {col}px on a {inner}px card"
+        );
+    }
+
+    #[test]
+    fn the_temperature_range_is_only_spelled_out_when_it_fits() {
+        let wide = card_inner_for(1100.0);
+        let (caption, reserve) = vitals_temp_caption(wide, 41);
+        assert_eq!(caption, "41°C  (0 - 70°C)");
+        assert_eq!(reserve, 110.0);
+
+        let narrow = card_inner_for(380.0);
+        let (caption, reserve) = vitals_temp_caption(narrow, 41);
+        assert_eq!(caption, "41°C");
+        assert!(reserve < 110.0);
+    }
+
+    #[test]
+    fn no_width_makes_the_label_column_swallow_the_card() {
+        // Degenerate and extreme inputs stay sane — the column never exceeds
+        // 40% of the card, so there is always a value column to write into.
+        for inner in [0.0_f32, 1.0, 100.0, 200.0, 300.0, 400.0, 800.0, 4000.0] {
+            let col = vitals_label_col_w(inner);
+            assert!(col >= 0.0);
+            assert!(
+                inner <= 0.0 || col <= inner * 0.401,
+                "column {col} of a {inner}px card"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

@@ -12,6 +12,7 @@ use crate::detected_drive::DetectedDrive;
 use crate::drive_selector::{self, ChipSpec, DriveEntry};
 use crate::theme::Theme;
 use crate::theme::CLOSE_HOVER_BG;
+use crate::widgets::page_text_line;
 
 impl crate::app::DiskoriaApp {
     /// Destructive Test page — gate blocker (first visit) then write+verify UI.
@@ -44,46 +45,43 @@ impl crate::app::DiskoriaApp {
             let section_w = content_w - margin * 2.0;
             let left = content_x + margin;
 
-            let warning_lines = [
-                "This test will write data to every sector on the selected drive",
-                "and immediately read it back to verify the write.",
-                "",
-                "ALL EXISTING DATA ON THE DRIVE WILL BE PERMANENTLY DESTROYED.",
-                "This operation cannot be undone.",
-                "",
-                "Only proceed if you intend to wipe this device completely.",
-                "Do not select a drive that contains any data you wish to keep.",
+            // Paragraphs, not pre-broken lines: the old fixed line breaks ran
+            // off the right edge once the window could be narrower than the
+            // longest sentence, truncating the data-loss warning itself
+            // (known-issues KI-52). Each entry wraps to the section width.
+            let warning_paras: [(&str, bool); 4] = [
+                (
+                    "This test will write data to every sector on the selected drive \
+                     and immediately read it back to verify the write.",
+                    false,
+                ),
+                (
+                    "ALL EXISTING DATA ON THE DRIVE WILL BE PERMANENTLY DESTROYED. \
+                     This operation cannot be undone.",
+                    true,
+                ),
+                (
+                    "Only proceed if you intend to wipe this device completely.",
+                    false,
+                ),
+                (
+                    "Do not select a drive that contains any data you wish to keep.",
+                    false,
+                ),
             ];
 
-            let mut y = ui.cursor().min.y;
-            for line in &warning_lines {
-                if line.is_empty() {
-                    y += 8.0;
-                    continue;
-                }
-                let is_key = line.starts_with("ALL") || line.starts_with("This operation");
-                let col = if is_key {
-                    Color32::from_rgb(231, 76, 60)
+            for (para, is_key) in &warning_paras {
+                let text = egui::RichText::new(*para).size(14.0);
+                let text = if *is_key {
+                    text.color(Color32::from_rgb(231, 76, 60))
+                        .family(FontFamily::Name("InterBold".into()))
                 } else {
-                    t.txt_sec
+                    text.color(t.txt_sec)
                 };
-                let font = if is_key {
-                    FontId::new(14.0, FontFamily::Name("InterBold".into()))
-                } else {
-                    FontId::proportional(14.0)
-                };
-                ui.painter().text(
-                    Pos2::new(left, y + 10.0),
-                    Align2::LEFT_CENTER,
-                    *line,
-                    font,
-                    col,
-                );
-                y += 22.0;
+                page_text_line(ui, left, section_w, text);
+                ui.add_space(8.0);
             }
-            // Allocate vertical space for the warning block.
-            let text_h = y - ui.cursor().min.y;
-            ui.add_space(text_h + 16.0);
+            ui.add_space(8.0);
 
             // Large unlock button (same pattern as Start button elsewhere).
             const PRIMARY_BTN_H: f32 = 48.0;
@@ -137,73 +135,61 @@ impl crate::app::DiskoriaApp {
         // ----------------------------------------------------------------
         let subtitle = "Read + write test — destroys all data on disk";
         let section_w = content_w - margin * 2.0;
+        let left = content_x + margin;
 
-        ui.horizontal(|ui| {
-            let pad = (content_x + margin) - ui.min_rect().left();
-            if pad > 0.0 {
-                ui.add_space(pad);
-            }
-            ui.label(egui::RichText::new(subtitle).size(14.0).color(t.txt_sec));
-        });
+        page_text_line(
+            ui,
+            left,
+            section_w,
+            egui::RichText::new(subtitle).size(14.0).color(t.txt_sec),
+        );
         ui.add_space(20.0);
 
         if let Some(ref err) = self.drives_error {
-            ui.horizontal(|ui| {
-                let pad = (content_x + margin) - ui.min_rect().left();
-                if pad > 0.0 {
-                    ui.add_space(pad);
-                }
-                ui.label(
-                    egui::RichText::new(format!("Could not enumerate drives: {err}"))
-                        .size(13.0)
-                        .color(Color32::from_rgb(231, 76, 60)),
-                );
-            });
+            page_text_line(
+                ui,
+                left,
+                section_w,
+                egui::RichText::new(format!("Could not enumerate drives: {err}"))
+                    .size(13.0)
+                    .color(Color32::from_rgb(231, 76, 60)),
+            );
             ui.add_space(12.0);
         }
 
         if !self.drives_loading && self.drives.is_empty() && self.drives_error.is_none() {
-            ui.horizontal(|ui| {
-                let pad = (content_x + margin) - ui.min_rect().left();
-                if pad > 0.0 {
-                    ui.add_space(pad);
-                }
-                ui.label(
-                    egui::RichText::new("No physical disks found.")
-                        .size(14.0)
-                        .color(t.txt_sec),
-                );
-            });
+            page_text_line(
+                ui,
+                left,
+                section_w,
+                egui::RichText::new("No physical disks found.")
+                    .size(14.0)
+                    .color(t.txt_sec),
+            );
             ui.add_space(16.0);
         }
 
         if let Some(ref msg) = self.destructive_drive_removed_msg {
-            ui.horizontal(|ui| {
-                let pad = (content_x + margin) - ui.min_rect().left();
-                if pad > 0.0 {
-                    ui.add_space(pad);
-                }
-                ui.label(
-                    egui::RichText::new(msg)
-                        .size(13.0)
-                        .color(Color32::from_rgb(241, 196, 15)),
-                );
-            });
+            page_text_line(
+                ui,
+                left,
+                section_w,
+                egui::RichText::new(msg)
+                    .size(13.0)
+                    .color(Color32::from_rgb(241, 196, 15)),
+            );
             ui.add_space(8.0);
         }
 
         if let Some(ref err) = self.destructive_last_error {
-            ui.horizontal(|ui| {
-                let pad = (content_x + margin) - ui.min_rect().left();
-                if pad > 0.0 {
-                    ui.add_space(pad);
-                }
-                ui.label(
-                    egui::RichText::new(format!("Destructive test error: {err}"))
-                        .size(13.0)
-                        .color(Color32::from_rgb(231, 76, 60)),
-                );
-            });
+            page_text_line(
+                ui,
+                left,
+                section_w,
+                egui::RichText::new(format!("Destructive test error: {err}"))
+                    .size(13.0)
+                    .color(Color32::from_rgb(231, 76, 60)),
+            );
             ui.add_space(8.0);
         }
 
@@ -283,15 +269,14 @@ impl crate::app::DiskoriaApp {
 
         if self.selected_drive_busy_elsewhere() {
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                let pad = (content_x + margin) - ui.min_rect().left();
-                if pad > 0.0 { ui.add_space(pad); }
-                ui.label(
-                    egui::RichText::new("This drive is being tested in another window.")
-                        .size(13.0)
-                        .color(Color32::from_rgb(241, 196, 15)),
-                );
-            });
+            page_text_line(
+                ui,
+                left,
+                section_w,
+                egui::RichText::new("This drive is being tested in another window.")
+                    .size(13.0)
+                    .color(Color32::from_rgb(241, 196, 15)),
+            );
         }
 
         self.draw_smart_health_card(ui, t, dark, content_x, margin, section_w);

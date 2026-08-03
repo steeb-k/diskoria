@@ -133,9 +133,16 @@ fn paint_entry(
     );
 
     let chip_y = rect.bottom() - 8.0 - CHIP_H;
+    let chip_limit = rect.right() - 8.0;
     let mut x = rect.left() + 8.0;
     for c in &entry.chips {
         let w = chip_text_w(ctx, &c.label);
+        // Drop the rest rather than paint outside the card. Chips are ordered
+        // most- to least-important (size, then media, then bus), so what
+        // survives on a phone-width card is the part worth keeping.
+        if x + w > chip_limit {
+            break;
+        }
         let r = Rect::from_min_size(Pos2::new(x, chip_y), Vec2::new(w, CHIP_H));
         chip_pill(painter, r, &c.label, c.bg, c.fg);
         x += w + CHIP_GAP;

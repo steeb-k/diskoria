@@ -100,6 +100,37 @@ pub fn small_browse_style_button(
     response
 }
 
+/// A page body line — subtitle, status message, error — that **wraps** at
+/// `max_w` instead of running off the right edge.
+///
+/// Pages paint at an absolute `content_x + margin`, so the row is padded across
+/// to `left` rather than relying on the surrounding layout. The width is set to
+/// `pad + max_w` because the pad is spent from the same budget.
+///
+/// Exists because every one of these lines used to sit in a bare
+/// `ui.horizontal`, where egui's wrap mode is `Extend`: at the wide window
+/// widths Diskoria used to enforce nothing clipped, but at rail and phone
+/// widths whole sentences ran off the edge — including the Sector Write
+/// Test's data-loss warning (known-issues KI-52).
+/// Returns the height it consumed.
+pub fn page_text_line(ui: &mut Ui, left: f32, max_w: f32, text: egui::RichText) -> f32 {
+    let galley = egui::WidgetText::from(text).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Wrap),
+        max_w.max(1.0),
+        egui::TextStyle::Body,
+    );
+    let h = galley.size().y;
+    let top = ui.cursor().min.y;
+    // Painted at an absolute `left`, so allocate from the layout's own left
+    // edge out to the far side of the text — the row has to reserve the full
+    // span or the next widget will overlap it.
+    ui.allocate_space(Vec2::new((left - ui.min_rect().left()).max(0.0) + max_w, h));
+    ui.painter()
+        .galley(Pos2::new(left, top), galley, Color32::WHITE);
+    h
+}
+
 pub fn show_tooltip_text(ctx: &egui::Context, id: Id, anchor_pos: Pos2, t: &Theme, text: &str) {
     let screen = ctx.screen_rect();
     let pad = 8.0_f32;

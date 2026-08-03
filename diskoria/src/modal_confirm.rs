@@ -8,6 +8,64 @@ use egui::{
 use crate::chrome::INTERACT_MANUAL_FOCUS;
 use crate::theme::Theme;
 
+const H_PAD: f32 = 20.0;
+const TOP_PAD: f32 = 20.0;
+const TITLE_BODY_GAP: f32 = 10.0;
+const BODY_BTN_GAP: f32 = 12.0;
+/// Height of a modal's button row, and its inset from the dialog's bottom.
+const BTN_H: f32 = 30.0;
+const BTN_BOTTOM_PAD: f32 = 16.0;
+/// Gap kept between the dialog and the window edge when the dialog has to be
+/// shrunk to fit.
+const SCREEN_MARGIN: f32 = 12.0;
+
+/// Fit a caller's preferred dialog size to the window.
+///
+/// Callers pass a size chosen for a desktop window. Once the window can be
+/// 380px wide, a 420px dialog hangs off both edges and its buttons fall outside
+/// the screen (known-issues KI-52). Width is capped at the window; the text
+/// then wraps to more lines, so the height *grows* to fit it — capped at the
+/// window in turn, since a clipped dialog is still better than one whose OK
+/// button is off-screen.
+fn fit_dialog(ctx: &Context, screen: Rect, title: &str, body: &str, want: Vec2) -> Rect {
+    let w = fit_dialog_w(screen.width(), want.x);
+    let text_h = modal_text_h(ctx, title, body, w);
+    let h = fit_dialog_h(screen.height(), want.y, text_h);
+    Rect::from_center_size(screen.center(), Vec2::new(w, h))
+}
+
+/// Dialog width for a window `screen_w` wide, given the caller's preference.
+fn fit_dialog_w(screen_w: f32, want_w: f32) -> f32 {
+    want_w.min((screen_w - 2.0 * SCREEN_MARGIN).max(1.0))
+}
+
+/// Dialog height, given the height its wrapped text needs. Split from
+/// [`fit_dialog`] so the sizing rule can be tested without a font atlas.
+fn fit_dialog_h(screen_h: f32, want_h: f32, text_h: f32) -> f32 {
+    let needed = TOP_PAD + text_h + BODY_BTN_GAP + BTN_H + BTN_BOTTOM_PAD;
+    want_h
+        .max(needed)
+        .min((screen_h - 2.0 * SCREEN_MARGIN).max(1.0))
+}
+
+/// Height the title and body take when wrapped to a dialog `dlg_w` wide.
+fn modal_text_h(ctx: &Context, title: &str, body: &str, dlg_w: f32) -> f32 {
+    let text_w = (dlg_w - 2.0 * H_PAD).max(1.0);
+    let title_font = FontId::new(15.0, FontFamily::Name("InterBold".into()));
+    let body_font = FontId::proportional(13.0);
+    ctx.fonts(|f| {
+        let th = f
+            .layout(title.to_owned(), title_font, Color32::WHITE, text_w)
+            .size()
+            .y;
+        let bh = f
+            .layout(body.to_owned(), body_font, Color32::WHITE, text_w)
+            .size()
+            .y;
+        th + TITLE_BODY_GAP + bh
+    })
+}
+
 fn paint_modal_title_body(
     painter: &egui::Painter,
     dlg: Rect,
@@ -16,11 +74,6 @@ fn paint_modal_title_body(
     t: &Theme,
     btn_y: f32,
 ) {
-    const H_PAD: f32 = 20.0;
-    const TOP_PAD: f32 = 20.0;
-    const TITLE_BODY_GAP: f32 = 10.0;
-    const BODY_BTN_GAP: f32 = 12.0;
-
     let text_w = (dlg.width() - 2.0 * H_PAD).max(1.0);
     let content_top = dlg.top() + TOP_PAD;
     let content_bottom = (btn_y - BODY_BTN_GAP).max(content_top);
@@ -91,7 +144,7 @@ pub fn two_button_modal(
                 .rect_filled(screen, 0.0, Color32::from_black_alpha(120));
         });
 
-    let dlg = Rect::from_center_size(screen.center(), Vec2::new(p.width, p.height));
+    let dlg = fit_dialog(ctx, screen, p.title, p.body, Vec2::new(p.width, p.height));
 
     let inner = egui::Area::new(p.dialog_id)
         .fixed_pos(dlg.min)
@@ -101,8 +154,8 @@ pub fn two_button_modal(
             painter.rect_filled(dlg, 8.0, t.bg_pri);
             painter.rect_stroke(dlg, 8.0, Stroke::new(1.5_f32, t.accent), StrokeKind::Middle);
 
-            let btn_h = 30.0_f32;
-            let btn_y = dlg.bottom() - 16.0 - btn_h;
+            let btn_h = BTN_H;
+            let btn_y = dlg.bottom() - BTN_BOTTOM_PAD - btn_h;
             const BTN_MIN_W: f32 = 90.0;
             const BTN_H_PAD: f32 = 18.0;
             let measure_font = FontId::proportional(13.0);
@@ -316,7 +369,7 @@ pub fn one_button_modal(
                 .rect_filled(screen, 0.0, Color32::from_black_alpha(120));
         });
 
-    let dlg = Rect::from_center_size(screen.center(), Vec2::new(p.width, p.height));
+    let dlg = fit_dialog(ctx, screen, p.title, p.body, Vec2::new(p.width, p.height));
 
     let inner = egui::Area::new(p.dialog_id)
         .fixed_pos(dlg.min)
@@ -326,9 +379,9 @@ pub fn one_button_modal(
             painter.rect_filled(dlg, 8.0, t.bg_pri);
             painter.rect_stroke(dlg, 8.0, Stroke::new(1.5_f32, t.accent), StrokeKind::Middle);
 
-            let btn_h = 30.0_f32;
+            let btn_h = BTN_H;
             let btn_w = 90.0_f32;
-            let btn_y = dlg.bottom() - 16.0 - btn_h;
+            let btn_y = dlg.bottom() - BTN_BOTTOM_PAD - btn_h;
 
             paint_modal_title_body(painter, dlg, p.title, p.body, t, btn_y);
 
@@ -390,4 +443,64 @@ pub fn one_button_modal(
         });
 
     inner.inner
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Smallest window the app allows (`lib.rs` `with_min_inner_size`).
+    const MIN_WIN_W: f32 = 380.0;
+    const MIN_WIN_H: f32 = 480.0;
+    /// Room the button row needs: two buttons at up to ~150px, the 8px between
+    /// them and the 20px inset each side.
+    const BUTTON_ROW_BUDGET: f32 = 300.0;
+
+    #[test]
+    fn a_desktop_window_gets_exactly_what_the_caller_asked_for() {
+        // 420x200 is the shape the confirm dialogs pass. Nothing about the
+        // fitting rule may move them on a normal window.
+        assert_eq!(fit_dialog_w(1100.0, 420.0), 420.0);
+        assert_eq!(fit_dialog_h(700.0, 200.0, 60.0), 200.0);
+    }
+
+    #[test]
+    fn the_narrowest_window_still_fits_the_dialog_and_its_buttons() {
+        let w = fit_dialog_w(MIN_WIN_W, 420.0);
+        assert!(w <= MIN_WIN_W - 2.0 * SCREEN_MARGIN, "dialog {w}px overhangs");
+        assert!(
+            w >= BUTTON_ROW_BUDGET,
+            "only {w}px for a button row needing {BUTTON_ROW_BUDGET}px"
+        );
+    }
+
+    #[test]
+    fn a_dialog_grows_when_its_text_wraps_to_more_lines() {
+        // Narrowing wraps the body, so the caller's height stops being enough.
+        // Same content, three times the lines: the dialog has to grow, or the
+        // clip rect eats the sentence that says the data is unrecoverable.
+        let one_line = fit_dialog_h(MIN_WIN_H, 200.0, 60.0);
+        let many_lines = fit_dialog_h(MIN_WIN_H, 200.0, 180.0);
+        assert_eq!(one_line, 200.0);
+        assert!(many_lines > one_line);
+        assert!(many_lines >= TOP_PAD + 180.0 + BODY_BTN_GAP + BTN_H + BTN_BOTTOM_PAD);
+    }
+
+    #[test]
+    fn growth_stops_at_the_window_edge() {
+        // A body long enough to want more than the window gets capped rather
+        // than hanging its OK button off the bottom of the screen.
+        let h = fit_dialog_h(MIN_WIN_H, 200.0, 2000.0);
+        assert!(h <= MIN_WIN_H - 2.0 * SCREEN_MARGIN);
+    }
+
+    #[test]
+    fn degenerate_window_sizes_stay_positive() {
+        // A zero-sized surface (minimized, or mid-resize) must not produce a
+        // negative rect — `Rect::from_center_size` would silently invert it.
+        for (sw, sh) in [(0.0_f32, 0.0_f32), (1.0, 1.0), (20.0, 20.0)] {
+            assert!(fit_dialog_w(sw, 420.0) > 0.0);
+            assert!(fit_dialog_h(sh, 200.0, 60.0) > 0.0);
+        }
+    }
 }
