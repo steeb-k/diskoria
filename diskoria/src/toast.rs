@@ -47,10 +47,16 @@ fn app_icon_arg() -> String {
 /// Decode the bundled app icon and write it out as PNG, returning its path.
 /// Written once per run (rather than only when missing) so a stale file from
 /// an older build is replaced.
-#[cfg(target_os = "linux")]
+///
+/// Both platforms need the icon as a *file* rather than as something embedded
+/// in the binary: freedesktop daemons take an icon name or path and cannot read
+/// a themed name a portable binary never installed, and Windows' toast
+/// `IconUri` wants an image file — it will not extract an icon resource out of
+/// an exe (known-issues KI-49).
+#[cfg(any(windows, target_os = "linux"))]
 fn write_icon_png() -> Option<String> {
     // The window/app icon — not `applogo.png`, which is the in-app sidebar
-    // logo. Notification daemons do not decode ICO, so it is re-encoded as PNG.
+    // logo. Neither consumer decodes ICO, so it is re-encoded as PNG.
     static APP_ICO: &[u8] = include_bytes!("../../assets/appicon2.ico");
 
     let img = image::load_from_memory_with_format(APP_ICO, image::ImageFormat::Ico)
@@ -65,6 +71,7 @@ fn write_icon_png() -> Option<String> {
         .ok()?;
     // An elevated session writes it as root; the notification daemon reads it
     // as the user, so hand ownership over like the rest of the data dir.
+    #[cfg(target_os = "linux")]
     if let Some(uid) = crate::elevation::session_uid() {
         let _ = std::os::unix::fs::chown(&path, Some(uid), None);
     }
@@ -179,14 +186,19 @@ fn escape_xml(s: &str) -> String {
 
 // ── AUMID registration ────────────────────────────────────────────────────────
 
-/// Register `HKCU\Software\Classes\AppUserModelId\Diskoria` so the system
-/// can route our toast notifications.  Only writes if the key is absent.
+/// Register `HKCU\Software\Classes\AppUserModelId\Diskoria` so the system can
+/// route our toast notifications, and so they carry the app icon.
+///
+/// The values are rewritten on every call, not just when the key is created
+/// (KI-49). Two reasons: a registration written by an older build points
+/// `IconUri` at the exe, which renders as an empty icon slot forever because
+/// nothing ever revisits it; and the portable exe moves, so a path recorded
+/// once goes stale.
 #[cfg(windows)]
 fn ensure_aumid_registered() {
     use windows_sys::Win32::System::Registry::{
         RegCreateKeyExW, RegSetValueExW, HKEY_CURRENT_USER,
         KEY_READ, KEY_WRITE, REG_SZ,
-        REG_OPENED_EXISTING_KEY,
     };
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
@@ -203,14 +215,17 @@ fn ensure_aumid_registered() {
         .chain(std::iter::once(0))
         .collect();
 
-    let exe_path = std::env::current_exe()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .into_owned();
-    let icon_uri: Vec<u16> = OsStr::new(&exe_path)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
+    // `IconUri` must name an image file. Windows does not pull an icon resource
+    // out of an exe here, so pointing it at `current_exe()` left the toast's
+    // icon slot blank — the bug this fixes. If the PNG cannot be written, leave
+    // the value alone rather than replacing it with something equally broken.
+    let icon_path = write_icon_png();
+    let icon_uri: Option<Vec<u16>> = icon_path.as_deref().map(|p| {
+        OsStr::new(p)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    });
 
     unsafe {
         let mut hkey = 0isize;
@@ -230,29 +245,26 @@ fn ensure_aumid_registered() {
             return;
         }
 
-        // Only write values if we created the key fresh.
-        if disposition != REG_OPENED_EXISTING_KEY {
-            let dn_bytes = std::slice::from_raw_parts(
-                display_name.as_ptr() as *const u8,
-                display_name.len() * 2,
-            );
-            let dn_name: Vec<u16> = OsStr::new("DisplayName")
-                .encode_wide()
-                .chain(std::iter::once(0))
-                .collect();
-            RegSetValueExW(
-                hkey,
-                dn_name.as_ptr(),
-                0,
-                REG_SZ,
-                dn_bytes.as_ptr(),
-                dn_bytes.len() as u32,
-            );
+        let dn_bytes = std::slice::from_raw_parts(
+            display_name.as_ptr() as *const u8,
+            display_name.len() * 2,
+        );
+        let dn_name: Vec<u16> = OsStr::new("DisplayName")
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        RegSetValueExW(
+            hkey,
+            dn_name.as_ptr(),
+            0,
+            REG_SZ,
+            dn_bytes.as_ptr(),
+            dn_bytes.len() as u32,
+        );
 
-            let icon_bytes = std::slice::from_raw_parts(
-                icon_uri.as_ptr() as *const u8,
-                icon_uri.len() * 2,
-            );
+        if let Some(ref icon) = icon_uri {
+            let icon_bytes =
+                std::slice::from_raw_parts(icon.as_ptr() as *const u8, icon.len() * 2);
             let icon_name: Vec<u16> = OsStr::new("IconUri")
                 .encode_wide()
                 .chain(std::iter::once(0))

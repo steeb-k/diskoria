@@ -442,6 +442,37 @@ fixed blind, because the right fix depends on which behaviour was intended:
 drop the parameter, or move the `already` computation above the `is_empty()`
 guard and let the fallback top up partial results.
 
+### KI-49 — Toast notifications had a blank app icon on Windows `bug` `windows` `fixed`
+The "Diskoria is still running" toast shown when the last window closes to the
+tray — and every other Windows toast — left an empty square where the app icon
+belongs.
+
+`ensure_aumid_registered` (`toast.rs`) wrote
+`HKCU\Software\Classes\AppUserModelId\Diskoria\IconUri` as the path of
+`current_exe()`. `IconUri` must name an **image file**; Windows does not extract
+an icon resource out of an exe for this, so the slot rendered blank. The toast
+itself always sent fine, which is why nothing was ever logged: the WinRT call
+succeeded and the balloon fallback never ran.
+
+A second defect kept it broken even once the value was right: the registration
+only wrote its values when `RegCreateKeyExW` reported it had created the key
+fresh (`disposition != REG_OPENED_EXISTING_KEY`). Any machine that had ever run
+Diskoria already had the key, so nothing would revisit it — and the portable
+exe moves, so a recorded path goes stale anyway.
+
+Fixed by reusing the mechanism the Linux side already had: `write_icon_png`
+decodes the bundled `appicon2.ico` and writes it to
+`paths::data_dir()/appicon.png`, and `IconUri` points there. It is no longer
+`#[cfg(target_os = "linux")]` — both platforms need the icon as a file on disk,
+for the same underlying reason — with the ownership hand-back still Linux-only.
+The values are now rewritten on every call, so an existing broken registration
+repairs itself the first time a toast fires. If the PNG cannot be written the
+`IconUri` write is skipped rather than replaced with something equally broken.
+
+Verified on Windows by planting the old exe-path registration, deleting the
+PNG, closing the last window to the tray, and confirming `IconUri` came back as
+`C:\ProgramData\Diskoria\appicon.png`, present and decoding as 256x256 ARGB.
+
 ## Resolved
 
 Condensed; see git history for full detail.
