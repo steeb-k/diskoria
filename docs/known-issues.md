@@ -418,6 +418,30 @@ Windows is deliberately untouched: monitoring there is in-process with no
 service, and "closing the last window stops monitoring" is a documented,
 intentional trade-off shown under the toggle.
 
+### KI-48 — `fallback_partitions_for_disk`'s `already_found` argument is always empty `oddity` `windows`
+In `drive_enumeration/windows.rs`, the WMI-association fallback is entered only
+when `out.is_empty()`, but `already` is then built by iterating that same empty
+`out`:
+
+```rust
+if out.is_empty() {
+    let already: Vec<String> = out.iter().map(|p| p.mount_point.clone()).collect();
+    let fallback = fallback_partitions_for_disk(disk_index, encryption, &already);
+```
+
+So the `already_found` filter inside `fallback_partitions_for_disk` — the
+`already_found.iter().any(...)` skip at the top of the drive-letter scan — can
+never skip anything. Harmless today (the fallback only runs when nothing was
+found, so there is genuinely nothing to exclude), but the parameter reads as
+live de-duplication that isn't there, and it would silently do nothing if the
+guard were ever relaxed to "top up a partial result".
+
+**Pre-existing, not a `linux-support` regression** — `main` has the identical
+code, with only `drive_letter` → `mount_point` renamed. Left as-is rather than
+fixed blind, because the right fix depends on which behaviour was intended:
+drop the parameter, or move the `already` computation above the `is_empty()`
+guard and let the fallback top up partial results.
+
 ## Resolved
 
 Condensed; see git history for full detail.
