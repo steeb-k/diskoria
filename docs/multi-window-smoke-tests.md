@@ -282,6 +282,33 @@ diagnose before moving forward.
 - `Get-Process diskoria | Select Id,HandleCount,Threads` — watch for
   thread/handle leaks across window open/close cycles.
 
+## Restore-from-tray repaint (KI-50)
+
+Damage tracking makes "nothing changed" and "nothing to draw" different
+questions, and only the window itself knows when its contents were thrown away.
+Worth re-checking after any change to `paint`, the damage set, or the restore
+paths:
+
+- [ ] Close the last window to the tray, reopen from the tray icon → the window
+      comes back **fully drawn**. The sidebar in particular is the tell: it is
+      static, so it damages nothing and is the first thing to come back
+      transparent.
+- [ ] Do the same without touching the mouse afterwards. Moving the pointer
+      damages rectangles and repairs the window on its own, which is exactly
+      what masked this bug.
+- [ ] Same check for each restore path, since they are separate call sites:
+      tray icon left-click, the tray context menu's Open, and a second launch
+      of the exe while hidden.
+- [ ] With two windows open, close both to the tray and restore → both repaint.
+- [ ] Minimize/restore (titlebar button, then taskbar) → also fully drawn. This
+      one already worked: minimizing changes the window size, so it forces a
+      full repaint on its own.
+
+`DISKORIA_FRAME_STATS=1` turns this into a measurement rather than a judgement
+call — the frame after a restore should log `full repaint: first/forced=true`
+and `100.0% of the window`. Anything partial, or `nothing damaged, frame
+skipped`, is the bug returning.
+
 ## Known non-regressions
 
 - `drive_enumeration.rs`: 2 pre-existing warnings (`releases_repo_page_url`

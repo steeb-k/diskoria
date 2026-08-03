@@ -489,6 +489,40 @@ to whatever is already on disk and only gives up if nothing is — a possibly
 one-build-old icon beats none. Caught by running the unelevated debug build
 after an elevated session.
 
+### KI-50 — Window came back see-through when restored from the tray `bug` `fixed`
+Close to tray, then reopen: the sidebar was fully transparent and the rest of
+the window stayed blank until the pointer moved over it, filling in only the
+patches the pointer happened to damage. Resizing repaired everything at once.
+
+Damage tracking asks "what changed since the last frame we drew". A window
+returning from the tray answers *nothing* — the UI genuinely is identical — so
+`own_damage` came back empty and `paint` took its skip path and never touched
+the surface. But `set_visible(false)` discards what was on screen, so "no
+changes" and "nothing to draw" had stopped meaning the same thing. Hover then
+damaged small rectangles, which is why the window assembled itself under the
+pointer, and a resize set `size_changed` and forced the full repaint that fixed
+it.
+
+`Buffer::age` cannot catch this: softbuffer keeps handing back its buffers and
+reports age 1 after a hide/show. That is true of the buffer and false of the
+screen — nothing in the surface layer knows the window was hidden. Visibility is
+the app's own knowledge, so the app has to declare it.
+
+Fixed with `Renderer::raise` (`lib.rs`), which every restore path now goes
+through instead of calling the free `raise_window` directly: it sets
+`force_full_repaint`, clears `damage_history` (a replay cannot catch up from
+buffers whose contents are gone), then shows the window and requests a redraw.
+
+Measured before and after by hiding to the tray and restoring via a second
+launch, with `DISKORIA_FRAME_STATS=1`: before, 0 full repaints and two partial
+frames covering 18.8% and 39.6% of the window; after, one `first/forced=true`
+frame covering 100.0%.
+
+**Minimize/restore was checked and is not affected** — it arrives with
+`resized=true, buffer_age=0` and already forces a full repaint, because
+minimizing changes the window size while hiding to the tray does not. That
+difference is the whole reason this was reachable only from the tray.
+
 ## Resolved
 
 Condensed; see git history for full detail.

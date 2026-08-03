@@ -586,6 +586,27 @@ impl Renderer {
         }
     }
 
+    /// Show and raise this window, forcing the next frame to be a full repaint.
+    ///
+    /// Damage tracking asks "what changed since the last frame we drew", and a
+    /// window coming back from the tray answers "nothing" — the UI really is
+    /// identical. But hiding a window discards what was on screen, so an empty
+    /// damage set meant `paint` skipped the frame entirely and the window came
+    /// back see-through, filling in only where a later hover happened to damage
+    /// something (KI-50).
+    ///
+    /// `Buffer::age` cannot catch this: softbuffer keeps handing back buffers
+    /// and reports age 1, which is true of the buffer and false of the screen.
+    /// Visibility is the app's own knowledge, so the app has to say so.
+    fn raise(&mut self) {
+        self.force_full_repaint = true;
+        // Nothing on screen survived the hide, so recorded damage no longer
+        // describes anything a replay could catch up from.
+        self.damage_history.clear();
+        raise_window(&self.window);
+        self.window.request_redraw();
+    }
+
     fn paint(&mut self) {
         // Per-stage frame timing, off unless DISKORIA_FRAME_STATS is set.
         // Rendering is a hand-written CPU rasterizer, so "where did the frame
@@ -1302,8 +1323,8 @@ impl ApplicationHandler<UserEvent> for App {
                 if let Some(action) = cm.handle_event(&event) {
                     match action {
                         crate::flyout::ContextMenuAction::Open => {
-                            for r in self.renderers.values() {
-                                raise_window(&r.window);
+                            for r in self.renderers.values_mut() {
+                                r.raise();
                             }
                             self.refresh_any_visible_flag();
                         }
@@ -1484,8 +1505,8 @@ enum CloseDisposition { None, Exit, DropThis, HideThis }
                     "show requested; raising {} window(s)",
                     self.renderers.len()
                 );
-                for r in self.renderers.values() {
-                    raise_window(&r.window);
+                for r in self.renderers.values_mut() {
+                    r.raise();
                 }
                 #[cfg(windows)]
                 self.refresh_any_visible_flag();
@@ -1512,7 +1533,7 @@ enum CloseDisposition { None, Exit, DropThis, HideThis }
                 if self.shared.pro_edition {
                     renderer.app.event_proxy = Some(self.proxy.clone());
                 }
-                raise_window(&renderer.window);
+                renderer.raise();
                 let id = renderer.window.id();
                 self.renderers.insert(id, renderer);
                 #[cfg(windows)]
@@ -1683,8 +1704,8 @@ enum CloseDisposition { None, Exit, DropThis, HideThis }
                         }
                     } else if tray.is_app_icon_left_click(&e) {
                         // Left-click on the app icon → restore and raise every window.
-                        for r in self.renderers.values() {
-                            raise_window(&r.window);
+                        for r in self.renderers.values_mut() {
+                            r.raise();
                         }
                         self.refresh_any_visible_flag();
                     } else if let Some(pos) = tray.app_icon_right_click_pos(&e) {
