@@ -146,6 +146,7 @@ pub fn spawn_status_worker() {
             .name("diskoria-svcstat".into())
             .spawn(|| loop {
                 refresh_blocking();
+                ensure_presence(status().is_some_and(|s| s.running));
                 std::thread::sleep(REFRESH_EVERY);
             });
     });
@@ -160,17 +161,29 @@ pub fn spawn_status_worker() {
 pub fn set_enabled(on: bool) {
     let verb = if on { "enable" } else { "disable" };
     spawn_action(&[verb, "--now", UNIT]);
-    if on {
-        // Never collect without a userspace presence: the tray app is the only
-        // thing that can show the service is running and stop it, so turning
-        // collection on makes sure it will be there after the next login too.
-        match crate::autostart::set_enabled(true) {
-            Ok(()) => log::info!(
-                target: "diskoria::service",
-                "enabled Diskoria autostart so the tray is present whenever the service is"
-            ),
-            Err(e) => log::warn!(target: "diskoria::service", "could not enable autostart: {e}"),
-        }
+}
+
+/// Guarantee a userspace presence whenever the service is collecting.
+///
+/// The tray app is the only thing that can show the service is running and stop
+/// it, so it has to come back at the next login too. Keyed off the *observed*
+/// state rather than off our own toggle on purpose: the service is normally
+/// enabled by `install-service.sh` or a plain `systemctl enable --now`, and
+/// hanging the guarantee off the in-app switch left exactly that path — the
+/// common one — with no tray after a reboot.
+///
+/// Runs on the status worker, never the UI thread. The Settings toggle is
+/// greyed while the service runs, so this cannot fight a user turning it off.
+fn ensure_presence(running: bool) {
+    if !running || crate::autostart::is_enabled() {
+        return;
+    }
+    match crate::autostart::set_enabled(true) {
+        Ok(()) => log::info!(
+            target: "diskoria::service",
+            "enabled Diskoria autostart so the tray is present whenever the service is"
+        ),
+        Err(e) => log::warn!(target: "diskoria::service", "could not enable autostart: {e}"),
     }
 }
 

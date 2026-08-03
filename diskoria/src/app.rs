@@ -3529,7 +3529,12 @@ impl DiskoriaApp {
     }
 
     fn settings_startup_slot_count(&self) -> usize {
-        #[cfg(any(windows, target_os = "linux"))]
+        #[cfg(target_os = "linux")]
+        {
+            // Held on while the service collects, so it is not focusable.
+            usize::from(!crate::service_control::status().is_some_and(|s| s.running))
+        }
+        #[cfg(windows)]
         {
             1
         }
@@ -5738,6 +5743,15 @@ impl DiskoriaApp {
             .startup_enabled
             .get_or_insert_with(crate::autostart::is_enabled);
 
+        // While the root service is collecting there must be a tray to see and
+        // stop it from, so autostart is held on and the reason is shown rather
+        // than the toggle silently springing back (KI-47).
+        #[cfg(target_os = "linux")]
+        let forced = crate::service_control::status().is_some_and(|s| s.running);
+        #[cfg(not(target_os = "linux"))]
+        let forced = false;
+        let enabled = enabled || forced;
+
         let row_rect = card.row(row_h);
         let toggle_rect = Rect::from_min_size(
             Pos2::new(card.right() - card.pad() - 44.0, row_rect.top() + (row_h - 24.0) / 2.0),
@@ -5755,7 +5769,11 @@ impl DiskoriaApp {
         ui.painter().text(
             Pos2::new(inner_x, row_rect.center().y + 9.0),
             Align2::LEFT_CENTER,
-            "Start minimized to the system tray at logon",
+            if forced {
+                "Required while the background service is collecting"
+            } else {
+                "Start minimized to the system tray at logon"
+            },
             FontId::new(11.0, egui::FontFamily::Proportional),
             t.txt_sec,
         );
@@ -5764,7 +5782,7 @@ impl DiskoriaApp {
         crate::widgets::paint_toggle(ui, t, toggle_rect, enabled);
 
         let kb = page_keys && keyboard_activate(ui, focused);
-        if toggle_resp.clicked() || kb {
+        if !forced && (toggle_resp.clicked() || kb) {
             let want = !enabled;
             match crate::autostart::set_enabled(want) {
                 Ok(()) => self.startup_enabled = Some(want),

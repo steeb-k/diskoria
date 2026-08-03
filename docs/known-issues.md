@@ -387,9 +387,18 @@ without a userspace presence that can see and stop it.*
    tray stays up meanwhile. If the stop is declined, fails or times out, a
    notification says so with the command to run, since there will be no tray
    left to check.
-5. **The service could run after a reboot with no tray at all.** Turning
-   collection on now also enables Diskoria's autostart entry, so a presence
-   exists whenever the service does.
+5. **The service could run after a reboot with no tray at all.** Diskoria now
+   enables its own autostart entry whenever it sees the service running, and
+   the Settings "Launch at startup" toggle is held on (greyed, with the reason)
+   for as long as it is. Keyed off the *observed* state, not off the in-app
+   switch: the service is normally enabled by `install-service.sh` or a plain
+   `systemctl enable --now`, so hanging the guarantee off the app's own toggle
+   left the common path with no tray after a reboot — caught by installing the
+   service the documented way and finding no autostart entry.
+
+   Note the entry records `current_exe()`, so enabling collection from a
+   binary in a temporary location autostarts *that* path. Run the copy you
+   intend to keep (e.g. `/usr/local/bin/diskoria`).
 6. **`cancel_monitor()` on quit was `#[cfg(windows)]`.** The thread died with
    the process anyway, but the shutdown is now explicit on both.
 

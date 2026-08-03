@@ -84,8 +84,11 @@ stop it*:
 - **Close-to-tray is forced on while monitoring is enabled**, since the tray is
   where you see and stop collection. Your stored preference is untouched and
   returns when monitoring goes off.
-- **Turning collection on also enables Diskoria's autostart entry**, so the tray
-  is there after a reboot when the service is.
+- **Diskoria enables its own autostart entry whenever the service is running**,
+  so the tray is there after a reboot, and holds the "Launch at startup" toggle
+  on while it collects. The entry records the path of the binary that was
+  running, so start the copy you intend to keep (e.g. `/usr/local/bin/diskoria`)
+  rather than one in a temporary directory.
 
 **What it deliberately does not do.** It opens no sockets, accepts no commands,
 and never writes to a block device. Starting a sector scan, destructive test or
