@@ -268,6 +268,35 @@ fn bounding_box(rects: Vec<RectPx>) -> Vec<RectPx> {
     rects.into_iter().reduce(RectPx::union).into_iter().collect()
 }
 
+/// What to actually redraw: this frame's own damage, plus what earlier frames
+/// changed when softbuffer hands back a stale buffer (`Buffer::age`).
+///
+/// **Every rectangle is clamped to the current framebuffer**, which is the
+/// whole reason this is a function. History entries were clamped to the size of
+/// the frame that recorded them, so once the window shrinks they can reach past
+/// the end of a row — and the rasterizer's `band[row + x0..=row + x1]` then
+/// panics with an out-of-range slice index, killing every rayon worker at once.
+/// That was KI-44, hit by resizing the window rapidly.
+fn replay_damage(
+    own: &[RectPx],
+    history: &[Vec<RectPx>],
+    buffer_age: u8,
+    w: u32,
+    h: u32,
+) -> Vec<RectPx> {
+    let full_rect = RectPx { x0: 0, y0: 0, x1: w as i32 - 1, y1: h as i32 - 1 };
+    let mut to_draw: Vec<RectPx> = own.to_vec();
+    if buffer_age == 0 {
+        // Undefined contents — everything is stale.
+        to_draw.push(full_rect);
+    } else {
+        for past in history.iter().take(buffer_age.saturating_sub(1) as usize) {
+            to_draw.extend_from_slice(past);
+        }
+    }
+    merge_damage(to_draw.into_iter().map(|r| r.clamped(w, h)).collect())
+}
+
 /// `DISKORIA_FULL_REPAINT=1` disables damage tracking, for comparing a
 /// suspected artifact against a known-good full redraw.
 fn force_full_repaints() -> bool {
@@ -739,6 +768,15 @@ impl Renderer {
         self.last_bg = bg32;
         self.force_full_repaint = false;
 
+        // A resize reallocates the surface's buffers, so `Buffer::age` cannot
+        // refer to anything drawn at the old size and those rectangles are in
+        // the old coordinate space. Drop them — `force_full` already covers
+        // this frame. `replay_damage` clamps regardless, but not replaying
+        // meaningless damage is the actual intent (KI-44).
+        if size_changed {
+            self.damage_history.clear();
+        }
+
         if own_damage.is_empty() {
             // Nothing changed: leave the surface alone entirely, and do *not*
             // record a history entry. `Buffer::age` counts presents, so the
@@ -767,19 +805,7 @@ impl Renderer {
         // The buffer handed back is `age` frames old, so it also needs whatever
         // the frames in between changed; age 0 means undefined contents.
         let buffer_age = buf.age();
-        let mut to_draw = own_damage.clone();
-        if buffer_age == 0 {
-            to_draw.push(full_rect);
-        } else {
-            for past in self
-                .damage_history
-                .iter()
-                .take(buffer_age.saturating_sub(1) as usize)
-            {
-                to_draw.extend_from_slice(past);
-            }
-        }
-        let damage = merge_damage(to_draw);
+        let damage = replay_damage(&own_damage, &self.damage_history, buffer_age, w, h);
 
         self.damage_history.insert(0, own_damage);
         self.damage_history.truncate(4);
@@ -822,6 +848,13 @@ impl Renderer {
                         x1: d.x1,
                         y1: d.y1.min(band_y1),
                     };
+                    // Damage must already be inside the framebuffer — the
+                    // slicing below indexes a row directly, and an escaped
+                    // rectangle panics every rayon worker at once (KI-44).
+                    debug_assert!(
+                        rect.x0 >= 0 && rect.x1 < w as i32,
+                        "damage {rect:?} escapes a {w}px-wide framebuffer"
+                    );
                     // Clear only the damaged span of each row: the rest of the
                     // row is still valid from an earlier frame.
                     for py in rect.y0..=rect.y1 {
@@ -2558,6 +2591,40 @@ mod damage_tests {
             "merging {} rects took {took:?} — this runs on the event-loop thread",
             input.len()
         );
+    }
+
+    /// KI-44: the window shrank, so a rectangle recorded by an earlier, wider
+    /// frame reaches past the end of a row in the new buffer. Unclamped, the
+    /// rasterizer's `band[row + x0..=row + x1]` panicked out of range and took
+    /// every rayon worker with it.
+    #[test]
+    fn replayed_history_from_a_larger_window_is_clamped() {
+        // Previous frame at 2423 px wide; current buffer is 2403 px.
+        let history = vec![vec![r(0, 0, 2422, 500)]];
+        let own = vec![r(10, 10, 20, 20)];
+        let out = super::replay_damage(&own, &history, 2, 2403, 1000);
+        for rect in &out {
+            assert!(
+                rect.x1 < 2403 && rect.y1 < 1000 && rect.x0 >= 0 && rect.y0 >= 0,
+                "{rect:?} escapes a 2403x1000 framebuffer"
+            );
+        }
+        assert!(!out.is_empty());
+    }
+
+    #[test]
+    fn an_undefined_buffer_forces_a_full_repaint() {
+        let out = super::replay_damage(&[r(1, 1, 2, 2)], &[], 0, 800, 600);
+        assert_eq!(out, vec![r(0, 0, 799, 599)]);
+    }
+
+    #[test]
+    fn a_fresh_buffer_replays_only_this_frames_damage() {
+        // age 1 means the buffer is the one presented last frame, so nothing
+        // from the history needs replaying.
+        let history = vec![vec![r(500, 500, 600, 600)]];
+        let out = super::replay_damage(&[r(10, 10, 20, 20)], &history, 1, 800, 600);
+        assert_eq!(out, vec![r(10, 10, 20, 20)]);
     }
 
     /// Between the two tiers: enough rects to exceed the cap after merging,

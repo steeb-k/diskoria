@@ -289,6 +289,40 @@ recovered duration. It turned a freeze that had survived two wrong diagnoses
 into a one-line answer. Two relaxed atomic stores per callback, so it stays on
 in release builds.
 
+### KI-44 — Crash while resizing: damage replayed from a larger window `bug` `fixed`
+```
+thread '<unnamed>' panicked at src/lib.rs:829:
+range end index 76916 out of range for slice of length 76896
+```
+Dozens of these at once (one per rayon worker), then the process died. Hit by
+resizing the window rapidly; intermittent enough to look like a fluke at first.
+
+The numbers name the bug. 76896 = 32 rows x 2403 px, a full rasterizer band, and
+76916 - 74493 (the band's last row) = an `x1` of 2422 against a width of 2403 —
+20 px past the end of the row.
+
+`Buffer::age` can hand back a buffer several frames old, so `paint` replays
+`damage_history` to catch it up. Those entries were clamped to the size of the
+frame that recorded them, and were never re-clamped: once the window shrank they
+described a wider framebuffer than the one being drawn, and
+`band[row + x0..=row + x1]` indexed out of range. Every band hits the same bad
+rectangle, so all rayon workers panic together.
+
+Latent since damage tracking landed; KI-43's fix exposed it by making resize
+frames cheap enough to hit the stale-buffer replay path constantly.
+
+Fixed in `replay_damage`, which is now the single place the redraw set is built
+and clamps every rectangle to the current framebuffer. `damage_history` is also
+dropped on resize — a reallocated surface makes older ages meaningless and those
+coordinates belong to a different window size. A `debug_assert` in the band loop
+documents the invariant for future changes.
+
+Verified by driving 240 rapid resizes through the compositor's IPC
+(`scripts/`-less, niri `set-window-width`/`set-window-height`): without the fix
+that reproduces 64 panics and a segfault; with it, no panic, no assertion, and
+`DISKORIA_DAMAGE_VERIFY=1` reports no stale pixels. The unit test pins the exact
+geometry from the report and fails without the clamp.
+
 ## Resolved
 
 Condensed; see git history for full detail.
