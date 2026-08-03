@@ -87,12 +87,33 @@ gh release edit <tag> --repo <repo> --notes-file <file>   # to correct it
 
 `./scripts/build-portable.sh` builds and emits, under `releases/<ver>/`:
 
-- `diskoria-<ver>-linux-x86_64` — the bare binary. **This is the asset the
+- `diskoria-<ver>-linux-<arch>` — the bare binary. **This is the asset the
   Linux self-updater downloads** (`update::pick_linux_url` matches on
   `linux` + arch and skips archives/checksums), so upload it un-archived.
-- `diskoria-<ver>-portable-linux-x86_64.tar.gz` — binary + polkit policy +
-  `.desktop` + README, for humans downloading manually.
+- `diskoria-<ver>-portable-linux-<arch>.tar.gz` — binary + polkit policy +
+  `.desktop` + `diskoria-monitor.service` + `install-service.sh` + README,
+  for humans downloading manually.
 
 Upload both to the same diskoria-binaries release as the Windows assets.
 No signing story exists for Linux yet; consider a `.sha256` sidecar (the
 updater ignores it).
+
+### Build once per architecture
+
+`<arch>` comes from `uname -m`. Linux, unlike Windows, has **no x86-64-on-ARM
+emulation**, so an x86-64 build simply will not execute on an ARM64 machine —
+there is no "universal" Linux asset. Run `build-portable.sh` on each target
+(or cross-compile with the matching Rust target) and upload both sets:
+
+```
+diskoria-<ver>-linux-x86_64            diskoria-<ver>-linux-aarch64
+diskoria-<ver>-portable-linux-x86_64.tar.gz   …-portable-linux-aarch64.tar.gz
+```
+
+The updater picks the asset matching the running machine and **refuses** one
+built for a different architecture — a release that omits an architecture reads
+as "no update available" to those machines rather than bricking them (KI-46).
+Nothing in the crate is architecture-specific (no intrinsics; `crt-static` is
+Windows-MSVC only), so an ARM build needs no source changes.
+
+Shipping only x86-64 is a valid choice; ARM users simply never see an update.

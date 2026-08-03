@@ -33,7 +33,9 @@ diskoria/              Rust crate
 scripts/               run-dev.ps1|.sh / build-release.ps1 / build-portable.ps1|.sh
                        / set-version.ps1 + artifact-signing-metadata.json
 linux/                 Linux desktop assets: polkit policy (pkexec), .desktop
-                       entry, README (privileges, tray, data locations)
+                       entry, diskoria-monitor.service + install-service.sh
+                       (the root health collector), README (privileges, tray,
+                       service, architectures, data locations)
 installer/             diskoria.iss — Inno Setup script (built by build-release.ps1
                        via ISCC; produces releases/<ver>/diskoria-<ver>-setup.exe).
                        Writes the startup scheduled task and the
@@ -117,6 +119,22 @@ assets/                appicon2.ico (window + notification icon), trayicon.ico
   single-instance guard; the primary decides raise-vs-new-window from its own
   renderer state (no KI-6-style flag race). Windows keeps the named
   mutex/events in `lib.rs`.
+- **`service.rs`** (Linux) — the headless root collector behind `--service`
+  (`diskoria-monitor.service`). Exists because SMART needs root but a desktop
+  session should not have it: autostart launches `--minimized` *unelevated* on
+  purpose (a polkit prompt every login is worse), which leaves it with hwmon
+  temperatures only. The service polls health as root into
+  `/var/lib/diskoria/history.db`; sessions read it unprivileged and prefer any
+  reading younger than three poll intervals (`monitor::fresh_service_snapshot`).
+  **Collection only** — no sockets, no commands, never writes to a block
+  device; disk tests still go through pkexec. The system DB uses a rollback
+  journal, not WAL, because a WAL reader must write the `-shm` sidecar and an
+  unprivileged session cannot do that in a root-owned directory.
+- **`watchdog.rs`** — event-loop stall detector. Every winit callback and paint
+  stage marks a phase; a background thread warns when a non-idle phase outlasts
+  `DISKORIA_STALL_MS` (default 1 s). On by default — it named KI-43 after two
+  wrong diagnoses. Keep event-loop work non-blocking: anything waiting on a
+  disk, subprocess, D-Bus peer or compositor belongs on a worker thread.
 - **`elevation.rs`** (Linux) — pkexec self-relaunch with an env trampoline
   (DISPLAY/WAYLAND/D-Bus/XDG passthrough); skipped for smoke/demo/
   `--no-elevate`/`--minimized`; declined auth degrades instead of exiting;

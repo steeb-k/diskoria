@@ -166,6 +166,34 @@ interval. For each drive it:
 The thread is cancelled cleanly (via `Arc<AtomicBool>`) when the app exits,
 monitoring is disabled, or the poll interval is changed in settings.
 
+#### Linux: the root monitoring service (`service.rs`)
+
+Reading SMART needs root; a desktop session should not run as root. Diskoria's
+autostart entry therefore launches `--minimized` **without** elevating (a polkit
+prompt at every login is worse than the gap it closes), which leaves it with
+hwmon temperatures only — no wear, no sector counts, no predict-fail.
+
+`diskoria-monitor.service` (in `linux/`, installed by `install-service.sh`)
+fills that in. `diskoria --service` is a headless root collector: enumerate,
+`query_smart_detail`, `insert_snapshot` into `/var/lib/diskoria/history.db`,
+sleep, repeat. It is **collection only** — no sockets, no commands, and it never
+writes to a block device. Disk tests still go through pkexec, because that is
+where raw writes happen and a prompt is the right thing to have.
+
+The session side is unchanged apart from one preference in the monitor loop:
+if the service's database has a reading for a drive that is younger than three
+poll intervals, that is used instead of running the ioctls. Alerts and
+notifications stay in the session, where the session bus is reachable and there
+is somebody to notify.
+
+Two details worth knowing:
+- The system database uses a **rollback journal, not WAL**. A WAL reader has to
+  create and write the `-shm` sidecar, which an unprivileged session cannot do
+  in a root-owned directory — and read-only access from the session is the
+  entire point.
+- Readings are ignored once stale, so a stopped or masked service degrades to
+  "no data, poll for ourselves" rather than freezing a dead number on screen.
+
 ### SQLite History Database
 Location: `%ProgramData%\Diskoria\history.db`
 

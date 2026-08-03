@@ -323,6 +323,37 @@ that reproduces 64 panics and a segfault; with it, no panic, no assertion, and
 `DISKORIA_DAMAGE_VERIFY=1` reports no stale pixels. The unit test pins the exact
 geometry from the report and fails without the clamp.
 
+### KI-45 — Tray icon missing for the whole session when Diskoria starts before the panel `bug` `linux` `fixed`
+Classic login race: ksni's `spawn` registers with `org.kde.StatusNotifierWatcher`
+immediately, and if the panel has not claimed that name yet the call fails,
+`TrayManager::new` returns `None`, and there is **no service loop left to ever
+recover**. Autostart made this likely — Diskoria is often up before the bar is.
+
+`assume_sni_available(true)` is exactly the switch for this: the missing-watcher
+case is routed to `Tray::watcher_offline` (returning `true` keeps the service
+alive) instead of failing the spawn, so the item sits on the bus and ksni
+re-registers on the watcher's `NameOwnerChanged`. Nothing about it needs
+privileges.
+
+Verified A/B against a private session bus with no watcher: without the fix,
+"no system tray available" and **zero** `org.kde.StatusNotifierItem-*` names on
+the bus; with it, the name is owned and the log says it is waiting for the
+desktop to provide a watcher.
+
+### KI-46 — Self-updater could install the wrong architecture's binary `bug` `linux` `fixed`
+`pick_linux_url` preferred an asset matching `std::env::consts::ARCH` but fell
+back to `linux.first()`, so an ARM64 machine offered a release that only shipped
+an x86-64 build would download it and `rename` it over the running binary —
+replacing a working install with one the kernel cannot exec. Windows hides this
+class of mistake behind x64-on-ARM emulation; Linux has no equivalent.
+
+The fallback is now restricted to assets that name *no* architecture (what old
+single-build releases look like). An asset built for a different machine is
+never chosen, so a release missing this architecture means "no update" rather
+than a brick. Arch tokens cover the usual spellings (`x86_64`/`amd64`,
+`aarch64`/`arm64`, …), and the matcher takes the architecture as a parameter so
+the ARM cases are unit-tested from an x86-64 host.
+
 ## Resolved
 
 Condensed; see git history for full detail.

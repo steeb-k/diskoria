@@ -42,6 +42,13 @@ fn parse_version_tag(tag: &str) -> Option<Version> {
 /// archive or checksum sidecar.
 #[cfg_attr(windows, allow(dead_code))]
 fn pick_linux_url(assets: &[AssetJson]) -> Option<String> {
+    pick_linux_url_for_arch(assets, std::env::consts::ARCH)
+}
+
+/// Split out from [`pick_linux_url`] so the architecture rules can be tested
+/// for machines other than the one running the tests.
+#[cfg_attr(windows, allow(dead_code))]
+fn pick_linux_url_for_arch(assets: &[AssetJson], arch: &str) -> Option<String> {
     let is_other = |n: &str| {
         [".tar.gz", ".tgz", ".tar.xz", ".zip", ".sha256", ".sig", ".asc", ".exe", ".pdb"]
             .iter()
@@ -54,12 +61,47 @@ fn pick_linux_url(assets: &[AssetJson]) -> Option<String> {
             n.contains("linux") && !is_other(&n)
         })
         .collect();
-    // Prefer the running machine's architecture when the release names it.
     linux
         .iter()
-        .find(|a| a.name.to_ascii_lowercase().contains(std::env::consts::ARCH))
-        .or_else(|| linux.first())
+        .find(|a| arch_matches(&a.name.to_ascii_lowercase(), arch))
+        // Only an asset that names *no* architecture may stand in for ours.
+        // Falling back to "whatever is first" would hand an aarch64 machine the
+        // x86_64 binary and overwrite a working install with one the kernel
+        // cannot exec — Linux has no equivalent of Windows' x64-on-ARM
+        // emulation, so a missing build for this machine has to mean "no
+        // update", not "close enough" (KI-46).
+        .or_else(|| linux.iter().find(|a| !names_an_arch(&a.name.to_ascii_lowercase())))
         .map(|a| a.browser_download_url.clone())
+}
+
+/// Architecture tokens that can appear in a release asset name, grouped by the
+/// `std::env::consts::ARCH` value they correspond to.
+const ARCH_ALIASES: &[(&str, &[&str])] = &[
+    ("x86_64", &["x86_64", "x86-64", "amd64"]),
+    ("x86", &["i686", "i386"]),
+    ("aarch64", &["aarch64", "arm64"]),
+    ("arm", &["armv7", "armhf"]),
+    ("riscv64", &["riscv64"]),
+    ("powerpc64", &["ppc64le", "powerpc64"]),
+];
+
+/// Does this asset name carry a token for `arch`?
+#[cfg_attr(windows, allow(dead_code))]
+fn arch_matches(name: &str, arch: &str) -> bool {
+    match ARCH_ALIASES.iter().find(|(canonical, _)| *canonical == arch) {
+        Some((_, toks)) => toks.iter().any(|tok| name.contains(tok)),
+        // An architecture with no aliases listed still matches its own name.
+        None => name.contains(arch),
+    }
+}
+
+/// Does this asset name name *any* architecture we recognise? Used to tell
+/// "built for a different machine" apart from "architecture-neutral".
+#[cfg_attr(windows, allow(dead_code))]
+fn names_an_arch(name: &str) -> bool {
+    ARCH_ALIASES
+        .iter()
+        .any(|(_, toks)| toks.iter().any(|tok| name.contains(tok)))
 }
 
 /// Prefer installer `.exe` with "setup" in the name, then any non-PDB `.exe`.
@@ -416,6 +458,57 @@ mod tests {
         );
         assert_ne!(temp_file_name_unix(1), temp_file_name_unix(2));
         assert!(temp_file_name_unix(1).starts_with('.'));
+    }
+
+    /// The one that matters for a two-architecture release: an ARM machine
+    /// must not be handed the x86_64 build. Linux has no x64-on-ARM emulation,
+    /// so applying it would replace a working binary with one that cannot exec.
+    #[test]
+    fn an_arm_machine_refuses_an_x86_only_release() {
+        let assets = vec![AssetJson {
+            name: "diskoria-1.7.0-linux-x86_64".into(),
+            browser_download_url: "https://x/x86".into(),
+        }];
+        assert_eq!(pick_linux_url_for_arch(&assets, "aarch64"), None);
+        assert_eq!(pick_linux_url_for_arch(&assets, "x86_64").as_deref(), Some("https://x/x86"));
+    }
+
+    #[test]
+    fn each_machine_takes_its_own_build_from_a_multi_arch_release() {
+        let assets = vec![
+            AssetJson {
+                name: "diskoria-1.7.0-linux-x86_64".into(),
+                browser_download_url: "https://x/x86".into(),
+            },
+            AssetJson {
+                name: "diskoria-1.7.0-linux-aarch64".into(),
+                browser_download_url: "https://x/arm".into(),
+            },
+        ];
+        assert_eq!(pick_linux_url_for_arch(&assets, "x86_64").as_deref(), Some("https://x/x86"));
+        assert_eq!(pick_linux_url_for_arch(&assets, "aarch64").as_deref(), Some("https://x/arm"));
+    }
+
+    #[test]
+    fn common_arch_spellings_are_recognised() {
+        assert!(arch_matches("diskoria-linux-amd64", "x86_64"));
+        assert!(arch_matches("diskoria-linux-arm64", "aarch64"));
+        assert!(!arch_matches("diskoria-linux-arm64", "x86_64"));
+        assert!(!arch_matches("diskoria-linux-amd64", "aarch64"));
+        assert!(names_an_arch("diskoria-linux-ppc64le"));
+        assert!(!names_an_arch("diskoria-linux"));
+    }
+
+    /// A release that names no architecture at all is still usable — that is
+    /// what old single-build releases look like.
+    #[test]
+    fn an_arch_neutral_asset_is_accepted_anywhere() {
+        let assets = vec![AssetJson {
+            name: "diskoria-1.7.0-linux".into(),
+            browser_download_url: "https://x/any".into(),
+        }];
+        assert_eq!(pick_linux_url_for_arch(&assets, "aarch64").as_deref(), Some("https://x/any"));
+        assert_eq!(pick_linux_url_for_arch(&assets, "riscv64").as_deref(), Some("https://x/any"));
     }
 
     #[test]

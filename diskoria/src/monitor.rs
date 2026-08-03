@@ -446,6 +446,28 @@ mod imp {
     };
     use std::time::Duration;
 
+    /// The service's latest reading for `serial`, if it is recent enough to
+    /// trust.
+    ///
+    /// Staleness matters: if the service is stopped or masked, its last rows
+    /// stay in the database forever, and silently charting a dead drive's final
+    /// temperature as if it were current is worse than falling back to polling.
+    /// Three poll intervals allows for a missed pass without flapping.
+    #[cfg(target_os = "linux")]
+    pub(super) fn fresh_service_snapshot(
+        db: &rusqlite::Connection,
+        serial: &str,
+        poll_interval: Duration,
+    ) -> Option<HealthSnapshot> {
+        let snap = history_db::load_last_snapshot(db, serial).ok().flatten()?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs() as i64;
+        let max_age = (poll_interval.as_secs() as i64).saturating_mul(3).max(60);
+        (now.saturating_sub(snap.timestamp_unix) <= max_age).then_some(snap)
+    }
+
     /// Spawn the background monitoring thread.
     ///
     /// Returns a cancel handle (`Arc<AtomicBool>`). Set it to `true` to stop the thread.
@@ -476,6 +498,11 @@ mod imp {
             }
 
             let mut cooldowns = AlertCooldownTracker::new(&conn);
+            // Readings published by the root monitoring service, when it is
+            // installed. Reopened lazily so a service started *after* the
+            // desktop session still gets picked up.
+            #[cfg(target_os = "linux")]
+            let mut service_db: Option<rusqlite::Connection> = None;
             let internal_drives: Vec<&DetectedDrive> = drives
                 .iter()
                 .filter(|d| matches!(d.bus, BusKind::Nvme | BusKind::Sata | BusKind::Ufs))
@@ -488,9 +515,48 @@ mod imp {
 
                 let mut snapshots: Vec<HealthSnapshot> = Vec::new();
 
+                #[cfg(target_os = "linux")]
+                if service_db.is_none() {
+                    service_db = crate::history_db::open_system_readonly();
+                    if service_db.is_some() {
+                        log::info!(
+                            target: "diskoria::monitor",
+                            "using health data from the root monitoring service"
+                        );
+                    }
+                }
+
                 for drive in &internal_drives {
                     if cancel2.load(Ordering::SeqCst) {
                         break;
+                    }
+
+                    // Prefer the service's reading. An unelevated session
+                    // cannot run the SMART ioctls at all, and when it *can*
+                    // there is no point doing them twice.
+                    #[cfg(target_os = "linux")]
+                    if let Some(snap) = service_db
+                        .as_ref()
+                        .and_then(|db| fresh_service_snapshot(db, &drive.serial, poll_interval))
+                    {
+                        let prev = history_db::load_last_snapshot(&conn, &drive.serial).ok().flatten();
+                        let alerts = crate::alert_engine::check_alerts(
+                            &snap,
+                            prev.as_ref(),
+                            alert_temp_warn,
+                            alert_temp_critical,
+                            alert_wear_threshold,
+                            &mut cooldowns,
+                            &conn,
+                        );
+                        for alert in alerts {
+                            let _ = tx.send(MonitorMsg::AlertFired(alert));
+                        }
+                        if let Err(e) = history_db::insert_snapshot(&conn, &snap) {
+                            log::warn!(target: "diskoria::monitor", "Insert snapshot failed: {e}");
+                        }
+                        snapshots.push(snap);
+                        continue;
                     }
 
                     let report = smart_reader::query_smart_detail(&drive.device_id, drive.bus);
@@ -600,6 +666,69 @@ pub(crate) mod hwmon {
             }
         }
         None
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod service_snapshot_tests {
+    use super::imp::fresh_service_snapshot;
+    use super::HealthSnapshot;
+    use crate::history_db;
+    use std::time::Duration;
+
+    fn db_with(serial: &str, age_secs: i64) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        history_db::apply_schema_for_tests(&conn).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let snap = HealthSnapshot {
+            serial: serial.to_string(),
+            model: "Svc Drive".into(),
+            timestamp_unix: now - age_secs,
+            temp_c: Some(41),
+            reallocated_sectors: Some(0),
+            pending_sectors: Some(0),
+            uncorrectable_sectors: Some(0),
+            wear_pct: Some(3),
+            available_spare_pct: None,
+            available_spare_threshold: None,
+            critical_warning: None,
+            raw_json: "{}".into(),
+        };
+        history_db::insert_snapshot(&conn, &snap).unwrap();
+        conn
+    }
+
+    #[test]
+    fn a_recent_service_reading_is_used() {
+        let db = db_with("SVC1", 10);
+        let got = fresh_service_snapshot(&db, "SVC1", Duration::from_secs(180));
+        assert_eq!(got.and_then(|s| s.temp_c), Some(41));
+    }
+
+    /// A stopped or masked service leaves its last rows behind forever.
+    /// Charting those as current would quietly show a dead reading; falling
+    /// back to polling ourselves is the honest answer.
+    #[test]
+    fn a_stale_service_reading_is_ignored() {
+        let db = db_with("SVC1", 3 * 180 + 60);
+        assert!(fresh_service_snapshot(&db, "SVC1", Duration::from_secs(180)).is_none());
+    }
+
+    #[test]
+    fn a_drive_the_service_never_saw_falls_through() {
+        let db = db_with("SVC1", 10);
+        assert!(fresh_service_snapshot(&db, "OTHER", Duration::from_secs(180)).is_none());
+    }
+
+    /// A very short poll interval must not make every reading look stale;
+    /// the freshness window has a floor.
+    #[test]
+    fn the_freshness_window_has_a_floor() {
+        let db = db_with("SVC1", 45);
+        assert!(fresh_service_snapshot(&db, "SVC1", Duration::from_secs(1)).is_some());
     }
 }
 

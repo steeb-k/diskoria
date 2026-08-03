@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 # Linux release build: emits the two artifacts the self-updater and humans use
 # (see docs/releasing.md):
-#   releases/<ver>/diskoria-<ver>-linux-x86_64                  bare binary (updater target)
-#   releases/<ver>/diskoria-<ver>-portable-linux-x86_64.tar.gz  binary + polkit policy + .desktop + README
+#   releases/<ver>/diskoria-<ver>-linux-<arch>                  bare binary (updater target)
+#   releases/<ver>/diskoria-<ver>-portable-linux-<arch>.tar.gz  binary + polkit policy + .desktop
+#                                                               + systemd unit + install-service.sh + README
+#
+# <arch> comes from `uname -m`, so this builds for the machine it runs on:
+# x86_64 here, aarch64 on an ARM box. Linux has no x64-on-ARM emulation, so
+# each architecture needs its own build and the updater refuses a mismatched
+# asset (see docs/releasing.md).
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -29,8 +35,11 @@ mkdir "$stage/diskoria-$version"
 cp "$out_dir/$bin_name" "$stage/diskoria-$version/diskoria"
 cp "$repo_root/linux/com.diskoria.pkexec.policy" \
    "$repo_root/linux/diskoria.desktop" \
+   "$repo_root/linux/diskoria-monitor.service" \
+   "$repo_root/linux/install-service.sh" \
    "$repo_root/linux/README.md" \
    "$stage/diskoria-$version/"
+chmod 755 "$stage/diskoria-$version/install-service.sh"
 tar -C "$stage" -czf "$out_dir/$tar_name" "diskoria-$version"
 
 echo "[build-portable] wrote:"

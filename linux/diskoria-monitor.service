@@ -1,0 +1,56 @@
+[Unit]
+Description=Diskoria drive health monitoring
+Documentation=https://github.com/steeb-k/diskoria
+# Health readings need the block devices to exist; nothing else.
+After=local-fs.target
+
+[Service]
+Type=simple
+# ExecStart is rewritten by install-service.sh to the binary's real location.
+ExecStart=/usr/local/bin/diskoria --service
+Restart=on-failure
+RestartSec=10s
+
+# Seconds between polls. Matches the GUI default; lower it for finer
+# temperature history, at the cost of waking the drives more often.
+Environment=DISKORIA_POLL_SECS=180
+Environment=RUST_LOG=diskoria=info
+
+# This service only *reads* SMART/NVMe health and writes one SQLite file. It
+# opens no sockets and never writes to a block device — running a disk test
+# still goes through pkexec from the GUI. The confinement below reflects that,
+# so a bug here cannot become a wiped disk.
+#
+# Deliberately NOT set: DevicePolicy/DeviceAllow. The NVMe health log is read
+# through the *character* controller node (/dev/nvme0, major 239), not the
+# block namespace node, so a `block-* r` allow-list silently breaks NVMe
+# health. Getting that list right varies by hardware, and quietly reporting no
+# health data is worse than the confinement is worth.
+StateDirectory=diskoria
+StateDirectoryMode=0755
+ProtectSystem=strict
+ReadWritePaths=/var/lib/diskoria
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+ProtectClock=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount @reboot @swap @module @clock
+
+# SG_IO (SATA) needs CAP_SYS_RAWIO; the NVMe admin passthrough ioctl needs
+# CAP_SYS_ADMIN. Everything else root would normally carry is dropped.
+CapabilityBoundingSet=CAP_SYS_RAWIO CAP_SYS_ADMIN CAP_DAC_OVERRIDE
+
+[Install]
+WantedBy=multi-user.target

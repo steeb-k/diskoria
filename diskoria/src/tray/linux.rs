@@ -92,6 +92,24 @@ impl ksni::Tray for SniTray {
         }
     }
 
+    /// The panel's StatusNotifierWatcher appeared (or came back). ksni
+    /// re-registers the item for us; the host then re-reads every property, so
+    /// the icon repaints itself with no work here.
+    fn watcher_online(&self) {
+        log::info!(target: "diskoria::tray", "StatusNotifierWatcher online — tray item (re)registered");
+    }
+
+    /// The watcher is not on the bus. Returning `true` keeps the service loop
+    /// alive so it can register once the watcher shows up — which is the whole
+    /// point at login, when we start before the panel does (KI-45).
+    fn watcher_offline(&self, reason: ksni::OfflineReason) -> bool {
+        log::info!(
+            target: "diskoria::tray",
+            "no StatusNotifierWatcher yet ({reason:?}) — waiting for the desktop to provide one"
+        );
+        true
+    }
+
     fn activate(&mut self, _x: i32, _y: i32) {
         log::debug!(target: "diskoria::tray", "tray activated (left click)");
         let _ = self.proxy.send_event(UserEvent::ShowWindowRequested);
@@ -202,11 +220,19 @@ impl TrayManager {
         // inherit them, and the worker only ever talks D-Bus. Our own thread
         // takes root back immediately afterwards.
         let dropped = crate::elevation::drop_thread_privileges_to_session_user();
+        // `assume_sni_available` is what makes a login-time start reliable.
+        // Without it, a missing watcher makes `spawn` fail outright, we store
+        // `None`, and there is no service loop left to ever recover — so
+        // starting one moment before the panel means no tray for the entire
+        // session. With it, that case is routed to `watcher_offline`, the loop
+        // runs, and ksni re-registers on the watcher's `NameOwnerChanged`
+        // (KI-45).
         let spawned = (SniTray {
             proxy,
             drives: Vec::new(),
             alert: None,
         })
+        .assume_sni_available(true)
         .spawn();
         if dropped {
             crate::elevation::restore_thread_privileges();

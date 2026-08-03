@@ -44,6 +44,8 @@ pub mod smart_reader;
 mod smart_health_page;
 mod test_result_overlay;
 mod theme;
+#[cfg(target_os = "linux")]
+mod service;
 mod update;
 mod watchdog;
 mod widgets;
@@ -2127,6 +2129,14 @@ pub fn run() {
     )
     .format_timestamp_millis()
     .try_init();
+
+    // The headless root collector (`diskoria-monitor.service`). Handled before
+    // anything GUI-related: no window, no tray, no single-instance guard, no
+    // elevation logic — systemd already starts it as root.
+    #[cfg(target_os = "linux")]
+    if service::requested() {
+        std::process::exit(service::run());
+    }
 
     // Install mode goes in the banner because the single-instance guard does not
     // distinguish builds: launching an installed copy while a *portable* one is

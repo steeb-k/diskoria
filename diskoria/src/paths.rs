@@ -34,3 +34,20 @@ pub fn settings_file() -> PathBuf {
 pub fn history_db_file() -> PathBuf {
     data_dir().join("history.db")
 }
+
+/// System-wide directory written by the root monitoring service
+/// (`diskoria-monitor.service`, see `linux/`).
+///
+/// Only that service writes here; desktop sessions read from it unprivileged.
+/// This is what lets a login-time start have full SMART data without a polkit
+/// prompt — the GUI never needs root just to *see* drive health.
+#[cfg(target_os = "linux")]
+pub fn system_data_dir() -> PathBuf {
+    PathBuf::from("/var/lib/diskoria")
+}
+
+/// The service-written health history database.
+#[cfg(target_os = "linux")]
+pub fn system_history_db_file() -> PathBuf {
+    system_data_dir().join("history.db")
+}

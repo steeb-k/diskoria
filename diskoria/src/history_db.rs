@@ -16,22 +16,67 @@ pub fn db_path() -> PathBuf {
 
 /// Open (or create) the history database, applying schema migrations.
 pub fn open_or_create() -> Result<Connection> {
-    let path = db_path();
+    open_rw_at(&db_path(), "WAL")
+}
 
+/// Open (or create) the system database the root monitoring service writes.
+///
+/// Uses a rollback journal rather than WAL **on purpose**: a WAL reader has to
+/// create and write the `-shm` sidecar, which an unprivileged desktop session
+/// cannot do in a root-owned directory. The whole point of this database is
+/// that the service writes it as root and the session reads it as the user, so
+/// the journal mode has to be one that read-only readers can use.
+#[cfg(target_os = "linux")]
+pub fn open_system_rw() -> Result<Connection> {
+    let path = crate::paths::system_history_db_file();
+    let conn = open_rw_at(&path, "TRUNCATE")?;
+    // World-readable so any desktop session can read health data; writing
+    // stays root-only through the directory's own permissions.
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644));
+    Ok(conn)
+}
+
+/// Open the service's system database read-only. `None` when the service is
+/// not installed, has never run, or the file is unreadable — every caller
+/// treats that as "no service, fall back to polling ourselves".
+#[cfg(target_os = "linux")]
+pub fn open_system_readonly() -> Option<Connection> {
+    let path = crate::paths::system_history_db_file();
+    if !path.exists() {
+        return None;
+    }
+    let conn = Connection::open_with_flags(
+        &path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+    )
+    .map_err(|e| log::debug!(target: "diskoria::monitor", "system history db unreadable: {e}"))
+    .ok()?;
+    let _ = conn.execute_batch("PRAGMA busy_timeout=5000;");
+    Some(conn)
+}
+
+fn open_rw_at(path: &std::path::Path, journal: &str) -> Result<Connection> {
     // Ensure the parent directory exists.
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
 
-    let conn = Connection::open(&path)?;
+    let conn = Connection::open(path)?;
 
-    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+    conn.execute_batch(&format!("PRAGMA journal_mode={journal};"))?;
     conn.execute_batch("PRAGMA synchronous=NORMAL;")?;
     conn.execute_batch("PRAGMA busy_timeout=5000;")?;
 
     apply_schema(&conn)?;
 
     Ok(conn)
+}
+
+/// Schema setup for tests in other modules that build a throwaway database.
+#[cfg(test)]
+pub(crate) fn apply_schema_for_tests(conn: &Connection) -> Result<()> {
+    apply_schema(conn)
 }
 
 fn apply_schema(conn: &Connection) -> Result<()> {
