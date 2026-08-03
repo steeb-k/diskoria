@@ -100,10 +100,35 @@ updater ignores it).
 
 ### Build once per architecture
 
-`<arch>` comes from `uname -m`. Linux, unlike Windows, has **no x86-64-on-ARM
-emulation**, so an x86-64 build simply will not execute on an ARM64 machine —
-there is no "universal" Linux asset. Run `build-portable.sh` on each target
-(or cross-compile with the matching Rust target) and upload both sets:
+Linux, unlike Windows, has **no x86-64-on-ARM emulation**, so an x86-64 build
+simply will not execute on an ARM64 machine — there is no "universal" Linux
+asset. Build both from this machine:
+
+```sh
+./scripts/build-portable.sh                                     # x86_64
+./scripts/build-portable.sh --target aarch64-unknown-linux-gnu  # ARM64
+```
+
+The cross build needs, once:
+
+```sh
+rustup target add aarch64-unknown-linux-gnu
+sudo pacman -S --needed aarch64-linux-gnu-gcc aarch64-linux-gnu-glibc   # or your distro's equivalent
+```
+
+A C toolchain is required because `rusqlite` bundles SQLite. The linker is
+pinned in `diskoria/.cargo/config.toml`; note cargo resolves that file relative
+to the **current directory**, not `--manifest-path`, which is why the script
+builds from inside the crate.
+
+`RUST_FONTCONFIG_DLOPEN=1` is set for cross builds only: `font-kit` (via
+`plotters`) locates fontconfig through pkg-config, which cannot cross-compile
+without a target sysroot. Its build script's escape hatch dlopens fontconfig at
+runtime instead — which also leaves the ARM binary needing nothing but
+`libc`/`libm`/`libgcc_s` at load time, with X11, Wayland and fontconfig all
+opened on demand.
+
+Upload both sets:
 
 ```
 diskoria-<ver>-linux-x86_64            diskoria-<ver>-linux-aarch64
