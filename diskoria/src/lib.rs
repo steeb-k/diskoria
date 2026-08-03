@@ -46,6 +46,8 @@ mod test_result_overlay;
 mod theme;
 #[cfg(target_os = "linux")]
 mod service;
+#[cfg(target_os = "linux")]
+mod service_control;
 mod update;
 mod watchdog;
 mod widgets;
@@ -2238,6 +2240,12 @@ pub fn run() {
     // must never block on a subprocess (KI-42).
     #[cfg(target_os = "linux")]
     crate::theme::spawn_portal_refresh();
+
+    // Keep the monitoring service's state visible in the tray and Settings.
+    // Polled off-thread for the same reason as the portal: `systemctl` is a
+    // subprocess and must never run on the event loop (KI-42).
+    #[cfg(target_os = "linux")]
+    crate::service_control::spawn_status_worker();
 
     // Notice — and name — anything that blocks the event-loop thread from here
     // on (KI-42, KI-43).

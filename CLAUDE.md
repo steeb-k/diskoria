@@ -130,6 +130,12 @@ assets/                appicon2.ico (window + notification icon), trayicon.ico
   device; disk tests still go through pkexec. The system DB uses a rollback
   journal, not WAL, because a WAL reader must write the `-shm` sidecar and an
   unprivileged session cannot do that in a root-owned directory.
+- **`service_control.rs`** (Linux) — tray-menu + Settings visibility and the
+  on/off switch for `diskoria-monitor.service`. The unit's state is the source
+  of truth (no persisted flag, same rule as `autostart.rs`); one toggle maps to
+  `systemctl enable/disable --now`, authorized by systemd's own polkit action.
+  Status is polled into a cache by a worker and actions run off-thread —
+  `systemctl` is a subprocess and must never reach the event loop.
 - **`watchdog.rs`** — event-loop stall detector. Every winit callback and paint
   stage marks a phase; a background thread warns when a non-idle phase outlasts
   `DISKORIA_STALL_MS` (default 1 s). On by default — it named KI-43 after two

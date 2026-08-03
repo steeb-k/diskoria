@@ -186,6 +186,20 @@ poll intervals, that is used instead of running the ioctls. Alerts and
 notifications stay in the session, where the session bus is reachable and there
 is somebody to notify.
 
+**Controlling it from the GUI (`service_control.rs`).** A root daemon logging
+health with no presence and no off switch is not something to leave running on
+someone's machine, so its state appears in the tray menu and in
+Settings → Background service, with one toggle that maps to
+`systemctl enable/disable --now`. Stopping and starting go through systemd's own
+polkit action rather than any new privilege path, so an unelevated session gets
+the desktop's usual prompt.
+
+Both `systemctl` calls are subprocesses, so neither may touch the event-loop
+thread (KI-42/KI-43): status is polled every 5 s by a worker into a cache the UI
+reads for free, and the toggle fires its action onto its own thread, greying the
+control until it lands. The unit's own state is the source of truth — no
+persisted flag to drift, the same rule `autostart.rs` follows.
+
 Two details worth knowing:
 - The system database uses a **rollback journal, not WAL**. A WAL reader has to
   create and write the `-shm` sidecar, which an unprivileged session cannot do

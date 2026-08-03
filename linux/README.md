@@ -55,6 +55,22 @@ If the service is stopped, readings older than three poll intervals are ignored
 and the app falls back to polling for itself, so a dead service shows as missing
 data rather than a stale number frozen on screen.
 
+**Turning it off.** The desktop app owns the switch — nothing collects in the
+background without a way to see and stop it from userspace:
+
+- **Tray menu** — shows `Background service: Running` and a
+  *Stop background collection* item.
+- **Settings → Background service** — the same toggle with the current state.
+
+Either one runs `systemctl disable --now`, which stops it *and* keeps it from
+returning at the next boot. That goes through systemd's own polkit action, so
+an unelevated session gets your desktop's normal authentication prompt. The card
+and menu entry are hidden when the unit is not installed.
+
+The unit's state is the source of truth — there is no separate persisted
+setting to drift out of sync with it, so `systemctl` on the command line and the
+app's toggle always agree.
+
 **What it deliberately does not do.** It opens no sockets, accepts no commands,
 and never writes to a block device. Starting a sector scan, destructive test or
 benchmark still goes through `pkexec`, because that is the point where raw

@@ -157,6 +157,40 @@ impl ksni::Tray for SniTray {
             items.push(MenuItem::Separator);
         }
 
+        // Background collection: state, and a switch. A root service logging
+        // health with no visible presence and no off switch is not something
+        // to leave running on someone's machine — on Windows every background
+        // behaviour hangs off the tray icon, and this is that.
+        if let Some(svc) = crate::service_control::status().filter(|s| s.installed) {
+            items.push(
+                StandardItem {
+                    label: format!("Background service: {}", svc.summary()),
+                    enabled: false,
+                    ..Default::default()
+                }
+                .into(),
+            );
+            let turning_on = !svc.running;
+            items.push(
+                StandardItem {
+                    label: if turning_on {
+                        "Start background collection".into()
+                    } else {
+                        "Stop background collection".into()
+                    },
+                    // Greyed while a previous start/stop is still in flight,
+                    // so a slow polkit prompt cannot be double-fired.
+                    enabled: !crate::service_control::busy(),
+                    activate: Box::new(move |_t: &mut SniTray| {
+                        crate::service_control::set_enabled(turning_on);
+                    }),
+                    ..Default::default()
+                }
+                .into(),
+            );
+            items.push(MenuItem::Separator);
+        }
+
         items.extend(vec![
             StandardItem {
                 label: "Open Diskoria".into(),

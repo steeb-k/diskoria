@@ -3532,8 +3532,29 @@ impl DiskoriaApp {
         }
     }
 
-    fn settings_tab_slot_count(&self) -> usize {
+    /// Slot of the "Background service" toggle — appended after the Startup
+    /// card. Linux-only; the row is not drawn at all when the unit is absent,
+    /// so it must not take a slot either.
+    fn settings_service_slot(&self) -> usize {
         self.settings_startup_slot() + self.settings_startup_slot_count()
+    }
+
+    fn settings_service_slot_count(&self) -> usize {
+        #[cfg(target_os = "linux")]
+        {
+            usize::from(
+                crate::service_control::status().is_some_and(|s| s.installed)
+                    && !crate::service_control::busy(),
+            )
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            0
+        }
+    }
+
+    fn settings_tab_slot_count(&self) -> usize {
+        self.settings_service_slot() + self.settings_service_slot_count()
     }
 
     fn settings_hex_slot(&self) -> usize {
@@ -3904,6 +3925,8 @@ impl DiskoriaApp {
                                 self.draw_settings_updates(ui, &t, margin, content_x, content_w);
                                 #[cfg(any(windows, target_os = "linux"))]
                                 self.draw_settings_startup(ui, &t, margin, content_x, content_w);
+                                #[cfg(target_os = "linux")]
+                                self.draw_settings_service(ui, &t, margin, content_x, content_w);
                             }
                             _ => {}
                         }
@@ -5722,6 +5745,101 @@ impl DiskoriaApp {
                     self.startup_enabled = Some(crate::autostart::is_enabled());
                 }
             }
+        }
+        if focused {
+            ui.painter().rect_stroke(
+                toggle_rect.expand(3.0),
+                14.0,
+                Stroke::new(2.0_f32, t.accent),
+                StrokeKind::Outside,
+            );
+        }
+        scroll_to_focused(&mut self.pending_scroll_rect, row_rect, focused, self.scroll_focus_frames > 0);
+
+        card.end(ui);
+    }
+
+    /// Single-row "Background service" card (Linux). Shows whether the root
+    /// monitoring service is collecting, and turns it off.
+    ///
+    /// The unit's own state is the source of truth — like `autostart.rs`, there
+    /// is no persisted flag to drift out of sync. Status comes from a cached
+    /// background poll and the toggle fires its `systemctl` call onto another
+    /// thread, because both are subprocesses and the event loop must never
+    /// block on one (KI-42/KI-43).
+    ///
+    /// Hidden entirely when the unit is not installed: an off switch for
+    /// something that does not exist is just confusing.
+    #[cfg(target_os = "linux")]
+    fn draw_settings_service(
+        &mut self,
+        ui: &mut egui::Ui,
+        t: &Theme,
+        margin: f32,
+        content_x: f32,
+        content_w: f32,
+    ) {
+        use crate::focus::{keyboard_activate, scroll_to_focused};
+
+        let Some(svc) = crate::service_control::status().filter(|s| s.installed) else {
+            return;
+        };
+
+        let page_keys = !self.blocks_content_interaction();
+        let section_w = content_w - margin * 2.0;
+        let row_h = 40.0_f32;
+        let busy = crate::service_control::busy();
+
+        let mut card = CardLayout::builder(content_x + margin, section_w)
+            .title("Background service")
+            .begin(ui, t);
+        let inner_x = card.inner_x();
+        let slot = self.settings_service_slot();
+
+        let row_rect = card.row(row_h);
+        let toggle_rect = Rect::from_min_size(
+            Pos2::new(card.right() - card.pad() - 44.0, row_rect.top() + (row_h - 24.0) / 2.0),
+            Vec2::new(44.0, 24.0),
+        );
+        let focused = self.settings_focus == Some(slot) && !busy;
+
+        ui.painter().text(
+            Pos2::new(inner_x, row_rect.center().y - 8.0),
+            Align2::LEFT_CENTER,
+            "Collect drive health in the background",
+            FontId::new(13.0, egui::FontFamily::Proportional),
+            t.txt_pri,
+        );
+        let subtitle = match crate::service_control::last_error() {
+            Some(e) => format!("Could not change it: {e}"),
+            None if busy => "Applying…".to_string(),
+            None => format!(
+                "{} — runs as root, collects health even when Diskoria is closed",
+                svc.summary()
+            ),
+        };
+        ui.painter().text(
+            Pos2::new(inner_x, row_rect.center().y + 9.0),
+            Align2::LEFT_CENTER,
+            &subtitle,
+            FontId::new(11.0, egui::FontFamily::Proportional),
+            if crate::service_control::last_error().is_some() {
+                // Same red the surface test uses for bad sectors.
+                Color32::from_rgb(231, 76, 60)
+            } else {
+                t.txt_sec
+            },
+        );
+
+        let toggle_resp = ui.interact(toggle_rect, Id::new("service_toggle"), Sense::click());
+        crate::widgets::paint_toggle(ui, t, toggle_rect, svc.running);
+
+        let kb = page_keys && keyboard_activate(ui, focused);
+        if !busy && (toggle_resp.clicked() || kb) {
+            crate::service_control::clear_last_error();
+            // Stopping needs authentication (systemd's own polkit action), so
+            // this returns immediately and the cache catches up.
+            crate::service_control::set_enabled(!svc.running);
         }
         if focused {
             ui.painter().rect_stroke(
