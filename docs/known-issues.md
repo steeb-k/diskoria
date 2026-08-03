@@ -460,18 +460,34 @@ fresh (`disposition != REG_OPENED_EXISTING_KEY`). Any machine that had ever run
 Diskoria already had the key, so nothing would revisit it — and the portable
 exe moves, so a recorded path goes stale anyway.
 
-Fixed by reusing the mechanism the Linux side already had: `write_icon_png`
-decodes the bundled `appicon2.ico` and writes it to
-`paths::data_dir()/appicon.png`, and `IconUri` points there. It is no longer
-`#[cfg(target_os = "linux")]` — both platforms need the icon as a file on disk,
-for the same underlying reason — with the ownership hand-back still Linux-only.
-The values are now rewritten on every call, so an existing broken registration
-repairs itself the first time a toast fires. If the PNG cannot be written the
-`IconUri` write is skipped rather than replaced with something equally broken.
+**Correcting `IconUri` alone did not fix it.** With the key holding a valid PNG
+path, verified present and decoding as 256x256 ARGB, the toast still rendered a
+blank icon. Windows does not honour that key for an *unpackaged* app: the
+identity row resolves its icon from a Start Menu shortcut stamped with the
+`System.AppUserModel.ID` property, and a portable exe has no business writing
+one. The "Diskoria" text on the toast is not evidence the key was read either —
+it is the AUMID string itself.
 
-Verified on Windows by planting the old exe-path registration, deleting the
-PNG, closing the last window to the tray, and confirming `IconUri` came back as
-`C:\ProgramData\Diskoria\appicon.png`, present and decoding as 256x256 ARGB.
+What actually works is carrying the image in the toast payload:
+`<image placement="appLogoOverride" src="file:///…"/>` is read straight off
+disk and needs no shortcut or packaging. `file_uri` builds that URI (backslashes
+to forward slashes, percent-encoding the characters that would otherwise
+terminate the attribute or start a fragment) and is unit-tested.
+
+The rest of the fix stands and is kept, because it is correct and costs nothing
+where the key *is* consulted: `write_icon_png` — reused from the Linux side, its
+cfg widened from linux to `any(windows, linux)` since both platforms need the
+icon as a file for the same reason — writes `appicon2.ico` out as
+`paths::data_dir()/appicon.png`, `IconUri` points there, and the values are
+rewritten on every call so a stale registration repairs itself.
+
+One consequence of `%PROGRAMDATA%`: a file there belongs to whoever created it,
+and one user cannot overwrite another's. Diskoria normally runs elevated, so an
+*unelevated* run cannot replace a PNG an elevated one wrote (`os error 5`).
+Rather than losing the icon over a failed rewrite, the write failure falls back
+to whatever is already on disk and only gives up if nothing is — a possibly
+one-build-old icon beats none. Caught by running the unelevated debug build
+after an elevated session.
 
 ## Resolved
 

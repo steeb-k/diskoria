@@ -21,6 +21,16 @@ pub fn send_toast(title: &str, body: &str) {
     }
 }
 
+/// Absolute path to the app icon PNG on disk, written out once per process.
+/// `None` if it could not be written.
+#[cfg(any(windows, target_os = "linux"))]
+fn app_icon_file() -> Option<&'static str> {
+    use std::sync::OnceLock;
+
+    static RESOLVED: OnceLock<Option<String>> = OnceLock::new();
+    RESOLVED.get_or_init(write_icon_png).as_deref()
+}
+
 /// Absolute path to the app icon on disk, extracted from the binary on first
 /// use.
 ///
@@ -31,17 +41,29 @@ pub fn send_toast(title: &str, body: &str) {
 /// a themed disk icon if the file cannot be written.
 #[cfg(target_os = "linux")]
 fn app_icon_arg() -> String {
-    use std::sync::OnceLock;
-
     const FALLBACK: &str = "drive-harddisk";
-    static RESOLVED: OnceLock<String> = OnceLock::new();
+    app_icon_file().unwrap_or(FALLBACK).to_string()
+}
 
-    RESOLVED
-        .get_or_init(|| match write_icon_png() {
-            Some(path) => path,
-            None => FALLBACK.to_string(),
-        })
-        .clone()
+/// A `file:///` URI for an absolute Windows path, for the toast XML's `src`.
+///
+/// Backslashes become forward slashes and the few characters that would
+/// otherwise terminate or re-parse the URI are percent-encoded. Pure so it can
+/// be tested without touching the notification platform.
+#[cfg(windows)]
+fn file_uri(path: &str) -> String {
+    let mut out = String::from("file:///");
+    for ch in path.chars() {
+        match ch {
+            '\\' => out.push('/'),
+            ' ' => out.push_str("%20"),
+            '%' => out.push_str("%25"),
+            '#' => out.push_str("%23"),
+            '?' => out.push_str("%3F"),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Decode the bundled app icon and write it out as PNG, returning its path.
@@ -66,9 +88,23 @@ fn write_icon_png() -> Option<String> {
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    img.save_with_format(&path, image::ImageFormat::Png)
-        .map_err(|e| log::warn!(target: "diskoria::toast", "app icon write failed: {e}"))
-        .ok()?;
+    if let Err(e) = img.save_with_format(&path, image::ImageFormat::Png) {
+        // A file already there is owned by whoever wrote it first, and
+        // `%PROGRAMDATA%` does not let one user overwrite another's. Diskoria
+        // normally runs elevated, so this is the mixed-elevation case: an
+        // unelevated run cannot replace a file an elevated one left. An icon
+        // that may be one build out of date beats no icon at all, so fall back
+        // to whatever is already on disk and only give up if nothing is.
+        if path.is_file() {
+            log::debug!(
+                target: "diskoria::toast",
+                "app icon rewrite failed ({e}); using the existing {}", path.display()
+            );
+            return Some(path.to_string_lossy().into_owned());
+        }
+        log::warn!(target: "diskoria::toast", "app icon write failed: {e}");
+        return None;
+    }
     // An elevated session writes it as root; the notification daemon reads it
     // as the user, so hand ownership over like the rest of the data dir.
     #[cfg(target_os = "linux")]
@@ -153,16 +189,33 @@ fn try_winrt_toast(title: &str, body: &str) -> windows::core::Result<()> {
     // Ensure AUMID is registered so notifications can be routed.
     ensure_aumid_registered();
 
+    // The icon has to be carried by the toast itself. The AUMID key's `IconUri`
+    // is set too, but Windows does not honour it for an unpackaged app: the
+    // identity row's icon comes from a Start Menu shortcut stamped with the
+    // AppUserModelID, which a portable exe has no business creating. An
+    // `appLogoOverride` image is read straight off disk and needs no shortcut,
+    // so it is what actually puts the icon on the toast (KI-49).
+    let logo = app_icon_file()
+        .map(|p| {
+            format!(
+                "<image placement=\"appLogoOverride\" src=\"{}\"/>",
+                escape_xml(&file_uri(p))
+            )
+        })
+        .unwrap_or_default();
+
     let xml = XmlDocument::new()?;
     let template = format!(
         "<toast>\
            <visual>\
              <binding template=\"ToastGeneric\">\
+               {}\
                <text>{}</text>\
                <text>{}</text>\
              </binding>\
            </visual>\
          </toast>",
+        logo,
         escape_xml(title),
         escape_xml(body),
     );
@@ -219,8 +272,7 @@ fn ensure_aumid_registered() {
     // out of an exe here, so pointing it at `current_exe()` left the toast's
     // icon slot blank — the bug this fixes. If the PNG cannot be written, leave
     // the value alone rather than replacing it with something equally broken.
-    let icon_path = write_icon_png();
-    let icon_uri: Option<Vec<u16>> = icon_path.as_deref().map(|p| {
+    let icon_uri: Option<Vec<u16>> = app_icon_file().map(|p| {
         OsStr::new(p)
             .encode_wide()
             .chain(std::iter::once(0))
@@ -347,5 +399,37 @@ fn send_balloon_tip(title: &str, body: &str) {
         std::thread::sleep(std::time::Duration::from_millis(100));
         Shell_NotifyIconW(NIM_DELETE, &nid);
         DestroyWindow(hwnd);
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_uri_uses_forward_slashes_from_a_windows_path() {
+        assert_eq!(
+            file_uri(r"C:\ProgramData\Diskoria\appicon.png"),
+            "file:///C:/ProgramData/Diskoria/appicon.png"
+        );
+    }
+
+    #[test]
+    fn file_uri_escapes_what_would_re_parse_the_uri() {
+        // A space would terminate the attribute; `#` would start a fragment and
+        // silently truncate the path.
+        assert_eq!(
+            file_uri(r"C:\Program Files\Disk#1\i.png"),
+            "file:///C:/Program%20Files/Disk%231/i.png"
+        );
+        assert_eq!(file_uri(r"C:\a%b\i.png"), "file:///C:/a%25b/i.png");
+    }
+
+    #[test]
+    fn file_uri_output_survives_xml_escaping_unchanged() {
+        // The URI is emitted into an XML attribute; percent-encoding must have
+        // already removed anything escape_xml would rewrite.
+        let uri = file_uri(r"C:\ProgramData\Diskoria\appicon.png");
+        assert_eq!(escape_xml(&uri), uri);
     }
 }
