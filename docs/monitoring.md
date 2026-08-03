@@ -266,10 +266,25 @@ Cooldown state is persisted in `alert_cooldowns` across restarts.
 ### Toast Notifications
 Alerts are delivered as Windows toast notifications via the WinRT
 `ToastNotification` API (`windows::UI::Notifications`). The app registers an
-App User Model ID (AUMID) `"Diskoria"` in the registry on first launch so
-notifications route to the action center correctly. If WinRT fails, a
-`Shell_NotifyIconW` balloon tip is used as a fallback. Toast calls are made
-on a separate background thread (WinRT requires a COM MTA context).
+App User Model ID (AUMID) `"Diskoria"` under
+`HKCU\Software\Classes\AppUserModelId\Diskoria` so notifications route to the
+action center correctly. The values are rewritten on every send, not just when
+the key is created — an older build recorded a broken `IconUri` and a portable
+exe moves, and neither self-corrects if nothing revisits the key (KI-49). If
+WinRT fails, a `Shell_NotifyIconW` balloon tip is used as a fallback. Toast
+calls are made on a separate background thread (WinRT requires a COM MTA
+context).
+
+**The icon is carried by the toast, not the registration.** `IconUri` is set
+and kept, but Windows does not honour it for an *unpackaged* app: the identity
+row takes its icon from a Start Menu shortcut stamped with
+`System.AppUserModel.ID`, which a portable exe should not be writing. What puts
+the icon on the toast is an `<image placement="appLogoOverride" src="file:///…"/>`
+in the payload, pointing at `%PROGRAMDATA%\Diskoria\appicon.png` — the bundled
+`appicon2.ico` re-encoded on first use by `toast::write_icon_png`, shared with
+the Linux notification path. Note the attribution text on a toast is the AUMID
+string itself, so seeing "Diskoria" there is *not* evidence the registry key was
+read. If the icon ever regresses to a blank slot, check the payload image first.
 
 ### Monitoring Settings
 A **Monitoring** card in the Settings page provides:
