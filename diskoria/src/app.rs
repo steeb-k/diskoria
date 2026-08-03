@@ -5199,12 +5199,6 @@ impl DiskoriaApp {
     pub fn draw(&mut self, ctx: &egui::Context) {
         self.scroll_focus_frames = self.scroll_focus_frames.saturating_sub(1);
 
-        // Publish the monitoring master switch for the tray menu, which has no
-        // access to app state. A relaxed store per frame is free, and it cannot
-        // drift the way a copy updated at settings-change sites would.
-        #[cfg(target_os = "linux")]
-        crate::service_control::set_master_enabled(self.monitoring_enabled);
-
         // Frameless-window resize borders. Windows handles this in the
         // WM_NCHITTEST subclass (chrome::install_win32_resize); everywhere
         // else the hit-test is egui-side and starts a compositor resize.

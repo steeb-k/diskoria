@@ -178,10 +178,10 @@ impl ksni::Tray for SniTray {
             items.push(MenuItem::Separator);
         }
 
-        // Background collection: state, and a switch. A root service logging
-        // health with no visible presence and no off switch is not something
-        // to leave running on someone's machine — on Windows every background
-        // behaviour hangs off the tray icon, and this is that.
+        // Background collection: state only. Stopping lives on Quit, which
+        // stops the collector as well as the app, and the durable off switch
+        // is Settings — a second way to stop it from here would just be a
+        // third place to look.
         if let Some(svc) = crate::service_control::status().filter(|s| s.installed) {
             items.push(
                 StandardItem {
@@ -191,32 +191,6 @@ impl ksni::Tray for SniTray {
                 }
                 .into(),
             );
-            // Starting is offered only when Settings' master switch agrees;
-            // otherwise this menu could turn a root service back on behind the
-            // back of the setting that says nothing should be collecting.
-            // Stopping is always available — an off switch should never be
-            // conditional.
-            let turning_on = !svc.running;
-            if !turning_on || crate::service_control::master_enabled() {
-                items.push(
-                    StandardItem {
-                        label: if turning_on {
-                            "Start background collection".into()
-                        } else {
-                            "Stop background collection".into()
-                        },
-                        // Greyed while a previous start/stop is still in
-                        // flight, so a slow polkit prompt cannot be
-                        // double-fired.
-                        enabled: !crate::service_control::busy(),
-                        activate: Box::new(move |_t: &mut SniTray| {
-                            crate::service_control::set_enabled(turning_on);
-                        }),
-                        ..Default::default()
-                    }
-                    .into(),
-                );
-            }
             items.push(MenuItem::Separator);
         }
 

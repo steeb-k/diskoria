@@ -67,19 +67,6 @@ static CACHE: Mutex<Cache> = Mutex::new(Cache {
     busy: false,
 });
 
-/// Mirrors the Settings "Enable background monitoring" master switch, so the
-/// tray menu — which has no access to app state — can stay consistent with it
-/// and not offer to start a service the master switch says should be off.
-static MASTER_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
-
-pub fn set_master_enabled(on: bool) {
-    MASTER_ENABLED.store(on, std::sync::atomic::Ordering::Relaxed);
-}
-
-pub fn master_enabled() -> bool {
-    MASTER_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
-}
-
 /// Last known state. `None` until the first refresh completes; never blocks.
 pub fn status() -> Option<ServiceStatus> {
     CACHE.lock().ok().and_then(|c| c.status)

@@ -69,14 +69,15 @@ data rather than a stale number frozen on screen.
 **Turning it off.** The desktop app owns the switch — nothing collects in the
 background without a way to see and stop it from userspace:
 
-- **Tray menu** — shows `Background service: Running` and a
-  *Stop background collection* item.
-- **Settings → Background service** — the same toggle with the current state.
+- **Tray menu** — shows `Background service: Running`, and **Quit** stops
+  collection along with the app.
+- **Settings → Background service** — a toggle for the durable off switch
+  (`systemctl disable --now`: stops it *and* keeps it from returning at the
+  next boot).
 
-Either one runs `systemctl disable --now`, which stops it *and* keeps it from
-returning at the next boot. That goes through systemd's own polkit action, so
-an unelevated session gets your desktop's normal authentication prompt. The card
-and menu entry are hidden when the unit is not installed.
+Both go through systemd's own polkit action, so an unelevated session gets your
+desktop's normal authentication prompt. The card and status line are hidden when
+the unit is not installed.
 
 The unit's state is the source of truth — there is no separate persisted
 setting to drift out of sync with it, so `systemctl` on the command line and the
@@ -86,7 +87,11 @@ Some rules follow from *nothing collects without a userspace presence that can
 stop it*:
 
 - **Quitting Diskoria stops collection** (`systemctl stop`) — but leaves it
-  enabled, so a reboot brings it back. Closing a window is not a decision to
+  enabled, so a reboot brings it back. Note this leaves the tray unit stopped
+  too, so if you then start the collector by hand
+  (`systemctl start diskoria-monitor.service`) it will run without an icon until
+  you also `systemctl --user start diskoria-tray.service` — or just turn
+  monitoring back on from Settings, which is the supported route. Closing a window is not a decision to
   undo the setup you installed. If you decline the authentication prompt, a
   notification tells you it is still running and how to stop it.
 - **Settings → Monitoring → "Enable background monitoring" is the master
