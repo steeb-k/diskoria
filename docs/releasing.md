@@ -98,6 +98,12 @@ Upload both to the same diskoria-binaries release as the Windows assets.
 No signing story exists for Linux yet; consider a `.sha256` sidecar (the
 updater ignores it).
 
+`scripts/install-linux.sh` — the `curl | bash` one-liner in the README — reads
+the **latest** release and matches on these exact names, so a release that
+publishes Windows assets alone leaves the one-liner failing with "no Linux
+`<arch>` asset" until the Linux ones are attached. Publish all of them
+together, or the README's install path is broken for as long as the gap lasts.
+
 ### Build once per architecture
 
 Linux, unlike Windows, has **no x86-64-on-ARM emulation**, so an x86-64 build
@@ -113,8 +119,20 @@ The cross build needs, once:
 
 ```sh
 rustup target add aarch64-unknown-linux-gnu
-sudo pacman -S --needed aarch64-linux-gnu-gcc aarch64-linux-gnu-glibc   # or your distro's equivalent
+sudo pacman -S --needed aarch64-linux-gnu-gcc aarch64-linux-gnu-glibc   # Arch
+
+# Debian/Ubuntu (verified on the WSL Ubuntu 24.04 used for the 1.7.0 build).
+# All three are needed and the failures are staggered: without the C++ compiler
+# the build dies partway with `failed to find tool "aarch64-linux-gnu-g++"`,
+# and without the target libc it dies earlier still, in ring, with
+# `bits/libc-header-start.h: No such file or directory`.
+sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross
 ```
+
+A **native** Linux build additionally needs `libfontconfig1-dev`
+(plus `libxkbcommon-dev libwayland-dev pkg-config`) — see CLAUDE.md and KI-53.
+The cross build does not, because `RUST_FONTCONFIG_DLOPEN=1` below removes the
+compile-time dependency.
 
 A C toolchain is required because `rusqlite` bundles SQLite. The linker is
 pinned in `diskoria/.cargo/config.toml`; note cargo resolves that file relative
