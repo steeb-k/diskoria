@@ -597,6 +597,36 @@ neither. Anything merging a branch of this age should dispatch the workflow
 against it (`gh workflow run ci.yml --ref <branch>`) *before* fast-forwarding
 `main`, or main inherits a failure nobody has seen.
 
+### KI-54 — Linux scripts checked out CRLF and shipped that way `bug` `linux` `fixed`
+Found cutting 1.7.0, the first release to include Linux artifacts built from
+the Windows working copy. `scripts/build-portable.sh` would not start:
+
+```
+/usr/bin/env: 'bash\r': No such file or directory
+```
+
+The repo had no `.gitattributes` and is developed with `core.autocrlf=true`, so
+every text file checks out CRLF. Harmless for Rust and Markdown; fatal for a
+script whose shebang is then `#!/usr/bin/env bash\r`.
+
+The blocked build was the *visible* half. The worse half is that
+`build-portable.sh` copies `install-service.sh`, `diskoria.desktop`,
+`com.diskoria.pkexec.policy` and the systemd units **verbatim into the portable
+tarball** — all but the units were CRLF — so a Linux release cut from a Windows
+checkout would have handed users an `install-service.sh` that fails at its own
+shebang on their machine. Nothing local would have revealed it; the tarball is
+the artifact, and it is assembled on the platform that cannot run it.
+
+Note the committed blobs were **always LF** — `autocrlf` normalises on the way
+in, so nothing in the repo was ever wrong and no amount of inspecting the diff
+would have shown it. The corruption is applied on the way *out*, to the working
+tree, which is what the tarball is built from. Fixed with a `.gitattributes`
+pinning `*.sh`, `*.service`, `*.policy` and `*.desktop` to `eol=lf`, which
+suppresses that conversion so the checkout matches the blob.
+
+Worth noting the two systemd units were already LF, so a spot check of one file
+would have suggested the tree was fine. Check the ones that are *executed*.
+
 ## Resolved
 
 Condensed; see git history for full detail.

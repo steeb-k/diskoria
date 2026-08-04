@@ -1,0 +1,14 @@
+# Line endings.
+#
+# The repo is developed on Windows with core.autocrlf=true, which checks text
+# files out with CRLF. That is harmless for Rust sources and docs, but fatal for
+# the files Linux tooling executes or parses: a shell script checked out with
+# CRLF fails at its own shebang ("/usr/bin/env: 'bash\r': No such file or
+# directory"), and these particular files are copied verbatim into the portable
+# Linux tarball, so the breakage ships to users rather than staying local.
+#
+# Pin them to LF regardless of platform. See docs/known-issues.md (KI-54).
+*.sh            text eol=lf
+*.service       text eol=lf
+*.policy        text eol=lf
+*.desktop       text eol=lf
