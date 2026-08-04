@@ -676,6 +676,25 @@ pkexec's target is `/usr/bin/env` while `com.diskoria.pkexec.policy` pins
 afresh. Pointing the policy at `env` would authorize running anything as root,
 so the binary has to become the pkexec target instead.
 
+### KI-56 — `linear_multiply` on a dimmed nav row lands nowhere near its stated alpha `oddity`
+`app.rs` `paint_nav_row` greys a locked row with
+`t.txt_pri.linear_multiply(0.35)`. On the dark sidebar (`sb_bg` #252525) that
+should composite to #B7B7B7 — egui converts to linear, scales, and returns a
+*premultiplied* Color32, which paints as `rgb + bg * (1 - a)` = 159 + 24 = 183.
+What actually lands on screen is **#636363**, sampled during the 1.7.1 wiki
+re-render at the exact pixels that render pure white when the same row is live,
+so glyph coverage is not in the way. Neither model of the stated alpha predicts
+it: an sRGB composite gives 113, a linear one 162, and the fitted sRGB alpha is
+~0.284.
+
+Same family as KI-25 — a colour whose source expression does not describe the
+pixel — but that one was a misnamed constructor with a consistent result; this
+is the CPU rasterizer's handling of a premultiplied vertex colour, which is
+worth understanding before anyone tunes the 0.35 and wonders why the row barely
+moves. Cosmetic: the greyed row reads correctly as unavailable. The wiki's
+mockgen carries the measured value as `theme.NAV_LOCKED_ALPHA` with the
+arithmetic written out.
+
 ## Resolved
 
 Condensed; see git history for full detail.
