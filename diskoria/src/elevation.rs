@@ -48,13 +48,100 @@ pub fn is_elevated() -> bool {
     unsafe { libc::geteuid() == 0 }
 }
 
+/// `--no-elevate` on the command line: run unelevated on purpose.
+fn no_elevate_flag() -> bool {
+    std::env::args().skip(1).any(|a| a == "--no-elevate")
+}
+
 /// Whether this launch should attempt the pkexec relaunch.
 pub fn should_elevate(smoke: bool, start_minimized: bool) -> bool {
     !is_elevated()
         && !smoke
         && !crate::demo::config().seeding()
         && !start_minimized
-        && !std::env::args().skip(1).any(|a| a == "--no-elevate")
+        && !no_elevate_flag()
+}
+
+/// Whether a process in this state may put a **window** on screen without
+/// being root.
+///
+/// `should_elevate` deliberately skips the relaunch for `--minimized`, so the
+/// tray/autostart launch does not prompt at login. The cost was that the same
+/// unelevated process then answered every later "show me Diskoria" — the
+/// single-instance guard hands off to whatever is already running — and opened
+/// a window whose SMART reads all fail with EACCES. That is what shipped in
+/// 1.7.0: `query_nvme: open failed ... Permission denied` behind a window that
+/// looked perfectly normal (KI-36, KI-55).
+///
+/// So the rule is narrower than "may this process exist": a *window* requires
+/// root, unless this is deliberately an unelevated run — tests, demos, smoke.
+/// Kept as a separate predicate from [`should_elevate`] because the answers
+/// differ for exactly one case, the `--minimized` tray process, which is
+/// allowed to run but not to open a window.
+pub fn window_allowed_unelevated() -> bool {
+    window_allowed_unelevated_with(
+        is_elevated(),
+        std::env::var_os("DISKORIA_SMOKE").is_some(),
+        crate::demo::config().seeding(),
+        no_elevate_flag(),
+    )
+}
+
+/// Internal flag marking the elevated process spawned by [`spawn_elevated_window`].
+///
+/// It carries two exemptions: skip the single-instance guard, and skip the
+/// tray. Without the first it would connect to the socket the tray process
+/// still holds and be handed straight back to it — the same unelevated window,
+/// via an infinite round trip. Without the second there would be two tray
+/// icons for one app.
+pub const ELEVATED_WINDOW_FLAG: &str = "--elevated-window";
+
+pub fn is_elevated_window_child() -> bool {
+    std::env::args().skip(1).any(|a| a == ELEVATED_WINDOW_FLAG)
+}
+
+/// Run an elevated instance that owns a window, and wait for it.
+///
+/// **Blocking — worker thread only.** `watchdog.rs` exists because event-loop
+/// stalls were diagnosed wrong twice; waiting on a polkit prompt from the loop
+/// would be the worst case of it, since the wait is as long as the user takes
+/// to type a password.
+///
+/// The caller keeps running as tray-only throughout, so a dismissed prompt
+/// costs nothing: no window opens, the tray stays, monitoring continues.
+/// Spawning and exiting instead would leave a declined prompt with no tray and
+/// no collector at all — worse than the bug this fixes (KI-55).
+pub fn spawn_elevated_window() -> Result<(), String> {
+    let exe = std::env::current_exe()
+        .map_err(|e| format!("current_exe: {e}"))?
+        .to_string_lossy()
+        .into_owned();
+    let app_args = vec![ELEVATED_WINDOW_FLAG.to_string()];
+    let args = pkexec_args(&exe, &app_args, &passthrough_pairs());
+
+    log::info!(target: "diskoria", "opening an elevated window via pkexec");
+    let status = Command::new("pkexec")
+        .args(&args)
+        .status()
+        .map_err(|e| format!("pkexec not runnable: {e}"))?;
+
+    match status.code() {
+        Some(126) => Err("authentication dialog dismissed".to_string()),
+        Some(127) => Err("authorization failed".to_string()),
+        // Any other code means the elevated window ran and has now closed.
+        _ => Ok(()),
+    }
+}
+
+/// The rule itself, taking its inputs as arguments so it can be tested without
+/// a uid, a command line or an environment.
+fn window_allowed_unelevated_with(
+    elevated: bool,
+    smoke: bool,
+    demo: bool,
+    no_elevate: bool,
+) -> bool {
+    elevated || smoke || demo || no_elevate
 }
 
 /// Build the pkexec argv for the current process. Pure so it can be tested.
@@ -259,5 +346,43 @@ mod tests {
     fn no_env_still_execs_via_env() {
         let args = pkexec_args("/x", &[], &[]);
         assert_eq!(args, vec!["env", "/x"]);
+    }
+
+    use super::window_allowed_unelevated_with as may_open;
+
+    /// The 1.7.0 bug, as a test. `install-service.sh` enables
+    /// `diskoria-tray.service`, which runs `--minimized` and unelevated on
+    /// purpose; the single-instance guard then handed every later launch to
+    /// that process, which opened a window that could not read a single
+    /// device. Nothing was wrong with the elevation code — it was simply never
+    /// consulted again after login.
+    #[test]
+    fn a_plain_unelevated_process_may_not_open_a_window() {
+        assert!(
+            !may_open(false, false, false, false),
+            "an unelevated session with no opt-out must not put a window on screen"
+        );
+    }
+
+    /// The counterpart the user asked for: an already-root process must never
+    /// be sent back through pkexec, or Ctrl+N and the tray's New Window would
+    /// prompt for a password each time. `should_elevate` short-circuits on
+    /// `is_elevated`, and new windows are built in-process, but pin it here so
+    /// neither can regress quietly.
+    #[test]
+    fn an_elevated_process_never_needs_to_ask_again() {
+        assert!(may_open(true, false, false, false));
+        // Still true with every other input off — being root is sufficient on
+        // its own, whatever else is set.
+        assert!(may_open(true, true, true, true));
+    }
+
+    /// Unelevated runs stay available on purpose: `--no-elevate` for UI work
+    /// without an auth prompt, demo seeding for captures, smoke for CI.
+    #[test]
+    fn deliberate_unelevated_runs_keep_working() {
+        assert!(may_open(false, true, false, false), "smoke");
+        assert!(may_open(false, false, true, false), "demo");
+        assert!(may_open(false, false, false, true), "--no-elevate");
     }
 }

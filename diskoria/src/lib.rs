@@ -109,6 +109,12 @@ pub enum UserEvent {
     /// in-app Ctrl+N shortcut, the tray "New Window" menu item, and the
     /// secondary-exe new-window path.
     OpenNewWindow,
+    /// The elevated-window hand-off finished. `Some(reason)` when no elevated
+    /// window ran — a dismissed prompt, or pkexec being unavailable — so the
+    /// tray process can say why instead of leaving the click looking ignored
+    /// (KI-55).
+    #[cfg(target_os = "linux")]
+    ElevationFinished(Option<String>),
     /// Settings changed in some window.  Every renderer redraws so the
     /// next frame picks up the new shared values.  If `restart_monitor`
     /// is true, also tear down the monitor thread so the next draw
@@ -1115,6 +1121,11 @@ struct App {
     #[cfg_attr(not(windows), allow(dead_code))]
     proxy: EventLoopProxy<UserEvent>,
     shared: Arc<SharedAppState>,
+    /// An elevated-window hand-off is in flight (KI-55). Guards against
+    /// stacking polkit prompts when the tray icon is clicked repeatedly while
+    /// one is already on screen.
+    #[cfg(target_os = "linux")]
+    elevating: bool,
     #[cfg(any(windows, target_os = "linux"))]
     tray: Option<crate::tray::TrayManager>,
     #[cfg(windows)]
@@ -1243,6 +1254,26 @@ impl App {
 
     /// Recompute and publish the "any window visible" bit so that a
     /// secondary exe launch picks the right follow-up (raise vs. new).
+    /// Ask for an elevated window from an unelevated (tray-only) process.
+    ///
+    /// The pkexec wait happens on a worker thread: it lasts as long as the
+    /// user takes to answer the prompt, and blocking the event loop for that
+    /// is exactly the stall `watchdog.rs` was built to catch. This process
+    /// stays tray-only meanwhile, so declining costs nothing.
+    #[cfg(target_os = "linux")]
+    fn request_elevated_window(&mut self) {
+        if self.elevating {
+            log::debug!(target: "diskoria", "elevation already in flight; ignoring");
+            return;
+        }
+        self.elevating = true;
+        let proxy = self.proxy.clone();
+        std::thread::spawn(move || {
+            let result = crate::elevation::spawn_elevated_window();
+            let _ = proxy.send_event(UserEvent::ElevationFinished(result.err()));
+        });
+    }
+
     /// Cheap to call — just walks `self.renderers` and writes 4 bytes.
     #[cfg(windows)]
     fn refresh_any_visible_flag(&self) {
@@ -1265,7 +1296,15 @@ impl ApplicationHandler<UserEvent> for App {
             #[cfg(any(windows, target_os = "linux"))]
             if self.shared.pro_edition {
                 renderer.app.event_proxy = Some(self.proxy.clone());
-                self.tray = crate::tray::TrayManager::new(self.proxy.clone());
+                // The elevated-window child leaves the tray to the process
+                // that spawned it, which is still running (KI-55).
+                #[cfg(target_os = "linux")]
+                let want_tray = !crate::elevation::is_elevated_window_child();
+                #[cfg(windows)]
+                let want_tray = true;
+                if want_tray {
+                    self.tray = crate::tray::TrayManager::new(self.proxy.clone());
+                }
             }
             // Auto-start (`--minimized`): come up tray-only. The window is
             // created visible by default; hide it before it maps. We still
@@ -1499,7 +1538,8 @@ enum CloseDisposition { None, Exit, DropThis, HideThis }
             UserEvent::ShowWindowRequested => {
                 if self.renderers.is_empty() {
                     // Nothing to raise (every window was dropped) — the intent
-                    // is "show me Diskoria", so make one.
+                    // is "show me Diskoria", so make one. `OpenNewWindow`
+                    // decides whether this process is allowed to.
                     log::debug!(target: "diskoria", "show requested with no windows; opening one");
                     self.user_event(event_loop, UserEvent::OpenNewWindow);
                     return;
@@ -1530,7 +1570,35 @@ enum CloseDisposition { None, Exit, DropThis, HideThis }
                 };
                 self.user_event(event_loop, follow_up);
             }
+            #[cfg(target_os = "linux")]
+            UserEvent::ElevationFinished(err) => {
+                self.elevating = false;
+                match err {
+                    None => log::info!(target: "diskoria", "elevated window closed"),
+                    Some(reason) => {
+                        // Say so out loud. The 1.7.0 failure was invisible
+                        // precisely because the only trace was a log line no
+                        // desktop user ever sees (KI-55).
+                        log::warn!(target: "diskoria", "no elevated window: {reason}");
+                        crate::toast::send_toast(
+                            "Diskoria needs administrator access",
+                            "Drive health and disk tests read devices directly, which \
+                             requires authentication. Diskoria is still monitoring in \
+                             the background; click the tray icon to try again.",
+                        );
+                    }
+                }
+            }
             UserEvent::OpenNewWindow => {
+                // A window requires root. The tray/autostart process runs
+                // unelevated on purpose, and used to answer this by opening a
+                // window whose every device read failed (KI-55). Hand off to
+                // an elevated process instead of opening one here.
+                #[cfg(target_os = "linux")]
+                if !crate::elevation::window_allowed_unelevated() {
+                    self.request_elevated_window();
+                    return;
+                }
                 #[cfg_attr(not(windows), allow(unused_mut))]
                 let mut renderer = Renderer::new(event_loop, self.shared.clone());
                 #[cfg(windows)]
@@ -2285,8 +2353,16 @@ pub fn run() {
     // Unix flavour: binding the socket claims primary; a connect-to-existing
     // hands off and exits inside `acquire`. The listener starts once the event
     // loop proxy exists, below.
+    // The elevated-window child skips the guard too: the tray process that
+    // spawned it still holds the socket, so connecting would hand the request
+    // straight back to the unelevated process it was spawned to escape —
+    // round and round (KI-55).
+    #[cfg(target_os = "linux")]
+    let elevated_child = elevation::is_elevated_window_child();
+    #[cfg(all(unix, not(target_os = "linux")))]
+    let elevated_child = false;
     #[cfg(unix)]
-    let single_instance = (smoke_remaining.is_none() && !demo::seeding())
+    let single_instance = (smoke_remaining.is_none() && !demo::seeding() && !elevated_child)
         .then(|| single_instance::acquire(start_minimized))
         .flatten();
     #[cfg(not(any(windows, unix)))]
@@ -2306,13 +2382,24 @@ pub fn run() {
             if let Some(a) = si.take() {
                 a.release();
             }
+            // Both outcomes end this process: on success the elevated child is
+            // the session and we forward its exit code. On failure we stop —
+            // previously this "degraded" to an unelevated window, which is the
+            // exact shape of the 1.7.0 bug: a window that looks fine and cannot
+            // read a device. A window requires root, so decline means no window
+            // (KI-55). `--no-elevate`, demo and smoke never reach here — they
+            // do not ask in the first place — so deliberate unelevated runs are
+            // unaffected.
             match elevation::relaunch_elevated() {
                 Ok(code) => std::process::exit(code),
                 Err(reason) => {
-                    log::warn!(target: "diskoria", "continuing unelevated: {reason}");
-                    si = (smoke_remaining.is_none() && !demo::seeding())
-                        .then(|| single_instance::acquire(start_minimized))
-                        .flatten();
+                    log::error!(
+                        target: "diskoria",
+                        "not starting: Diskoria needs administrator access for drive \
+                         health and disk tests ({reason}). Re-run and authenticate, or \
+                         use --no-elevate for an unprivileged session with no device access."
+                    );
+                    std::process::exit(1);
                 }
             }
         }
@@ -2374,6 +2461,8 @@ pub fn run() {
         renderers: HashMap::new(),
         proxy,
         shared,
+        #[cfg(target_os = "linux")]
+        elevating: false,
         #[cfg(any(windows, target_os = "linux"))]
         tray: None,
         #[cfg(windows)]

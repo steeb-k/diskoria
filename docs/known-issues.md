@@ -627,6 +627,55 @@ suppresses that conversion so the checkout matches the blob.
 Worth noting the two systemd units were already LF, so a spot check of one file
 would have suggested the tree was fine. Check the ones that are *executed*.
 
+### KI-55 — 1.7.0: the tray instance answered every launch, unelevated `bug` `linux` `fixed`
+Reported straight after the 1.7.0 release: Drive Health showed nothing on
+Linux. The journal has the whole story in two lines —
+
+```
+systemd[1471]: Started [systemd-run] /usr/local/bin/diskoria.   <- the .desktop launch
+diskoria[1046754]: show requested with no windows; opening one   <- a *different* pid answers
+```
+
+— where 1046754 is `diskoria-tray.service`. `install-service.sh` enables that
+unit, it runs `--minimized`, and `--minimized` skips the pkexec relaunch on
+purpose so login does not raise an auth prompt. The single-instance check runs
+*before* elevation (deliberately, so a second launch does not prompt), so from
+that point on every launch — menu icon included — was handed to the unelevated
+tray process, which opened a window whose device reads all failed:
+
+```
+query_nvme: open failed path=/dev/nvme0n1 err=Permission denied (os error 13)
+health: using the monitoring service's reading for /dev/nvme0n1
+```
+
+Note the second line: the root collector still supplied a temperature, so the
+page was not blank, just wrong — which is how it survived to a release. Killing
+the tray process and relaunching works, and it comes back at the next login.
+
+This is KI-36 (`--minimized` runs unelevated, no elevate-on-open hand-off)
+turning from a documented gap into the app's headline feature not working.
+Elevation itself was never broken and no code was lost: `elevation.rs` has only
+ever had its three original commits.
+
+**Rule now enforced:** a *window* requires root. `should_elevate` still lets the
+tray run unelevated, but `elevation::window_allowed_unelevated` gates putting
+anything on screen, with opt-outs for the runs that are unelevated on purpose
+(`--no-elevate`, demo seeding, smoke). Tests pin all three cases, including
+that an already-root process never gets sent back through pkexec.
+
+**Two traps for the hand-off implementation.** The tray process must not exit
+until pkexec has *succeeded* — spawn-then-exit loses the tray and monitoring
+entirely if the user dismisses the prompt, which is worse than the bug. And it
+cannot wait on pkexec from the event-loop thread; that is what `watchdog.rs`
+exists to catch.
+
+**Separately:** `pkexec_args` builds `pkexec env K=V … /path/diskoria`, so
+pkexec's target is `/usr/bin/env` while `com.diskoria.pkexec.policy` pins
+`/usr/local/bin/diskoria`. The action has therefore never matched, and
+`auth_admin_keep` and `allow_gui` have never applied — every elevation prompts
+afresh. Pointing the policy at `env` would authorize running anything as root,
+so the binary has to become the pkexec target instead.
+
 ## Resolved
 
 Condensed; see git history for full detail.

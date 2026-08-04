@@ -158,8 +158,15 @@ assets/                appicon2.ico (window + notification icon, About page —
   disk, subprocess, D-Bus peer or compositor belongs on a worker thread.
 - **`elevation.rs`** (Linux) — pkexec self-relaunch with an env trampoline
   (DISPLAY/WAYLAND/D-Bus/XDG passthrough); skipped for smoke/demo/
-  `--no-elevate`/`--minimized`; declined auth degrades instead of exiting;
-  elevated startups re-own the XDG data dir to the invoking user.
+  `--no-elevate`/`--minimized`; elevated startups re-own the XDG data dir to
+  the invoking user. **A window requires root**: `window_allowed_unelevated()`
+  is the rule, and declined auth means no window rather than a degraded one —
+  a window that cannot read a device is the 1.7.0 bug (known-issues KI-55).
+  `--minimized` may still *run* unelevated (so login does not prompt), but when
+  it is asked to show a window it hands off to an elevated child
+  (`spawn_elevated_window`, `--elevated-window`) instead of opening one. That
+  child skips the single-instance guard and the tray, both of which the
+  spawning process still owns.
 - **`device_events.rs`** (Linux) — NETLINK_KOBJECT_UEVENT block-device watcher
   feeding the same debounced `DEVICE_CHANGE_PENDING` seam as `WM_DEVICECHANGE`.
 - **`install_mode.rs`** — installed build vs. portable exe. Like `autostart.rs`,

@@ -346,6 +346,31 @@ for inspection; `--demo-drives --demo-health` keeps it off real hardware.
 - [ ] Every page at 380x480: no text runs off the right edge, no dialog hangs
       off an edge. The Sector Write gate warning must be readable in full.
 
+## Linux launch paths (KI-55)
+
+Terminal and desktop launches are **different code paths**, and 1.7.0 shipped
+broken because only the terminal one was ever tried. Check both, and check them
+with the tray service installed — that is the configuration that failed.
+
+- [ ] With `diskoria-tray.service` running, click the desktop/menu icon. It must
+      raise a polkit prompt and open an **elevated** window. Confirm with
+      `journalctl --user -b | grep -i diskoria`: no
+      `query_nvme: open failed ... Permission denied`.
+- [ ] Same, from the tray icon's Open item.
+- [ ] Dismiss the polkit prompt instead: no window appears, the tray stays, and
+      a notification explains why. Monitoring keeps running.
+- [ ] Click the icon repeatedly while a prompt is up — exactly one prompt.
+- [ ] In the elevated window, Ctrl+N and the tray's New Window must **not**
+      prompt again; they are in-process.
+- [ ] Exactly one tray icon while the elevated window is open, not two.
+- [ ] Launch from a terminal with no tray service running: prompts, opens
+      elevated. Decline it: the process exits with the "needs administrator
+      access" message rather than opening a window.
+- [ ] `--no-elevate` still opens a window with no prompt (device reads fail;
+      that is the point of the flag).
+- [ ] Reboot and repeat the first check — the tray unit is enabled, so the
+      failing configuration returns at every login.
+
 ## Known non-regressions
 
 - `drive_enumeration.rs`: 2 pre-existing warnings (`releases_repo_page_url`
