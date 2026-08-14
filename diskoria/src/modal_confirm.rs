@@ -1,8 +1,8 @@
 //! Two-button confirm dialog (overlay + card + Tab between buttons) — aligned with Copynaut `ui/composites.rs`.
 
 use egui::{
-    Align2, Color32, Context, FontFamily, FontId, Id, Key, Modifiers, Pos2, Rect, Stroke, StrokeKind,
-    Vec2,
+    Align2, Color32, Context, FontFamily, FontId, Id, Key, Modifiers, Pos2, Rect, Sense, Stroke,
+    StrokeKind, Vec2,
 };
 
 use crate::chrome::INTERACT_MANUAL_FOCUS;
@@ -127,6 +127,32 @@ pub enum ModalConfirmPrimary<'a> {
     Danger { label: &'a str },
 }
 
+/// Dim the window and swallow every pointer event aimed at what's underneath.
+///
+/// The dim alone was not enough: `rect_filled` on an `Area`'s painter allocates
+/// nothing, so egui's hit-test saw a zero-sized layer and kept handing hovers
+/// and clicks to the page behind the dialog. Tooltips were the visible symptom —
+/// they kept popping up over a modal, from controls the user could not reach
+/// (known-issues KI-61). One full-window widget in the overlay's own layer is
+/// what blocks them: egui drops every layer behind a hit that covers the whole
+/// hit-area.
+///
+/// `Order::Middle` is load-bearing. The title bar is an `Order::Foreground`
+/// area, so it stays live above this — a modal must never trap the window with
+/// no way to move, minimize or close it.
+fn modal_scrim(ctx: &Context, screen: Rect, overlay_id: Id) {
+    egui::Area::new(overlay_id)
+        .fixed_pos(screen.min)
+        .order(egui::Order::Middle)
+        .show(ctx, |ui| {
+            ui.painter()
+                .rect_filled(screen, 0.0, Color32::from_black_alpha(120));
+            // click_and_drag, not click: a drag that starts on the scrim must
+            // not reach a plot or a slider underneath either.
+            ui.interact(screen, overlay_id.with("eat"), Sense::click_and_drag());
+        });
+}
+
 /// `button_focus`: `Some(0)` = Cancel, `Some(1)` = Confirm. Tab order from [`crate::focus::tab_cycle_slots`] in `App::update`.
 pub fn two_button_modal(
     ctx: &Context,
@@ -136,13 +162,7 @@ pub fn two_button_modal(
 ) -> Option<ModalConfirmResult> {
     let screen = ctx.screen_rect();
 
-    egui::Area::new(p.overlay_id)
-        .fixed_pos(screen.min)
-        .order(egui::Order::Middle)
-        .show(ctx, |ui| {
-            ui.painter()
-                .rect_filled(screen, 0.0, Color32::from_black_alpha(120));
-        });
+    modal_scrim(ctx, screen, p.overlay_id);
 
     let dlg = fit_dialog(ctx, screen, p.title, p.body, Vec2::new(p.width, p.height));
 
@@ -361,13 +381,7 @@ pub fn one_button_modal(
 ) -> Option<()> {
     let screen = ctx.screen_rect();
 
-    egui::Area::new(p.overlay_id)
-        .fixed_pos(screen.min)
-        .order(egui::Order::Middle)
-        .show(ctx, |ui| {
-            ui.painter()
-                .rect_filled(screen, 0.0, Color32::from_black_alpha(120));
-        });
+    modal_scrim(ctx, screen, p.overlay_id);
 
     let dlg = fit_dialog(ctx, screen, p.title, p.body, Vec2::new(p.width, p.height));
 
@@ -492,6 +506,70 @@ mod tests {
         // than hanging its OK button off the bottom of the screen.
         let h = fit_dialog_h(MIN_WIN_H, 200.0, 2000.0);
         assert!(h <= MIN_WIN_H - 2.0 * SCREEN_MARGIN);
+    }
+
+    /// Runs the pointer parked at `pointer` through a headless egui context and
+    /// reports whether a widget in the central panel and one in an
+    /// `Order::Tooltip` area (standing in for the dialog) were hovered.
+    ///
+    /// Three frames, not one: egui resolves hover against the *previous* pass's
+    /// widget rects, and an `Area` only gets a real size after its first layout,
+    /// so a two-frame probe reports no hover for anything in an area.
+    fn hover_probe(pointer: Pos2, with_scrim: bool) -> (bool, bool) {
+        let ctx = Context::default();
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
+        // The page widget spans the dialog, so "hovered the page" and "hovered
+        // the dialog" can both be asked at the same pointer position.
+        let behind_rect = Rect::from_min_size(Pos2::new(0.0, 120.0), Vec2::new(800.0, 400.0));
+        let dialog_rect = Rect::from_min_size(Pos2::new(300.0, 240.0), Vec2::new(200.0, 80.0));
+        let (mut behind, mut dialog) = (false, false);
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events: vec![egui::Event::PointerMoved(pointer)],
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    behind = ui
+                        .interact(behind_rect, Id::new("probe_behind"), Sense::click())
+                        .hovered();
+                });
+                if with_scrim {
+                    modal_scrim(ctx, screen, Id::new("probe_scrim"));
+                }
+                egui::Area::new(Id::new("probe_dialog"))
+                    .fixed_pos(dialog_rect.min)
+                    .order(egui::Order::Tooltip)
+                    .show(ctx, |ui| {
+                        dialog = ui
+                            .interact(dialog_rect, Id::new("probe_dialog_btn"), Sense::click())
+                            .hovered();
+                    });
+            });
+        }
+        (behind, dialog)
+    }
+
+    #[test]
+    fn the_scrim_takes_the_hover_away_from_the_page_behind_it() {
+        // KI-61: dimming the window is not blocking it. Without a widget in the
+        // overlay's layer, egui kept hovering the controls underneath and their
+        // tooltips kept popping up over the dialog.
+        let (behind, _) = hover_probe(Pos2::new(120.0, 280.0), false);
+        assert!(behind, "probe is wrong: the page should hover with no scrim");
+
+        let (behind, _) = hover_probe(Pos2::new(120.0, 280.0), true);
+        assert!(!behind, "the page behind the scrim is still hovering");
+    }
+
+    #[test]
+    fn the_scrim_does_not_block_the_dialog_it_sits_under() {
+        // The other direction: a scrim that ate the dialog's own buttons would
+        // make every modal unclickable.
+        let (behind, dialog) = hover_probe(Pos2::new(400.0, 280.0), true);
+        assert!(dialog, "the dialog's own button stopped hovering");
+        assert!(!behind, "the page under the dialog is still hovering");
     }
 
     #[test]

@@ -1469,23 +1469,36 @@ impl DiskoriaApp {
         }
         let t = Theme::new(dark, self.shared.accent_color());
         let screen = ctx.screen_rect();
-        let painter = ctx.layer_painter(LayerId::new(
-            Order::Foreground,
-            Id::new("diskoria_update_busy_overlay"),
-        ));
-        painter.rect_filled(screen, 0.0, Color32::from_black_alpha(120));
+        let id = Id::new("diskoria_update_busy_overlay");
         let msg = if self.update_download_busy {
             "Downloading update…"
         } else {
             "Checking for updates…"
         };
-        painter.text(
-            screen.center(),
-            Align2::CENTER_CENTER,
-            msg,
-            FontId::proportional(15.0),
-            t.txt_pri,
-        );
+        // An `Area`, not a bare layer painter: like the modal scrim this has to
+        // swallow pointer events, or the dimmed page keeps hovering and
+        // clicking through (known-issues KI-61). The eat-rect stops below the
+        // title bar so the window can still be moved, minimized or closed while
+        // a slow network check is in flight.
+        egui::Area::new(id)
+            .fixed_pos(screen.min)
+            .order(Order::Foreground)
+            .show(ctx, |ui| {
+                let painter = ui.painter();
+                painter.rect_filled(screen, 0.0, Color32::from_black_alpha(120));
+                painter.text(
+                    screen.center(),
+                    Align2::CENTER_CENTER,
+                    msg,
+                    FontId::proportional(15.0),
+                    t.txt_pri,
+                );
+                let below_titlebar = Rect::from_min_max(
+                    Pos2::new(screen.left(), screen.top() + TITLEBAR_H),
+                    screen.max,
+                );
+                ui.interact(below_titlebar, id.with("eat"), Sense::click_and_drag());
+            });
     }
 
     fn draw_about_page(
@@ -3538,20 +3551,29 @@ impl DiskoriaApp {
         }
     }
 
+    /// Something owns the screen: the page underneath must not take keyboard
+    /// focus, and its nav must not be reachable. The pointer half is handled by
+    /// the modal scrim (`modal_confirm::modal_scrim`).
+    ///
+    /// Every modal belongs in here. `show_update_staged_modal` was missing and
+    /// the update flow was `#[cfg(windows)]`-only, so the "Update ready" dialog
+    /// left the page behind it fully live on both platforms (known-issues
+    /// KI-61).
     fn blocks_content_interaction(&self) -> bool {
         let base = self.test_result_overlay.is_some()
             || self.show_stop_test_confirm
             || self.show_destructive_start_confirm
             || self.show_destructive_stop_confirm;
         let base = base || self.pending_chart_export.is_some();
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         {
             base
+                || self.show_update_staged_modal
                 || self.show_update_alert
                 || self.update_check_busy
                 || self.update_download_busy
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "linux")))]
         {
             base
         }
@@ -5977,6 +5999,14 @@ impl DiskoriaApp {
         }
         self.draw_sidebar(ctx, dark, mode);
         self.draw_central(ctx, dark, mode);
+        // A modal can be raised without the user asking — a finished background
+        // download puts up "Update ready" — so the menu has to be closed here as
+        // well as refused above. It is an `Order::Foreground` area and the scrim
+        // is `Order::Middle`, so left open it would stay live *under* the
+        // dialog. Same rule the rail overlay follows in `update_rail_hover`.
+        if self.blocks_content_interaction() {
+            self.nav_menu_open = false;
+        }
         if self.nav_menu_open {
             self.draw_nav_menu(ctx, dark);
         }

@@ -119,14 +119,17 @@ pub const CARD_TITLE_GAP: f32 = 12.0;
 
 const BG_PRI_L: Color32 = Color32::from_rgb(243, 243, 243);
 const BG_SEC_L: Color32 = Color32::from_rgb(255, 255, 255);
-const SB_BG_L: Color32 = Color32::from_rgb(249, 249, 249);
+/// Sidebar fill. Deliberately a bigger step away from the central panel
+/// (`BG_SEC_*`) than the 6/8-point nudge it started as: at that distance the nav
+/// column and the page read as one surface with a seam, rather than as two.
+const SB_BG_L: Color32 = Color32::from_rgb(238, 238, 238);
 const TXT_PRI_L: Color32 = Color32::from_rgb(26, 26, 26);
 const TXT_SEC_L: Color32 = Color32::from_rgb(92, 92, 92);
 const BORDER_L: Color32 = Color32::from_rgb(190, 190, 190);
 
 const BG_PRI_D: Color32 = Color32::from_rgb(32, 32, 32);
 const BG_SEC_D: Color32 = Color32::from_rgb(45, 45, 45);
-const SB_BG_D: Color32 = Color32::from_rgb(37, 37, 37);
+const SB_BG_D: Color32 = Color32::from_rgb(28, 28, 28);
 const TXT_PRI_D: Color32 = Color32::WHITE;
 const TXT_SEC_D: Color32 = Color32::from_rgb(158, 158, 158);
 const BORDER_D: Color32 = Color32::from_rgb(90, 90, 90);
@@ -172,6 +175,122 @@ pub fn text_on(accent: Color32) -> Color32 {
     }
 }
 
+/// Contrast the accent must clear against the surface it is drawn on, per theme.
+///
+/// The bars are deliberately different. On light, 3.0 is the same UI-component /
+/// large-text bar as [`MIN_ON_ACCENT_CONTRAST`] and only rescues accents that
+/// are genuinely invisible on white (a yellow, or the white Windows accent). On
+/// dark, a saturated mid-tone reads as muddy long before it fails a contrast
+/// test — the stock Windows blue `#0078D4` clears 3.0 against the card fill and
+/// still looks a stop too dark there — so the bar is the AA body-text 4.5, which
+/// lifts it about as far as Windows' own Light1 shade.
+const MIN_ACCENT_ON_SURFACE_D: f32 = 4.5;
+const MIN_ACCENT_ON_SURFACE_L: f32 = 3.0;
+
+/// The accent as the theme actually paints it.
+///
+/// Windows hands out one accent color and then never paints it raw: its dark
+/// theme uses a *lighter* shade of the accent palette and its light theme a
+/// darker one, because a color chosen to read on white is muddy on `#202020`.
+/// Diskoria used the raw value on both themes, so every accent-colored stroke,
+/// focus ring, icon and chart line sat a stop too dark in the dark theme
+/// (known-issues KI-62).
+///
+/// The shade is derived rather than read from `AccentPalette`, which is
+/// Windows-only and says nothing about the built-in palette or a custom hex:
+/// keep hue and saturation, move lightness until the color clears
+/// [`MIN_ACCENT_ON_SURFACE_D`] / [`MIN_ACCENT_ON_SURFACE_L`] against the most
+/// demanding surface the theme draws it on — the card fill on dark, the page
+/// fill on light. An accent that already clears its bar comes back untouched,
+/// which is why most of the palette is unchanged in the light theme.
+pub fn theme_accent(accent: Color32, dark: bool) -> Color32 {
+    let (surface, target) = if dark {
+        (BG_PRI_D, MIN_ACCENT_ON_SURFACE_D)
+    } else {
+        (BG_SEC_L, MIN_ACCENT_ON_SURFACE_L)
+    };
+    if contrast_ratio(accent, surface) >= target {
+        return accent;
+    }
+
+    // 1% lightness steps toward white (dark theme) or black (light theme). Both
+    // ends are always reachable — white on `BG_PRI_D` and black on `BG_SEC_L`
+    // are far past either bar — so the loop cannot fall off the end without a
+    // hit, and stepping keeps the result deterministic and testable.
+    let (h, s, l) = rgb_to_hsl(accent);
+    let mut out = accent;
+    for i in 1..=100 {
+        let step = i as f32 * 0.01;
+        let l2 = if dark {
+            (l + step).min(1.0)
+        } else {
+            (l - step).max(0.0)
+        };
+        out = hsl_to_rgb(h, s, l2);
+        if contrast_ratio(out, surface) >= target {
+            break;
+        }
+    }
+    out
+}
+
+/// sRGB → HSL, all components in `0..=1` (hue is a turn, not degrees).
+fn rgb_to_hsl(c: Color32) -> (f32, f32, f32) {
+    let (r, g, b) = (
+        c.r() as f32 / 255.0,
+        c.g() as f32 / 255.0,
+        c.b() as f32 / 255.0,
+    );
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) * 0.5;
+    if (max - min).abs() < f32::EPSILON {
+        return (0.0, 0.0, l);
+    }
+    let d = max - min;
+    let s = if l > 0.5 {
+        d / (2.0 - max - min)
+    } else {
+        d / (max + min)
+    };
+    let h = if max == r {
+        ((g - b) / d).rem_euclid(6.0)
+    } else if max == g {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    };
+    (h / 6.0, s, l)
+}
+
+/// HSL → sRGB, the inverse of [`rgb_to_hsl`].
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> Color32 {
+    if s <= 0.0 {
+        let v = (l * 255.0).round().clamp(0.0, 255.0) as u8;
+        return Color32::from_rgb(v, v, v);
+    }
+    let q = if l < 0.5 { l * (1.0 + s) } else { l + s - l * s };
+    let p = 2.0 * l - q;
+    let channel = |t: f32| -> u8 {
+        let t = t.rem_euclid(1.0);
+        let v = if t < 1.0 / 6.0 {
+            p + (q - p) * 6.0 * t
+        } else if t < 0.5 {
+            q
+        } else if t < 2.0 / 3.0 {
+            p + (q - p) * (2.0 / 3.0 - t) * 6.0
+        } else {
+            p
+        };
+        (v * 255.0).round().clamp(0.0, 255.0) as u8
+    };
+    Color32::from_rgb(
+        channel(h + 1.0 / 3.0),
+        channel(h),
+        channel(h - 1.0 / 3.0),
+    )
+}
+
 pub struct Theme {
     pub bg_pri: Color32,
     pub bg_sec: Color32,
@@ -182,14 +301,20 @@ pub struct Theme {
     /// Foreground for anything drawn *on top of* an accent fill — button
     /// captions, selected segmented-control labels, toggle knobs. Never use a
     /// hard-coded `Color32::WHITE` there: the accent can be any color the user
-    /// picks (or Windows reports), including white.
+    /// picks (or Windows reports), including white. Derived from the *painted*
+    /// accent, i.e. after [`theme_accent`], so a shade that lightened into
+    /// white-on-white territory flips to black.
     pub txt_on_accent: Color32,
     pub border: Color32,
     pub hover: Color32,
 }
 
 impl Theme {
+    /// `accent` is the *stored* accent — what the OS reported or the user
+    /// picked. The theme paints [`theme_accent`] of it, so every `Theme::new`
+    /// call site gets the per-theme shade without knowing about it.
     pub fn new(dark: bool, accent: Color32) -> Self {
+        let accent = theme_accent(accent, dark);
         let txt_on_accent = text_on(accent);
 
         if dark {
@@ -581,10 +706,114 @@ mod tests {
 
     #[test]
     fn theme_exposes_the_same_choice() {
+        // The choice is made against the *painted* accent, not the stored one:
+        // an accent the dark theme lightens can cross the white/black boundary.
         for &accent in crate::app_settings::ACCENT_PALETTE.iter() {
             for dark in [true, false] {
-                assert_eq!(Theme::new(dark, accent).txt_on_accent, text_on(accent));
+                let t = Theme::new(dark, accent);
+                assert_eq!(t.txt_on_accent, text_on(t.accent));
+                assert_eq!(t.accent, theme_accent(accent, dark));
             }
+        }
+    }
+
+    #[test]
+    fn hsl_round_trips() {
+        for c in [
+            Color32::from_rgb(0x00, 0x78, 0xD4),
+            Color32::from_rgb(0xF1, 0xC4, 0x0F),
+            Color32::from_rgb(0x2E, 0xCC, 0x71),
+            Color32::WHITE,
+            Color32::BLACK,
+            Color32::from_rgb(160, 160, 160),
+        ] {
+            let (h, s, l) = rgb_to_hsl(c);
+            let back = hsl_to_rgb(h, s, l);
+            for (a, b) in [(c.r(), back.r()), (c.g(), back.g()), (c.b(), back.b())] {
+                assert!(
+                    a.abs_diff(b) <= 1,
+                    "{c:?} round-tripped to {back:?} via ({h}, {s}, {l})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_accent_clears_its_bar_on_the_surface_it_is_drawn_on() {
+        // The point of the tint: whatever the user picks, the painted shade is
+        // legible as a stroke or an icon on the theme's most demanding surface.
+        let candidates: Vec<Color32> = crate::app_settings::ACCENT_PALETTE
+            .iter()
+            .copied()
+            .chain([
+                Color32::from_rgb(0x00, 0x78, 0xD4), // stock Windows blue
+                Color32::WHITE,                      // the "white" Windows accent
+                Color32::BLACK,
+            ])
+            .collect();
+        for accent in candidates {
+            let d = theme_accent(accent, true);
+            assert!(
+                contrast_ratio(d, BG_PRI_D) >= MIN_ACCENT_ON_SURFACE_D - 0.01,
+                "{accent:?} -> {d:?} still too dark on the dark card"
+            );
+            let l = theme_accent(accent, false);
+            assert!(
+                contrast_ratio(l, BG_SEC_L) >= MIN_ACCENT_ON_SURFACE_L - 0.01,
+                "{accent:?} -> {l:?} still too pale on the light page"
+            );
+        }
+    }
+
+    #[test]
+    fn an_accent_that_already_clears_its_bar_is_left_alone() {
+        // Only colors that fail get moved — the light theme must not repaint a
+        // palette the user already likes. Foxtrot/Waltz/Tango pass on light;
+        // Samba/Cha-Cha/Bossa Nova pass on dark.
+        let pal = crate::app_settings::ACCENT_PALETTE;
+        for &c in &[pal[0], pal[1], pal[6]] {
+            assert_eq!(theme_accent(c, false), c);
+        }
+        for &c in &[pal[1], pal[2], pal[3], pal[4]] {
+            assert_eq!(theme_accent(c, true), c);
+        }
+        // The stock Windows blue is the reported case: fine on light, a stop
+        // too dark on the dark card, so only the dark theme moves it.
+        let win = Color32::from_rgb(0x00, 0x78, 0xD4);
+        assert_eq!(theme_accent(win, false), win);
+        assert_ne!(theme_accent(win, true), win);
+    }
+
+    #[test]
+    fn the_tint_keeps_the_hue_it_was_given() {
+        // A lightened blue must still be blue — a tint that drifts hue would
+        // quietly repaint the user's accent as a different color.
+        for &accent in crate::app_settings::ACCENT_PALETTE.iter() {
+            let (h, s, _) = rgb_to_hsl(accent);
+            if s < 0.05 {
+                continue; // gray has no meaningful hue
+            }
+            for dark in [true, false] {
+                let (h2, _, _) = rgb_to_hsl(theme_accent(accent, dark));
+                let d = (h2 - h).abs().min(1.0 - (h2 - h).abs());
+                assert!(d < 0.02, "hue drifted {d} for {accent:?} (dark={dark})");
+            }
+        }
+    }
+
+    #[test]
+    fn the_sidebar_is_visibly_a_different_surface_from_the_page() {
+        // The nav column has to read as its own surface. Both themes keep the
+        // sidebar on the far side of the page fill from mid-gray, so the step
+        // has a direction as well as a size.
+        for dark in [true, false] {
+            let t = Theme::new(dark, Color32::from_rgb(0x00, 0x78, 0xD4));
+            let step = (t.sb_bg.r() as i32 - t.bg_sec.r() as i32).abs();
+            assert!(step >= 12, "sidebar/page step is only {step} (dark={dark})");
+            assert!(
+                t.sb_bg.r() < t.bg_sec.r(),
+                "sidebar should recede, not advance (dark={dark})"
+            );
         }
     }
 }

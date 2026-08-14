@@ -226,6 +226,25 @@ underlines, so the app drives focus with explicit "focus slots"
 automatic focus traversal. `modal_confirm.rs` implements its own two-/one-button
 modal focus handling for the same reason.
 
+**Modal input blocking (KI-61)** — a dim is not a block. Painting a full-window
+rect from an `Area`'s painter allocates nothing, so egui's hit-test still hands
+hovers and clicks to the layers behind it; tooltips from controls under the
+dialog were the visible symptom. `modal_confirm::modal_scrim` puts one
+full-window `Sense::click_and_drag` widget in the overlay's layer, which is what
+makes egui drop the layers behind (`hit_test.rs` keeps only the layers hit
+before something covers the whole hit-area). Two rules follow from the layer
+choice:
+
+- The scrim is `Order::Middle`, **below** the `Order::Foreground` title bar, so a
+  modal can never trap the window with no way to move, minimize or close it. The
+  update busy overlay is Foreground and so stops its eat-rect below `TITLEBAR_H`
+  by hand.
+- Anything else at `Order::Foreground` — the rail hover overlay, the mobile nav
+  menu — floats *above* the scrim, so each is closed when
+  `DiskoriaApp::blocks_content_interaction()` goes true rather than being left
+  live under the dialog. That predicate is the keyboard/nav half of the same
+  rule and every modal flag belongs in it.
+
 ---
 
 ## 6. Repaint model (the subtle part)

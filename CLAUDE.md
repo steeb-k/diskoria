@@ -92,7 +92,11 @@ assets/                appicon2.ico (window + notification icon, About page —
   black or white) — never a hard-coded `Color32::WHITE`; the accent can be any
   color, including white (known-issues KI-19). **Keyboard focus rings are always
   `Stroke::new(2.0, t.accent)`** at `rect.expand(2..3)` — white rings vanish on
-  the light theme's white cards (KI-21).
+  the light theme's white cards (KI-21). `t.accent` is **not** the stored accent:
+  `Theme::new` runs it through `theme_accent`, which lightens for dark and
+  darkens for light until it clears the surface it is drawn on, the way Windows
+  paints its own Light/Dark accent shades (KI-62). Paint with `t.accent`; the raw
+  `shared.accent_color()` is for *storing* and for the Settings swatches only.
 - **`card.rs`** — `CardLayout`, the builder every stacked card goes through.
   Rows are handed out by `row()` while it accumulates the real height; the frame
   is painted last into placeholder shapes reserved at `begin()`; `end()` does the

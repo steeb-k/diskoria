@@ -1142,3 +1142,54 @@ Condensed; see git history for full detail.
   the user's accent nor any palette entry. `self.shared` is in scope at all three
   sites and `SharedAppState::accent_color()` is always populated, so the fallback
   was never needed: all three now read it directly.
+- **KI-61 — Modal overlays dimmed the window without blocking it** `bug`. Found
+  the moment the "Update ready" dialog appeared over the Drive Health page:
+  hovering an attribute card *behind* the dialog still popped its tooltip, over
+  the top of the dialog, from a control the user could not reach. Two causes,
+  both in the same feature. **(a)** `modal_confirm`'s overlay `Area` painted the
+  dim with `ui.painter().rect_filled(screen, …)`, which allocates nothing — so
+  egui's hit-test saw a zero-sized layer and kept handing hovers, clicks and
+  drags to the layers behind it. Every one of Diskoria's tooltips is drawn from
+  a `Response::hovered()` (`smart_health_page`, `about`, the accent swatches,
+  `drive_selector`), so all of them leaked. **(b)** `blocks_content_interaction`
+  — the keyboard half of the same rule — never listed `show_update_staged_modal`
+  at all, and its update arm was `#[cfg(windows)]` while the update flow itself
+  is `#[cfg(any(windows, target_os = "linux"))]`, so on Linux none of it applied.
+  Fixed by `modal_confirm::modal_scrim`, one full-window `Sense::click_and_drag`
+  widget in the overlay's own layer (egui drops every layer behind a hit that
+  covers the whole hit-area — `hit_test.rs`, `included_layers`), used by both the
+  one- and two-button modals and by the update busy overlay; plus the missing
+  entry and the widened `cfg`. `Order::Middle` is deliberate: the title bar is an
+  `Order::Foreground` area, so a modal never traps the window with no way to
+  move, minimize or close it, and the busy overlay's eat-rect starts below
+  `TITLEBAR_H` for the same reason. The mobile nav menu is `Order::Foreground`
+  too — refusing to *open* it under a modal was not enough, since a background
+  download can raise one while it is already open, so `draw` now closes it the
+  way `update_rail_hover` closes the rail overlay. Covered by a headless
+  three-pass `egui::Context` probe in `modal_confirm` (three, not two: an `Area`
+  has no size until after its first layout).
+- **KI-62 — The OS accent was painted raw in both themes** `bug`. Windows hands
+  out one accent color and then never uses it raw — its dark theme paints a
+  lighter shade of the accent palette and its light theme a darker one, because
+  a color picked to read on white is muddy on `#202020`. `Theme::new` took the
+  stored value as-is, so on dark every accent stroke, focus ring, icon and chart
+  line sat a stop too dark: the stock `#0078D4` clears only 3.6 against the card
+  fill. Fixed with `theme::theme_accent`, applied inside `Theme::new` so all
+  fifteen call sites (including the tray flyout and both context menus) get the
+  shade without knowing about it: keep hue and saturation, step lightness until
+  the color clears 4.5 against `BG_PRI_D` on dark or 3.0 against `BG_SEC_L` on
+  light. Derived rather than read from `HKCU\…\Explorer\Accent\AccentPalette`,
+  which is Windows-only and says nothing about the built-in palette or a custom
+  hex. The bars are deliberately asymmetric — the light bar is the same
+  UI-component 3.0 as `MIN_ON_ACCENT_CONTRAST` and only rescues accents that are
+  invisible on white (Cha-Cha yellow, the white Windows accent), so a light theme
+  the user already likes is not repainted. `txt_on_accent` is computed from the
+  *painted* shade, so a lightened accent that crosses into white-on-white
+  territory still flips its caption to black. The Settings swatches keep showing
+  the stored color — that is the palette entry's identity, and what its tooltip
+  and the custom-hex field report.
+- **Sidebar/content contrast** (not a bug — logged so the numbers are not
+  "fixed" back). `SB_BG_D`/`SB_BG_L` were 8 and 6 points from the central
+  panel's fill, close enough that the nav column read as the same surface with a
+  seam through it. Now 17 points on both themes, and on the same side of the
+  page fill (darker) in both, asserted in `theme::tests`.
