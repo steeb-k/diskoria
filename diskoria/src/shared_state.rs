@@ -163,7 +163,9 @@ impl SharedAppState {
                 || before.poll_interval_mins != guard.poll_interval_mins
                 || before.alert_temp_warn != guard.alert_temp_warn
                 || before.alert_temp_critical != guard.alert_temp_critical
-                || before.alert_wear_threshold != guard.alert_wear_threshold;
+                || before.alert_wear_threshold != guard.alert_wear_threshold
+                // Changes which drives the thread polls, so it has to respawn.
+                || before.tray_usb_drives != guard.tray_usb_drives;
             (r, restart_monitor, guard.clone())
         };
         // Persist *outside* the guard. Every window reads settings during

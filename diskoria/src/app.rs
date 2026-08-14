@@ -543,6 +543,8 @@ pub struct DiskoriaApp {
     #[cfg(any(windows, target_os = "linux"))]
     pub(crate) poll_interval_mins: u8,
     #[cfg(any(windows, target_os = "linux"))]
+    pub(crate) tray_usb_drives: bool,
+    #[cfg(any(windows, target_os = "linux"))]
     pub(crate) alert_temp_warn: i32,
     #[cfg(any(windows, target_os = "linux"))]
     pub(crate) alert_temp_critical: i32,
@@ -786,6 +788,8 @@ impl DiskoriaApp {
             monitoring_enabled: s.monitoring_enabled,
             #[cfg(any(windows, target_os = "linux"))]
             poll_interval_mins: s.poll_interval_mins,
+            #[cfg(any(windows, target_os = "linux"))]
+            tray_usb_drives: s.tray_usb_drives,
             #[cfg(any(windows, target_os = "linux"))]
             alert_temp_warn: s.alert_temp_warn,
             #[cfg(any(windows, target_os = "linux"))]
@@ -1676,13 +1680,14 @@ impl DiskoriaApp {
             self.alert_temp_warn,
             self.alert_temp_critical,
             self.alert_wear_threshold,
+            self.tray_usb_drives,
         );
-        // Only internal drives are polled (see monitor::spawn_monitor_thread);
+        // Only the polled drives are counted (see monitor::spawn_monitor_thread);
         // logging the full list overstated it on machines with USB drives.
         let drive_count = self
             .drives
             .iter()
-            .filter(|d| matches!(d.bus, BusKind::Nvme | BusKind::Sata | BusKind::Ufs))
+            .filter(|d| d.is_monitored(self.tray_usb_drives))
             .count();
         self.shared.set_monitor_running(rx, cancel);
         log::info!(
@@ -2735,7 +2740,7 @@ impl DiskoriaApp {
             self.smart_health_rx = Some(rx);
             let ctx2 = ctx.clone();
             std::thread::spawn(move || {
-                let r = crate::smart_health::query_smart_health(disk, &pnp_id);
+                let r = crate::smart_health::query_smart_health(disk, &pnp_id, &device_id, bus);
                 // NVMe/UFS don't expose ATA SMART predict-fail; derive a health %
                 // (100 − wear) from the device's health log instead.
                 let health_pct = if matches!(bus, BusKind::Nvme | BusKind::Ufs) {
@@ -3558,12 +3563,16 @@ impl DiskoriaApp {
         // by every `update_settings` call; this covers the still-local monitor
         // fields (step 3 will migrate them too).
         self.shared.update_settings(|s| {
-            #[cfg(not(windows))]
+            #[cfg(not(any(windows, target_os = "linux")))]
             let _ = s;
-            #[cfg(windows)]
+            // Both platforms that have the drafts must write them back. Linux
+            // was excluded here while it still read them in `draw()`, so every
+            // monitoring edit was reverted a frame later (known-issues KI-59).
+            #[cfg(any(windows, target_os = "linux"))]
             {
                 s.monitoring_enabled = self.monitoring_enabled;
                 s.poll_interval_mins = self.poll_interval_mins;
+                s.tray_usb_drives = self.tray_usb_drives;
                 s.alert_temp_warn = self.alert_temp_warn;
                 s.alert_temp_critical = self.alert_temp_critical;
                 s.alert_wear_threshold = self.alert_wear_threshold;
@@ -3589,8 +3598,9 @@ impl DiskoriaApp {
         #[cfg(any(windows, target_os = "linux"))]
         {
             if self.shared.pro_edition {
-                // toggle(1) + poll segments(4) + (if enabled: warn+crit+wear sliders(3) + test buttons(2))
-                if self.monitoring_enabled { 10 } else { 5 }
+                // toggle(1) + poll segments(4) + USB tray toggle(1)
+                // + (if enabled: warn+crit+wear sliders(3) + test buttons(2))
+                if self.monitoring_enabled { 11 } else { 6 }
             } else {
                 0
             }
@@ -4048,7 +4058,12 @@ impl DiskoriaApp {
                     Stroke::new(1.0_f32, t.border),
                 );
 
-                let picked = ui
+                // Picking a row deliberately does *not* close the overlay: it
+                // stays until the pointer leaves, like every other hover-opened
+                // panel. Closing on click yanked the labels out from under a
+                // pointer that had not moved, so a second choice meant hovering
+                // the rail and waiting out the open delay again.
+                let _ = ui
                     .scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
                         ui.add_space(TITLEBAR_H + 8.0);
                         // Icon stays at rail width so it doesn't jump sideways
@@ -4066,13 +4081,6 @@ impl DiskoriaApp {
                         self.draw_nav_list(ctx, ui, t, dark, RAIL_FLYOUT_W, NavRowStyle::Labeled)
                     })
                     .inner;
-                if picked {
-                    // Collapse straight away rather than waiting for the
-                    // pointer to leave — the page behind is what the user just
-                    // asked to look at.
-                    self.nav_rail_expanded = false;
-                    self.nav_rail_since = None;
-                }
             });
     }
 
@@ -5798,6 +5806,7 @@ impl DiskoriaApp {
             let s = self.shared.settings_snapshot();
             self.monitoring_enabled = s.monitoring_enabled;
             self.poll_interval_mins = s.poll_interval_mins;
+            self.tray_usb_drives = s.tray_usb_drives;
             self.alert_temp_warn = s.alert_temp_warn;
             self.alert_temp_critical = s.alert_temp_critical;
             self.alert_wear_threshold = s.alert_wear_threshold;
@@ -6524,7 +6533,8 @@ impl DiskoriaApp {
             .begin(ui, t);
         let inner_x = card.inner_x();
 
-        // Monitoring slot numbering: M+0=toggle, M+1..4=poll segs, M+5=warn, M+6=crit, M+7=wear, M+8=test_warn, M+9=test_crit
+        // Monitoring slot numbering: M+0=toggle, M+1..4=poll segs, M+5=USB tray,
+        // M+6=warn, M+7=crit, M+8=wear, M+9=test_warn, M+10=test_crit
         let m = self.settings_monitoring_slot_start();
 
         // ── Monitoring enabled toggle ───────────────────────────────────────
@@ -6623,6 +6633,49 @@ impl DiskoriaApp {
             }
         }
 
+        // ── USB drives in the tray ──────────────────────────────────────────
+        // Above the monitoring-off early return, like the poll interval: it
+        // describes which drives are watched, not how hard they are watched.
+        {
+            let row_rect = card.row(row_h);
+            let toggle_rect = Rect::from_min_size(
+                Pos2::new(card.right() - card.pad() - 44.0, row_rect.top() + (row_h - 24.0) / 2.0),
+                Vec2::new(44.0, 24.0),
+            );
+            let focused = self.settings_focus == Some(m + 5);
+
+            ui.painter().text(
+                Pos2::new(inner_x, row_rect.center().y),
+                Align2::LEFT_CENTER,
+                "Show USB drives in the tray",
+                FontId::new(13.0, egui::FontFamily::Proportional),
+                t.txt_pri,
+            );
+
+            let toggle_resp = ui.interact(toggle_rect, Id::new("tray_usb_toggle"), Sense::click());
+            crate::widgets::paint_toggle(ui, t, toggle_rect, self.tray_usb_drives);
+
+            let kb = page_keys && keyboard_activate(ui, focused);
+            if toggle_resp.clicked() || kb {
+                self.tray_usb_drives = !self.tray_usb_drives;
+                // The same switch governs the background poll — a tray icon
+                // with no temperature behind it is worse than no icon — so the
+                // monitor has to respawn with the new drive set. That is
+                // handled by `update_settings`, which detects the change.
+                self.save_app_settings();
+                self.shared.mark_drive_icons_dirty();
+            }
+            if focused {
+                ui.painter().rect_stroke(
+                    toggle_rect.expand(3.0),
+                    14.0,
+                    Stroke::new(2.0_f32, t.accent),
+                    StrokeKind::Outside,
+                );
+            }
+            scroll_to_focused(&mut self.pending_scroll_rect, row_rect, focused, self.scroll_focus_frames > 0);
+        }
+
         if !self.monitoring_enabled {
             card.end(ui);
             return;
@@ -6630,7 +6683,7 @@ impl DiskoriaApp {
 
         // ── Temp warn threshold ─────────────────────────────────────────────
         {
-            let focused = self.settings_focus == Some(m + 5);
+            let focused = self.settings_focus == Some(m + 6);
             let row_rect = card.row(row_h);
             let label = format!("Temperature warning  ({}°C)", self.alert_temp_warn);
             ui.painter().text(
@@ -6683,7 +6736,7 @@ impl DiskoriaApp {
 
         // ── Temp critical threshold ─────────────────────────────────────────
         {
-            let focused = self.settings_focus == Some(m + 6);
+            let focused = self.settings_focus == Some(m + 7);
             let row_rect = card.row(row_h);
             let label = format!("Temperature critical  ({}°C)", self.alert_temp_critical);
             ui.painter().text(
@@ -6737,7 +6790,7 @@ impl DiskoriaApp {
 
         // ── Wear threshold ──────────────────────────────────────────────────
         {
-            let focused = self.settings_focus == Some(m + 7);
+            let focused = self.settings_focus == Some(m + 8);
             let row_rect = card.row(row_h);
             let label = format!("Wear level alert  ({}%)", self.alert_wear_threshold);
             ui.painter().text(
@@ -6788,8 +6841,8 @@ impl DiskoriaApp {
 
         // ── Test notifications ──────────────────────────────────────────────
         {
-            let warn_focused = self.settings_focus == Some(m + 8);
-            let crit_focused = self.settings_focus == Some(m + 9);
+            let warn_focused = self.settings_focus == Some(m + 9);
+            let crit_focused = self.settings_focus == Some(m + 10);
             let row_rect = card.row(row_h);
             ui.painter().text(
                 Pos2::new(inner_x, row_rect.top() + row_h / 2.0 - 7.0),
@@ -6920,6 +6973,18 @@ mod rail_hover_tests {
         let s = rail_hover_step(true, true, Some(t0), t0);
         assert!(s.expanded);
         assert_eq!(s.since, None);
+    }
+
+    #[test]
+    fn picking_a_row_leaves_the_overlay_open() {
+        // `draw_rail_flyout` used to collapse the panel on click. Nothing in
+        // the state machine ever asked for that: with the pointer still on the
+        // panel the only correct answer is "stay open", and the click path must
+        // not overrule it. Only the pointer leaving closes the overlay.
+        let t0 = Instant::now();
+        let s = rail_hover_step(true, true, None, t0);
+        assert!(s.expanded);
+        assert_eq!(s.repaint_in, None, "nothing pending, so no frame to book");
     }
 
     #[test]

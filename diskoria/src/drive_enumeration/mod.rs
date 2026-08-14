@@ -16,8 +16,6 @@ pub use windows::enumerate_physical_disks;
 mod linux;
 #[cfg(target_os = "linux")]
 pub use linux::enumerate_physical_disks;
-#[cfg(target_os = "linux")]
-pub(crate) use linux::bus_from_syspath;
 
 #[cfg(not(any(windows, target_os = "linux")))]
 pub fn enumerate_physical_disks() -> Result<Vec<crate::detected_drive::DetectedDrive>, String> {

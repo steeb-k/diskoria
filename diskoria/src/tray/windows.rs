@@ -126,16 +126,19 @@ impl TrayManager {
 
     /// Rebuild per-drive tray icons from the current drive list.
     /// Only includes NVMe and SATA drives (no USB/UFS).
-    pub fn rebuild_drive_icons(&mut self, drives: &[DetectedDrive]) {
-        use crate::detected_drive::BusKind;
-
+    /// Refresh the monitored-drive set. `include_usb` is
+    /// `Settings::tray_usb_drives` — off by default, because an external drive
+    /// that gets unplugged would otherwise leave the notification area
+    /// rearranging itself. It must match what the monitor polls, or a USB icon
+    /// would sit there permanently grey.
+    pub fn rebuild_drive_icons(&mut self, drives: &[DetectedDrive], include_usb: bool) {
         // Drop existing drive icons first (removes them from the tray).
         self.drive_icons.clear();
         self.last_temps.clear();
         self.flash_states.clear();
 
         for drive in drives {
-            if !matches!(drive.bus, BusKind::Nvme | BusKind::Sata) {
+            if !drive.is_monitored(include_usb) {
                 continue;
             }
 

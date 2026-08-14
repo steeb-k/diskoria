@@ -421,23 +421,221 @@ pub(crate) fn parse_ufs_health_descriptor(desc: &[u8]) -> SmartReport {
     })
 }
 
+// ── ATA command descriptor blocks (SAT) ──────────────────────────────────────
+//
+// Both platforms speak ATA to a SCSI transport the same way — Linux through
+// `SG_IO`, Windows through `IOCTL_SCSI_PASS_THROUGH_DIRECT` — so the CDBs
+// themselves are shared pure logic. A USB-SATA bridge that implements SAT
+// forwards these unchanged, which is how SMART and IDENTIFY reach a drive in
+// an external enclosure.
+
+/// ATA PASS-THROUGH (16) CDB for a 512-byte PIO Data-In command.
+/// `feature` and `command` are the ATA register values; the SMART magic
+/// (`0x4F`/`0xC2`) only matters for the SMART command and is harmless
+/// elsewhere, so it is set by the caller-facing wrappers below.
+fn ata16_pio_in_cdb(feature: u8, command: u8, lba_mid: u8, lba_high: u8) -> [u8; 16] {
+    let mut cdb = [0u8; 16];
+    cdb[0] = 0x85; // ATA PASS-THROUGH (16)
+    cdb[1] = 4 << 1; // protocol: PIO Data-In
+    cdb[2] = 0x0E; // T_DIR=in, BYT_BLOK=blocks, T_LENGTH=sector count field
+    cdb[4] = feature; // FEATURES
+    cdb[6] = 0x01; // SECTOR_COUNT = 1
+    cdb[10] = lba_mid;
+    cdb[12] = lba_high;
+    cdb[13] = 0xA0; // DEVICE
+    cdb[14] = command;
+    cdb
+}
+
+/// The 12-byte form of the same command. Some older USB bridges implement only
+/// ATA PASS-THROUGH (12), so the Windows transport retries with this shape.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn ata12_pio_in_cdb(feature: u8, command: u8, lba_mid: u8, lba_high: u8) -> [u8; 12] {
+    let mut cdb = [0u8; 12];
+    cdb[0] = 0xA1; // ATA PASS-THROUGH (12)
+    cdb[1] = 4 << 1; // protocol: PIO Data-In
+    cdb[2] = 0x0E; // T_DIR=in, BYT_BLOK=blocks, T_LENGTH=sector count field
+    cdb[3] = feature; // FEATURES
+    cdb[4] = 0x01; // SECTOR_COUNT = 1
+    cdb[6] = lba_mid;
+    cdb[7] = lba_high;
+    cdb[8] = 0xA0; // DEVICE
+    cdb[9] = command;
+    cdb
+}
+
+/// SMART READ DATA (`0xD0`) / READ THRESHOLDS (`0xD1`), 16-byte CDB.
+pub(crate) fn ata16_smart_cdb(feature: u8) -> [u8; 16] {
+    ata16_pio_in_cdb(feature, 0xB0, 0x4F, 0xC2)
+}
+
+/// SMART READ DATA / READ THRESHOLDS, 12-byte CDB.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn ata12_smart_cdb(feature: u8) -> [u8; 12] {
+    ata12_pio_in_cdb(feature, 0xB0, 0x4F, 0xC2)
+}
+
+/// IDENTIFY DEVICE (`0xEC`), 16-byte CDB.
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+pub(crate) fn ata16_identify_cdb() -> [u8; 16] {
+    ata16_pio_in_cdb(0x00, 0xEC, 0x00, 0x00)
+}
+
+/// IDENTIFY DEVICE, 12-byte CDB.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn ata12_identify_cdb() -> [u8; 12] {
+    ata12_pio_in_cdb(0x00, 0xEC, 0x00, 0x00)
+}
+
+/// CHECK POWER MODE (`0xE5`), 16-byte CDB.
+///
+/// A **non-data** command — the answer arrives in the output SECTOR_COUNT
+/// register rather than a payload — so the CDB sets `CK_COND`, which makes the
+/// translator return the ATA register block as sense data. The command is
+/// answered by the drive's electronics and does **not** spin the medium up,
+/// which is the whole reason to send it before anything else.
+pub(crate) fn ata16_check_power_mode_cdb() -> [u8; 16] {
+    let mut cdb = [0u8; 16];
+    cdb[0] = 0x85; // ATA PASS-THROUGH (16)
+    cdb[1] = 3 << 1; // protocol: Non-data
+    cdb[2] = 0x20; // CK_COND; T_LENGTH = 0, no transfer
+    cdb[13] = 0xA0; // DEVICE
+    cdb[14] = 0xE5; // COMMAND = CHECK POWER MODE
+    cdb
+}
+
+/// CHECK POWER MODE, 12-byte CDB.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn ata12_check_power_mode_cdb() -> [u8; 12] {
+    let mut cdb = [0u8; 12];
+    cdb[0] = 0xA1; // ATA PASS-THROUGH (12)
+    cdb[1] = 3 << 1; // protocol: Non-data
+    cdb[2] = 0x20; // CK_COND
+    cdb[8] = 0xA0; // DEVICE
+    cdb[9] = 0xE5; // COMMAND = CHECK POWER MODE
+    cdb
+}
+
+// ── IDENTIFY DEVICE parsing ──────────────────────────────────────────────────
+
+/// What IDENTIFY DEVICE word 217 says about the medium — the drive's own
+/// answer to "do you spin?", and the only trustworthy one for a disk behind a
+/// USB bridge (`MSFT_PhysicalDisk.MediaType` reports Unspecified for those,
+/// and the seek-penalty ioctl is not forwarded).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RotationRate {
+    /// Word 217 == 1: solid state, no moving parts.
+    NonRotating,
+    /// Word 217 in `0x0401..=0xFFFE`: nominal spindle speed in RPM.
+    Rpm(u16),
+}
+
+/// Read word 217 out of a 512-byte IDENTIFY DEVICE payload.
+///
+/// Returns `None` when the drive does not report a rate (word 217 == 0), when
+/// the value falls in the reserved `0x0002..=0x0400` gap, or for the reserved
+/// `0xFFFF` — an unknown answer must not be mistaken for a known one.
+pub(crate) fn rotation_rate_from_identify(identify: &[u8]) -> Option<RotationRate> {
+    // Word 217 sits at byte offset 217 * 2, little-endian.
+    let lo = *identify.get(434)? as u16;
+    let hi = *identify.get(435)? as u16;
+    match lo | (hi << 8) {
+        0x0001 => Some(RotationRate::NonRotating),
+        w @ 0x0401..=0xFFFE => Some(RotationRate::Rpm(w)),
+        _ => None,
+    }
+}
+
+// ── CHECK POWER MODE parsing ─────────────────────────────────────────────────
+
+/// What the drive says about its own power state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PowerMode {
+    /// Spun down. Any command that touches the medium spins it back up, so a
+    /// health poll is deferred rather than paid for in a spin-up and a load
+    /// cycle (known-issues KI-58).
+    Standby,
+    /// Spun up, doing nothing. Reading SMART costs nothing mechanical.
+    Idle,
+    Active,
+    /// The drive did not answer, or the transport did not return the register
+    /// block. Callers must treat this as "go ahead" — refusing to poll on a
+    /// missing answer would silently stop monitoring on every bridge that
+    /// does not implement `CK_COND`.
+    Unknown,
+}
+
+/// Map the ATA output SECTOR_COUNT register of CHECK POWER MODE (ACS-4 7.10).
+pub(crate) fn power_mode_from_sector_count(count: u8) -> PowerMode {
+    match count {
+        // 0x00 Standby; 0x40 NV Cache power mode, spindle spun down.
+        0x00 | 0x40 => PowerMode::Standby,
+        // 0x80..=0x83 are the Idle variants (Idle, Idle_a, Idle_b, Idle_c).
+        0x80..=0x83 => PowerMode::Idle,
+        // 0x41 NV Cache, spindle spun up; 0xFF Active or Idle.
+        0x41 | 0xFF => PowerMode::Active,
+        _ => PowerMode::Unknown,
+    }
+}
+
+/// Pull the ATA output SECTOR_COUNT out of descriptor-format sense data.
+///
+/// With `CK_COND` set, SAT returns the ATA register block as an **ATA Status
+/// Return descriptor** (code `0x09`) inside descriptor-format sense (SPC-4
+/// §4.5.2). Byte 5 of that descriptor is SECTOR_COUNT (7:0). Fixed-format
+/// sense (response code `0x70`/`0x71`) carries no register block in any layout
+/// worth guessing at, so it yields `None` and the caller polls anyway.
+pub(crate) fn ata_sector_count_from_sense(sense: &[u8]) -> Option<u8> {
+    if !matches!(sense.first()? & 0x7F, 0x72 | 0x73) {
+        return None;
+    }
+    // Byte 7 is the additional sense length; descriptors start at byte 8.
+    let end = (8 + *sense.get(7)? as usize).min(sense.len());
+    let mut i = 8;
+    while i + 2 <= end {
+        let (code, len) = (sense[i], sense[i + 1] as usize);
+        if code == 0x09 && i + 6 <= end {
+            return Some(sense[i + 5]);
+        }
+        if len == 0 {
+            // A zero-length descriptor would never advance the cursor.
+            break;
+        }
+        i += len + 2;
+    }
+    None
+}
+
 // ── Platform transports ──────────────────────────────────────────────────────
 
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use windows::query_smart_detail;
+pub use windows::{nominal_rotation_rate, power_mode, query_smart_detail};
 
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
-pub use linux::query_smart_detail;
+pub use linux::{nominal_rotation_rate, power_mode, query_smart_detail};
 
 #[cfg(not(any(windows, target_os = "linux")))]
 pub fn query_smart_detail(_device_path: &str, _bus: crate::detected_drive::BusKind) -> SmartReport {
     SmartReport::Unavailable {
         reason: "SMART queries are not implemented on this platform.".to_string(),
     }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+pub fn nominal_rotation_rate(
+    _device_path: &str,
+    _bus: crate::detected_drive::BusKind,
+) -> Option<RotationRate> {
+    None
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+pub fn power_mode(_device_path: &str, _bus: crate::detected_drive::BusKind) -> PowerMode {
+    PowerMode::Unknown
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -615,21 +813,192 @@ mod tests {
             SmartReport::Unavailable { .. }
         ));
     }
+
+    #[test]
+    fn ata16_cdb_shape() {
+        let cdb = ata16_smart_cdb(0xD0);
+        assert_eq!(cdb[0], 0x85);
+        assert_eq!(cdb[1], 0x08); // PIO Data-In
+        assert_eq!(cdb[2], 0x0E);
+        assert_eq!(cdb[4], 0xD0);
+        assert_eq!(cdb[6], 1);
+        assert_eq!((cdb[10], cdb[12]), (0x4F, 0xC2)); // SMART magic
+        assert_eq!(cdb[14], 0xB0);
+
+        let id = ata16_identify_cdb();
+        assert_eq!(id[0], 0x85);
+        assert_eq!(id[14], 0xEC);
+        // IDENTIFY takes no SMART magic — a bridge that checks it would reject
+        // the command outright.
+        assert_eq!((id[10], id[12]), (0x00, 0x00));
+    }
+
+    #[test]
+    fn ata12_cdb_shape() {
+        let cdb = ata12_smart_cdb(0xD1);
+        assert_eq!(cdb[0], 0xA1);
+        assert_eq!(cdb[1], 0x08);
+        assert_eq!(cdb[2], 0x0E);
+        assert_eq!(cdb[3], 0xD1); // FEATURES sits one byte earlier than in the 16-byte form
+        assert_eq!(cdb[4], 1);
+        assert_eq!((cdb[6], cdb[7]), (0x4F, 0xC2));
+        assert_eq!(cdb[9], 0xB0);
+
+        assert_eq!(ata12_identify_cdb()[9], 0xEC);
+    }
+
+    fn identify_with_word217(w: u16) -> [u8; 512] {
+        let mut id = [0u8; 512];
+        id[434] = (w & 0xFF) as u8;
+        id[435] = (w >> 8) as u8;
+        id
+    }
+
+    #[test]
+    fn rotation_rate_reads_word_217() {
+        assert_eq!(
+            rotation_rate_from_identify(&identify_with_word217(0x0001)),
+            Some(RotationRate::NonRotating)
+        );
+        // The 4 TB USB drive that started this: a 5400-class 2.5" spinner.
+        assert_eq!(
+            rotation_rate_from_identify(&identify_with_word217(5526)),
+            Some(RotationRate::Rpm(5526))
+        );
+        assert_eq!(
+            rotation_rate_from_identify(&identify_with_word217(7200)),
+            Some(RotationRate::Rpm(7200))
+        );
+    }
+
+    #[test]
+    fn check_power_mode_cdb_is_non_data_with_ck_cond() {
+        let cdb = ata16_check_power_mode_cdb();
+        assert_eq!(cdb[0], 0x85);
+        assert_eq!(cdb[1], 0x06, "protocol 3 (Non-data) << 1");
+        // CK_COND set, T_LENGTH zero — asking for the registers, not a payload.
+        assert_eq!(cdb[2], 0x20);
+        assert_eq!(cdb[6], 0, "a non-data command transfers no sectors");
+        assert_eq!(cdb[14], 0xE5);
+
+        let cdb12 = ata12_check_power_mode_cdb();
+        assert_eq!(cdb12[0], 0xA1);
+        assert_eq!((cdb12[1], cdb12[2]), (0x06, 0x20));
+        assert_eq!(cdb12[9], 0xE5);
+    }
+
+    /// Descriptor-format sense carrying an ATA Status Return descriptor, with
+    /// `count` in the SECTOR_COUNT (7:0) byte.
+    fn sense_with_sector_count(count: u8) -> Vec<u8> {
+        let mut s = vec![
+            0x72, // current, descriptor format
+            0x01, // sense key: RECOVERED ERROR
+            0x00, // ASC
+            0x1D, // ASCQ: ATA PASS THROUGH INFORMATION AVAILABLE
+            0x00, 0x00, 0x00, // reserved
+            14,   // additional sense length: one 14-byte descriptor
+        ];
+        s.extend_from_slice(&[
+            0x09, 0x0C, // ATA Status Return descriptor, length 12
+            0x00, // flags (EXTEND clear)
+            0x00, // ERROR
+            0x00, count, // SECTOR_COUNT (15:8), (7:0)
+            0x00, 0x00, // LBA_LOW
+            0x00, 0x00, // LBA_MID
+            0x00, 0x00, // LBA_HIGH
+            0xA0, // DEVICE
+            0x50, // STATUS
+        ]);
+        s
+    }
+
+    #[test]
+    fn power_mode_reads_the_returned_register() {
+        assert_eq!(
+            ata_sector_count_from_sense(&sense_with_sector_count(0x00)),
+            Some(0x00)
+        );
+        assert_eq!(
+            ata_sector_count_from_sense(&sense_with_sector_count(0xFF)),
+            Some(0xFF)
+        );
+    }
+
+    #[test]
+    fn power_mode_classifies_the_sector_count() {
+        assert_eq!(power_mode_from_sector_count(0x00), PowerMode::Standby);
+        // NV cache with the spindle stopped is still a drive we must not wake.
+        assert_eq!(power_mode_from_sector_count(0x40), PowerMode::Standby);
+        for idle in [0x80, 0x81, 0x82, 0x83] {
+            assert_eq!(power_mode_from_sector_count(idle), PowerMode::Idle);
+        }
+        assert_eq!(power_mode_from_sector_count(0xFF), PowerMode::Active);
+        assert_eq!(power_mode_from_sector_count(0x41), PowerMode::Active);
+        // Anything undefined must not be read as standby — that would stop
+        // monitoring a perfectly awake drive.
+        assert_eq!(power_mode_from_sector_count(0x07), PowerMode::Unknown);
+    }
+
+    #[test]
+    fn sense_without_a_register_block_yields_nothing() {
+        // Fixed-format sense (0x70) carries no ATA Status Return descriptor.
+        let mut fixed = sense_with_sector_count(0x00);
+        fixed[0] = 0x70;
+        assert_eq!(ata_sector_count_from_sense(&fixed), None);
+
+        // Descriptor format, but a different descriptor type.
+        let mut other = sense_with_sector_count(0x00);
+        other[8] = 0x02; // sense-key-specific descriptor
+        assert_eq!(ata_sector_count_from_sense(&other), None);
+
+        // Truncated and empty buffers must not panic or invent an answer.
+        assert_eq!(ata_sector_count_from_sense(&sense_with_sector_count(0)[..10]), None);
+        assert_eq!(ata_sector_count_from_sense(&[]), None);
+
+        // A zero-length descriptor must terminate the walk rather than spin.
+        let mut zero_len = sense_with_sector_count(0x00);
+        zero_len[8] = 0x01;
+        zero_len[9] = 0x00;
+        assert_eq!(ata_sector_count_from_sense(&zero_len), None);
+    }
+
+    #[test]
+    fn rotation_rate_rejects_unknown_and_reserved() {
+        // 0 = not reported, 0x0002..=0x0400 reserved, 0xFFFF reserved.
+        for w in [0x0000, 0x0002, 0x0400, 0xFFFF] {
+            assert_eq!(
+                rotation_rate_from_identify(&identify_with_word217(w)),
+                None,
+                "word 217 = {w:#06x} must not be read as a rate"
+            );
+        }
+        // A short/truncated payload is not a non-rotating drive.
+        assert_eq!(rotation_rate_from_identify(&[0u8; 100]), None);
+        assert_eq!(rotation_rate_from_identify(&[]), None);
+    }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod hardware_tests {
     use super::SmartReport;
 
-    /// Diagnostic, not CI: queries every enumerated drive's real SMART data.
-    /// Needs root for the ioctls; compare against `smartctl -A <dev>`.
+    /// Diagnostic, not CI: queries every enumerated drive's real SMART data —
+    /// including USB drives, which reach their disk through SAT pass-through.
+    /// Needs root / an elevated shell for the ioctls; compare against
+    /// `smartctl -A <dev>`.
     #[test]
-    #[ignore = "needs root; run via scripts/test-elevated.sh"]
+    #[ignore = "needs root (Linux) or an elevated shell (Windows); run with --ignored --nocapture"]
     fn print_real_smart_reports() {
         let drives = crate::drive_enumeration::enumerate_physical_disks().expect("enumerate");
         assert!(!drives.is_empty(), "no drives found");
         for d in &drives {
-            println!("--- {} ({:?}) {}", d.device_id, d.bus, d.model.trim());
+            println!(
+                "--- {} ({:?}) {} power={:?}",
+                d.device_id,
+                d.bus,
+                d.model.trim(),
+                super::power_mode(&d.device_id, d.bus),
+            );
             match super::query_smart_detail(&d.device_id, d.bus) {
                 SmartReport::Nvme(n) => {
                     println!(

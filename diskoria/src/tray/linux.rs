@@ -8,7 +8,7 @@
 
 use winit::event_loop::EventLoopProxy;
 
-use crate::detected_drive::{BusKind, DetectedDrive};
+use crate::detected_drive::DetectedDrive;
 use crate::UserEvent;
 
 use ksni::blocking::TrayMethods;
@@ -305,11 +305,13 @@ impl TrayManager {
         let _ = self.tx.send(cmd);
     }
 
-    /// Refresh the monitored-drive set (internal drives only, like Windows).
-    pub fn rebuild_drive_icons(&mut self, drives: &[DetectedDrive]) {
+    /// Refresh the monitored-drive set. `include_usb` is
+    /// `Settings::tray_usb_drives` (off by default) and must match what the
+    /// monitor polls, or a USB entry would sit there with no temperature.
+    pub fn rebuild_drive_icons(&mut self, drives: &[DetectedDrive], include_usb: bool) {
         let list: Vec<(String, String)> = drives
             .iter()
-            .filter(|d| matches!(d.bus, BusKind::Nvme | BusKind::Sata | BusKind::Ufs))
+            .filter(|d| d.is_monitored(include_usb))
             .map(|d| (d.serial.clone(), d.model.clone()))
             .collect();
         log::debug!(target: "diskoria::tray", "rebuild_drive_icons: {} monitored drive(s)", list.len());

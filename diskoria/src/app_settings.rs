@@ -65,6 +65,13 @@ pub struct Settings {
     /// an available update surfaces a prompt.
     pub auto_check_updates: bool,
     pub poll_interval_mins: u8,
+    /// Give USB drives a tray icon, and — necessarily, since an icon with no
+    /// temperature behind it is worse than no icon — include them in the
+    /// background poll. Off by default: external drives come and go, and a
+    /// notification area that grows an icon whenever something is plugged in
+    /// is not what most people want. SMART itself reaches USB drives either
+    /// way (known-issues KI-57); this only governs the tray and the poll.
+    pub tray_usb_drives: bool,
     pub alert_temp_warn: i32,
     pub alert_temp_critical: i32,
     pub alert_wear_threshold: u8,
@@ -85,6 +92,7 @@ impl Default for Settings {
             close_to_tray: true,
             auto_check_updates: true,
             poll_interval_mins: 3,
+            tray_usb_drives: false,
             alert_temp_warn: 60,
             alert_temp_critical: 70,
             alert_wear_threshold: 90,
@@ -162,6 +170,8 @@ pub fn load_settings() -> Settings {
                 s.auto_check_updates = v.trim() != "false";
             } else if let Some(v) = line.strip_prefix("poll_interval_mins=") {
                 if let Ok(n) = v.trim().parse::<u8>() { s.poll_interval_mins = n.clamp(1, 60); }
+            } else if let Some(v) = line.strip_prefix("tray_usb_drives=") {
+                s.tray_usb_drives = v.trim() == "true";
             } else if let Some(v) = line.strip_prefix("alert_temp_warn=") {
                 if let Ok(n) = v.trim().parse::<i32>() { s.alert_temp_warn = n; }
             } else if let Some(v) = line.strip_prefix("alert_temp_critical=") {
@@ -189,7 +199,7 @@ pub fn save_settings(s: &Settings) {
         AccentSourcePref::Palette => "palette",
     };
     let text = format!(
-        "theme={}\naccent_source={}\naccent_palette_idx={}\naccent_use_custom={}\naccent_custom_hex={}\nshow_test_result_overlays={}\nmonitoring_enabled={}\nclose_to_tray={}\nauto_check_updates={}\npoll_interval_mins={}\nalert_temp_warn={}\nalert_temp_critical={}\nalert_wear_threshold={}\n",
+        "theme={}\naccent_source={}\naccent_palette_idx={}\naccent_use_custom={}\naccent_custom_hex={}\nshow_test_result_overlays={}\nmonitoring_enabled={}\nclose_to_tray={}\nauto_check_updates={}\npoll_interval_mins={}\ntray_usb_drives={}\nalert_temp_warn={}\nalert_temp_critical={}\nalert_wear_threshold={}\n",
         theme_s,
         accent_src,
         s.accent_palette_idx,
@@ -200,6 +210,7 @@ pub fn save_settings(s: &Settings) {
         s.close_to_tray,
         s.auto_check_updates,
         s.poll_interval_mins,
+        s.tray_usb_drives,
         s.alert_temp_warn,
         s.alert_temp_critical,
         s.alert_wear_threshold,
@@ -334,6 +345,7 @@ mod tests {
             show_test_result_overlays: false,
             close_to_tray: false,
             auto_check_updates: false,
+            tray_usb_drives: true,
             ..Settings::default()
         };
         save_settings(&s);
@@ -348,12 +360,15 @@ mod tests {
         assert!(!loaded.show_test_result_overlays);
         assert!(!loaded.close_to_tray);
         assert!(!loaded.auto_check_updates);
+        assert!(loaded.tray_usb_drives);
         // Defaults must round-trip as enabled.
         save_settings(&Settings::default());
         let loaded = load_settings();
         assert!(loaded.show_test_result_overlays);
         assert!(loaded.close_to_tray);
         assert!(loaded.auto_check_updates);
+        // ...except this one, which is off by default and must stay off.
+        assert!(!loaded.tray_usb_drives);
 
         // A settings file predating `close_to_tray` (or hand-edited to drop it)
         // must re-derive the default from the install mode rather than inheriting

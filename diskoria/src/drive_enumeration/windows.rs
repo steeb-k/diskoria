@@ -8,6 +8,7 @@ use wmi::WMIConnection;
 
 use crate::detected_drive::{BusKind, DetectedDrive, MediaKind, PartitionTableStyle};
 use crate::partition_info::{EncryptionStatus, PartitionInfo};
+use crate::smart_reader::RotationRate;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename = "Win32_DiskDrive")]
@@ -117,13 +118,130 @@ fn map_bus(interface_type: &str, model: &str, msft_bus: Option<u32>) -> BusKind 
     BusKind::Sata
 }
 
+/// The media signals that cost a device round-trip, gathered only when the
+/// free ones leave the answer ambiguous. Everything behind a USB bridge lands
+/// here: Windows reports `MSFT_PhysicalDisk.MediaType = 0` (Unspecified) for
+/// those, and `SpindleSpeed` is no help either (it reads 0 for a USB hard disk
+/// and 0xFFFFFFFF for an internal one).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct MediaProbe {
+    /// IDENTIFY DEVICE word 217, fetched over SAT pass-through.
+    rotation: Option<RotationRate>,
+    /// `StorageDeviceSeekPenaltyProperty`: `Some(true)` = the device seeks,
+    /// i.e. it rotates. `None` when the driver does not implement the query.
+    seek_penalty: Option<bool>,
+}
+
+fn probe_media(device_path: &str, bus: BusKind) -> MediaProbe {
+    // Cheapest first: the seek-penalty descriptor is a cached property query
+    // that needs no elevation and never touches the drive. Only when the
+    // driver refuses it — which is exactly the USB case — does the drive get
+    // an actual IDENTIFY DEVICE command.
+    let seek_penalty = seek_penalty(device_path);
+    let rotation = if seek_penalty.is_none() {
+        crate::smart_reader::nominal_rotation_rate(device_path, bus)
+    } else {
+        None
+    };
+    MediaProbe {
+        rotation,
+        seek_penalty,
+    }
+}
+
+/// `IOCTL_STORAGE_QUERY_PROPERTY` / `StorageDeviceSeekPenaltyProperty`.
+///
+/// `Some(true)` means the device incurs a seek penalty — a spinning disk.
+/// `None` means the driver does not implement the query: USB bridges answer
+/// `ERROR_INVALID_FUNCTION` here, which is why enumeration also needs the
+/// IDENTIFY DEVICE probe.
+fn seek_penalty(device_path: &str) -> Option<bool> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+    use windows_sys::Win32::System::IO::DeviceIoControl;
+
+    const IOCTL_STORAGE_QUERY_PROPERTY: u32 = 0x002D_1400;
+    const STORAGE_DEVICE_SEEK_PENALTY_PROPERTY: u32 = 7;
+    const PROPERTY_STANDARD_QUERY: u32 = 0;
+
+    #[repr(C)]
+    struct StoragePropertyQuery {
+        property_id: u32,
+        query_type: u32,
+        additional_parameters: [u8; 1],
+    }
+
+    #[repr(C)]
+    struct DeviceSeekPenaltyDescriptor {
+        version: u32,
+        size: u32,
+        /// `BOOLEAN`
+        incurs_seek_penalty: u8,
+    }
+
+    let path: Vec<u16> = device_path
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+
+    unsafe {
+        // Zero desired access is enough for a property query, so this works
+        // unelevated and cannot disturb a drive that is under test.
+        let handle = CreateFileW(
+            path.as_ptr(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            0,
+            0,
+        );
+        if handle == -1_isize {
+            return None;
+        }
+
+        let query = StoragePropertyQuery {
+            property_id: STORAGE_DEVICE_SEEK_PENALTY_PROPERTY,
+            query_type: PROPERTY_STANDARD_QUERY,
+            additional_parameters: [0],
+        };
+        let mut desc = std::mem::zeroed::<DeviceSeekPenaltyDescriptor>();
+        let mut returned: u32 = 0;
+        let ok = DeviceIoControl(
+            handle,
+            IOCTL_STORAGE_QUERY_PROPERTY,
+            &query as *const _ as *const _,
+            std::mem::size_of::<StoragePropertyQuery>() as u32,
+            &mut desc as *mut _ as *mut _,
+            std::mem::size_of::<DeviceSeekPenaltyDescriptor>() as u32,
+            &mut returned,
+            std::ptr::null_mut(),
+        );
+        CloseHandle(handle);
+
+        // A short reply means the descriptor was not filled in — treat it as
+        // "no answer" rather than reading a zero as "solid state".
+        if ok == 0 || (returned as usize) < std::mem::size_of::<DeviceSeekPenaltyDescriptor>() {
+            return None;
+        }
+        Some(desc.incurs_seek_penalty != 0)
+    }
+}
+
+/// Classify the medium. `probe` is only called when the free signals leave the
+/// answer open, so a full enumeration issues no device commands for drives
+/// Windows already describes.
 fn map_media(
-    disk_index: u32,
     wmi_media: &str,
     interface_type: &str,
     model: &str,
     msft_media: Option<u32>,
+    probe: impl FnOnce() -> MediaProbe,
 ) -> MediaKind {
+    // 1. MSFT_PhysicalDisk.MediaType, when Windows has a real answer:
+    //    3 = HDD, 4 = SSD, 5 = SCM. 0 (Unspecified) arrives here as None.
     if let Some(mt) = msft_media {
         match mt {
             4 | 5 => return MediaKind::Ssd,
@@ -136,6 +254,7 @@ fn map_media(
     let wl = wmi_media.to_lowercase();
     let il = interface_type.to_lowercase();
 
+    // 2. Buses and card types that settle the medium on their own.
     if il.contains("nvme") || ml.contains("nvme") {
         return MediaKind::Ssd;
     }
@@ -151,20 +270,39 @@ fn map_media(
     {
         return MediaKind::SdCard;
     }
+
+    // 3. Ask the device. This is the only signal that tells a spinning disk
+    //    from an SSD inside a USB enclosure (KI-57).
+    let probe = probe();
+    match probe.rotation {
+        Some(RotationRate::NonRotating) => return MediaKind::Ssd,
+        Some(RotationRate::Rpm(_)) => return MediaKind::Hdd,
+        None => {}
+    }
+    match probe.seek_penalty {
+        Some(true) => return MediaKind::Hdd,
+        Some(false) => return MediaKind::Ssd,
+        None => {}
+    }
+
+    // 4. Last resort: the model string and Win32_DiskDrive.MediaType, which is
+    //    a fixed enum — "Fixed hard disk media", "External hard disk media",
+    //    "Removable media". "External hard disk media" describes the
+    //    *enclosure*, not the medium, so matching "external" ahead of
+    //    "hard disk" is what labelled every USB disk as Flash (KI-57).
+    if ml.contains("ssd") || ml.contains("solid state") || wl.contains("ssd") || wl.contains("solid")
+    {
+        return MediaKind::Ssd;
+    }
+    if wl.contains("hard disk") || wl.contains("hdd") || wl.contains("fixed") {
+        return MediaKind::Hdd;
+    }
+    // Only a genuinely removable medium is Flash: thumb drives and card
+    // readers set the SCSI removable-media bit; an external disk does not.
     if wl.contains("removable") || wl.contains("external") {
         return MediaKind::Flash;
     }
-    if wl.contains("ssd") || wl.contains("solid") || ml.contains("ssd") {
-        return MediaKind::Ssd;
-    }
-    if wl.contains("hard") || wl.contains("fixed") || wl.contains("hdd") {
-        return MediaKind::Hdd;
-    }
-    if wl.contains("fixed") {
-        return MediaKind::Hdd;
-    }
 
-    let _ = disk_index;
     MediaKind::Unknown
 }
 
@@ -531,9 +669,17 @@ pub fn enumerate_physical_disks() -> Result<Vec<DetectedDrive>, String> {
         let wmi_media = row.MediaType.as_deref().unwrap_or("");
         let interface = row.InterfaceType.as_deref().unwrap_or("");
 
+        let device_id = format!(r"\\.\PhysicalDrive{}", index);
+
         let (msft_media_type, msft_bus_type) = msft.get(&index).copied().unwrap_or((0, 0));
         let bus = map_bus(interface, &model, Some(msft_bus_type).filter(|&v| v != 0));
-        let media = map_media(index, wmi_media, interface, &model, Some(msft_media_type).filter(|&v| v != 0));
+        let media = map_media(
+            wmi_media,
+            interface,
+            &model,
+            Some(msft_media_type).filter(|&v| v != 0),
+            || probe_media(&device_id, bus),
+        );
 
         let summary = format!(
             "Drive {} — {} — {}",
@@ -541,8 +687,6 @@ pub fn enumerate_physical_disks() -> Result<Vec<DetectedDrive>, String> {
             model,
             DetectedDrive::format_size(size_bytes)
         );
-
-        let device_id = format!(r"\\.\PhysicalDrive{}", index);
 
         let partitions = partitions_for_disk(&wmi, index, &bitlocker).unwrap_or_default();
 
@@ -568,4 +712,174 @@ pub fn enumerate_physical_disks() -> Result<Vec<DetectedDrive>, String> {
 
     out.sort_by_key(|d| d.disk_number);
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    /// A probe result with no device round-trip behind it.
+    fn blind() -> MediaProbe {
+        MediaProbe::default()
+    }
+
+    fn spinning(rpm: u16) -> MediaProbe {
+        MediaProbe {
+            rotation: Some(RotationRate::Rpm(rpm)),
+            ..MediaProbe::default()
+        }
+    }
+
+    fn solid_state() -> MediaProbe {
+        MediaProbe {
+            rotation: Some(RotationRate::NonRotating),
+            ..MediaProbe::default()
+        }
+    }
+
+    /// The bug this ladder was rebuilt for: a 4 TB Seagate Expansion. Windows
+    /// reports MediaType "External hard disk media" and MSFT_PhysicalDisk
+    /// Unspecified, and IDENTIFY word 217 says 5526 RPM.
+    #[test]
+    fn usb_hard_disk_is_not_flash() {
+        assert_eq!(
+            map_media(
+                "External hard disk media",
+                "SCSI",
+                "Seagate Expansion SCSI Disk Device",
+                None,
+                || spinning(5526),
+            ),
+            MediaKind::Hdd
+        );
+    }
+
+    /// Even when the bridge refuses both the seek-penalty query and IDENTIFY,
+    /// "External hard disk media" must not be read as Flash — "external"
+    /// describes the enclosure, "hard disk" describes the medium.
+    #[test]
+    fn usb_hard_disk_without_a_probe_answer_is_still_a_disk() {
+        assert_eq!(
+            map_media(
+                "External hard disk media",
+                "SCSI",
+                "Seagate Expansion SCSI Disk Device",
+                None,
+                blind,
+            ),
+            MediaKind::Hdd
+        );
+    }
+
+    /// The mirror case: an SSD in an enclosure reports the same MediaType
+    /// string, so only the drive's own answer separates the two.
+    #[test]
+    fn usb_ssd_enclosure_is_ssd() {
+        assert_eq!(
+            map_media("External hard disk media", "SCSI", "ASMT 2115", None, solid_state),
+            MediaKind::Ssd
+        );
+    }
+
+    /// Flash is reserved for a genuinely removable medium — a thumb drive or a
+    /// card reader, which set the SCSI removable-media bit.
+    #[test]
+    fn removable_media_is_flash() {
+        assert_eq!(
+            map_media("Removable Media", "USB", "Corvid Pocket USB Device", None, blind),
+            MediaKind::Flash
+        );
+    }
+
+    /// An internal SATA SSD that MSFT_PhysicalDisk did not classify: the
+    /// seek-penalty descriptor answers where the MediaType string ("Fixed hard
+    /// disk media", which every fixed disk reports) cannot.
+    #[test]
+    fn seek_penalty_separates_internal_disks() {
+        let ssd = MediaProbe {
+            seek_penalty: Some(false),
+            ..MediaProbe::default()
+        };
+        let hdd = MediaProbe {
+            seek_penalty: Some(true),
+            ..MediaProbe::default()
+        };
+        assert_eq!(
+            map_media("Fixed hard disk media", "SCSI", "CT1000MX500SSD1", None, || ssd),
+            MediaKind::Ssd
+        );
+        assert_eq!(
+            map_media("Fixed hard disk media", "SCSI", "ST2000DM008-2FR102", None, || hdd),
+            MediaKind::Hdd
+        );
+    }
+
+    #[test]
+    fn msft_media_type_is_authoritative_and_costs_no_probe() {
+        let probed = Cell::new(false);
+        let probe = || {
+            probed.set(true);
+            spinning(7200)
+        };
+        // MediaType 4 = SSD, even though the MediaType string says hard disk.
+        assert_eq!(
+            map_media("Fixed hard disk media", "SCSI", "Samsung SSD 990", Some(4), probe),
+            MediaKind::Ssd
+        );
+        assert!(!probed.get(), "an authoritative answer must not touch the drive");
+    }
+
+    #[test]
+    fn bus_and_card_hints_cost_no_probe() {
+        let probed = Cell::new(false);
+        // Captures only a shared reference, so it is `Copy` and survives the loop.
+        let probe = || {
+            probed.set(true);
+            blind()
+        };
+        for (wmi_media, interface, model, expected) in [
+            ("Fixed hard disk media", "SCSI", "NVMe PC SN810 NVMe WDC 1024GB", MediaKind::Ssd),
+            ("Fixed hard disk media", "UFS", "Some UFS device", MediaKind::Ssd),
+            ("Fixed hard disk media", "SCSI", "eMMC 64GB", MediaKind::EMmc),
+            ("Removable Media", "SCSI", "Generic SD/MMC Reader", MediaKind::SdCard),
+        ] {
+            assert_eq!(
+                map_media(wmi_media, interface, model, None, probe),
+                expected,
+                "{model}"
+            );
+        }
+        assert!(!probed.get(), "the bus and card hints settle these on their own");
+    }
+
+    #[test]
+    fn unclassifiable_media_stays_unknown() {
+        assert_eq!(map_media("", "SCSI", "Virtual Disk", None, blind), MediaKind::Unknown);
+    }
+}
+
+#[cfg(test)]
+mod hardware_tests {
+    /// Diagnostic, not CI: prints what this host's enumeration sees, and the
+    /// raw signals behind each media call, so it can be compared against
+    /// `Get-CimInstance Win32_DiskDrive` and `MSFT_PhysicalDisk`. Needs an
+    /// elevated shell for the IDENTIFY probe.
+    #[test]
+    #[ignore = "inspects real hardware; run elevated with --ignored --nocapture"]
+    fn print_real_enumeration() {
+        let drives = super::enumerate_physical_disks().expect("enumerate");
+        for d in &drives {
+            println!(
+                "#{} {} model={:?} media={:?} bus={:?} size={}",
+                d.disk_number,
+                d.device_id,
+                d.model,
+                d.media,
+                d.bus,
+                crate::detected_drive::DetectedDrive::format_size(d.size_bytes),
+            );
+            println!("   probe: {:?}", super::probe_media(&d.device_id, d.bus));
+        }
+    }
 }

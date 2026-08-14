@@ -155,7 +155,7 @@ always-on-top popup window near the tray icon. The flyout shows:
 The flyout dismisses when the cursor leaves the icon area.
 
 ### Background Health Monitoring
-A background thread (`monitor.rs`) polls all internal drives at the configured
+A background thread (`monitor.rs`) polls every enumerated drive at the configured
 interval. For each drive it:
 1. Reads SMART/NVMe data via existing `smart_reader::query_smart_detail()`
 2. Extracts a `HealthSnapshot` (temperature, sector counts, wear, NVMe fields)
@@ -165,6 +165,25 @@ interval. For each drive it:
 
 The thread is cancelled cleanly (via `Arc<AtomicBool>`) when the app exits,
 monitoring is disabled, or the poll interval is changed in settings.
+
+**Which drives get polled** is `DetectedDrive::is_monitored(include_usb)` — one
+function, because the background thread and `rebuild_drive_icons` must ask the
+identical question. A tray icon whose drive nothing polls would sit there
+permanently grey, so the answer cannot be allowed to differ between them.
+
+NVMe, SATA and UFS are always in. **USB is opt-in**, behind
+Settings → Monitoring → *Show USB drives in the tray* (`tray_usb_drives`, off by
+default). External drives come and go, and a notification area that grows an
+icon whenever something is plugged in is not what most people want — so the same
+switch governs both the icon and the poll, and changing it respawns the monitor
+thread (`update_settings` detects it). SMART itself reaches USB drives either
+way (KI-57); the Drive Health page never needed the setting.
+
+**Sleeping disks are left alone.** Before any SMART read, a drive with
+`MediaKind::Hdd` is asked ATA CHECK POWER MODE, and one that answers standby is
+skipped for that pass — otherwise a three-minute poll would keep every external
+disk spinning forever. Only a clear standby answer skips; anything else polls.
+See KI-58 for why that asymmetry is deliberate.
 
 #### Linux: the root monitoring service (`service.rs`)
 
@@ -291,6 +310,10 @@ A **Monitoring** card in the Settings page provides:
 - **Enable background monitoring** — toggle to start/stop the monitor thread
 - **Poll interval** — segmented control: 1 min / 3 min (default) / 5 min / 10 min;
   changing this restarts the monitor thread immediately
+- **Show USB drives in the tray** — toggle, **off** by default. Adds external
+  drives to the tray *and* to the poll, since one without the other is useless;
+  also restarts the monitor thread. Like the poll interval, it stays visible
+  when monitoring is off — it describes *which* drives are watched, not how
 - **Temperature warning threshold** — slider 30–80°C (default 60°C)
 - **Temperature critical threshold** — slider 40–95°C (default 70°C)
 - **Wear level alert threshold** — slider 50–100% (default 90%)
@@ -341,7 +364,12 @@ All settings are persisted to `%ProgramData%\Diskoria\settings.txt`.
 - [ ] On launch, tray icons appear in the notification area: one per internal
   NVMe/SATA drive, plus the app icon
 - [ ] The app icon matches `assets/trayicon.ico`
-- [ ] USB drives do **not** get a tray icon
+- [ ] USB drives do **not** get a tray icon by default, and do appear on the
+  Drive Health page regardless
+- [ ] Turning on Settings → Monitoring → *Show USB drives in the tray* adds an
+  icon per USB drive, and it reaches a real temperature on the next poll (not a
+  permanent grey) — the setting governs the poll as well as the icon
+- [ ] Turning it back off removes those icons
 - [ ] Each drive icon shows a colored thermometer shape
 - [ ] Drive icons have no tooltip (tooltip is suppressed)
 

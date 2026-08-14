@@ -13,7 +13,7 @@
 
 use std::os::fd::AsRawFd;
 
-use super::SmartReport;
+use super::{RotationRate, SmartReport};
 
 fn open_reason(device_path: &str, e: &std::io::Error) -> String {
     if e.kind() == std::io::ErrorKind::PermissionDenied {
@@ -29,17 +29,50 @@ pub fn query_smart_detail(device_path: &str, bus: crate::detected_drive::BusKind
         BusKind::Nvme => query_nvme(device_path),
         BusKind::Sata => query_ata(device_path),
         BusKind::Ufs => query_ufs(device_path),
-        // Parity with Windows for now. Many USB-SATA bridges do forward SAT
-        // pass-through, so this is a candidate for a later attempt-and-degrade.
-        BusKind::Usb => SmartReport::Unavailable {
-            reason: "SMART is not available over USB connections.".to_string(),
-        },
+        // Same SG_IO path as SATA: a USB bridge implementing SAT forwards the
+        // ATA PASS-THROUGH CDB to the drive unchanged. Bridges that don't (and
+        // USB-NVMe enclosures, which speak a vendor protocol) fail the command
+        // and land on `Unavailable` with a reason that says so.
+        BusKind::Usb => query_ata(device_path),
+    }
+}
+
+/// IDENTIFY DEVICE word 217 for a drive, or `None` when the device will not
+/// answer (NVMe/UFS have no such command; some USB bridges refuse SAT, and
+/// without root the device node cannot be opened at all).
+///
+/// Used by drive enumeration, where `queue/rotational` is not trustworthy for
+/// anything behind a USB bridge — the kernel defaults it to 1 unless the
+/// bridge exposes the block-limits VPD page.
+pub fn nominal_rotation_rate(
+    device_path: &str,
+    bus: crate::detected_drive::BusKind,
+) -> Option<RotationRate> {
+    use crate::detected_drive::BusKind;
+    match bus {
+        // Solid state by construction — there is no rotation rate to ask for.
+        BusKind::Nvme | BusKind::Ufs => None,
+        BusKind::Sata | BusKind::Usb => {
+            let file = std::fs::File::open(device_path)
+                .map_err(|e| {
+                    log::debug!(target: "diskoria", "nominal_rotation_rate: open {device_path}: {e}");
+                })
+                .ok()?;
+            match sg_ata_pio_in(file.as_raw_fd(), &super::ata16_identify_cdb()) {
+                Ok(identify) => super::rotation_rate_from_identify(&identify),
+                Err(e) => {
+                    log::debug!(target: "diskoria", "nominal_rotation_rate: path={device_path} {e}");
+                    None
+                }
+            }
+        }
     }
 }
 
 // ── ATA via SG_IO ────────────────────────────────────────────────────────────
 
 const SG_IO: libc::c_ulong = 0x2285;
+const SG_DXFER_NONE: libc::c_int = -1;
 const SG_DXFER_FROM_DEV: libc::c_int = -3;
 
 /// <scsi/sg.h> `sg_io_hdr_t` (not exposed by the libc crate).
@@ -69,24 +102,10 @@ struct SgIoHdr {
     info: libc::c_uint,
 }
 
-/// ATA PASS-THROUGH (16) CDB for a 512-byte PIO Data-In SMART subcommand.
-/// `feature` is 0xD0 (READ DATA) or 0xD1 (READ THRESHOLDS).
-pub(crate) fn ata16_smart_cdb(feature: u8) -> [u8; 16] {
-    let mut cdb = [0u8; 16];
-    cdb[0] = 0x85; // ATA PASS-THROUGH (16)
-    cdb[1] = 4 << 1; // protocol: PIO Data-In
-    cdb[2] = 0x0E; // T_DIR=in, BYT_BLOK=blocks, T_LENGTH=sector count field
-    cdb[4] = feature; // FEATURES
-    cdb[6] = 0x01; // SECTOR_COUNT = 1
-    cdb[10] = 0x4F; // LBA_MID  (SMART magic)
-    cdb[12] = 0xC2; // LBA_HIGH (SMART magic)
-    cdb[13] = 0xA0; // DEVICE
-    cdb[14] = 0xB0; // COMMAND = SMART
-    cdb
-}
-
-fn sg_smart_read(fd: libc::c_int, feature: u8) -> Result<[u8; 512], String> {
-    let mut cdb = ata16_smart_cdb(feature);
+/// Send one 512-byte PIO Data-In ATA command (the CDBs are built in the parent
+/// module, shared with the Windows pass-through).
+fn sg_ata_pio_in(fd: libc::c_int, cdb: &[u8; 16]) -> Result<[u8; 512], String> {
+    let mut cdb = *cdb;
     let mut data = [0u8; 512];
     let mut sense = [0u8; 32];
     let mut hdr: SgIoHdr = unsafe { std::mem::zeroed() };
@@ -107,11 +126,75 @@ fn sg_smart_read(fd: libc::c_int, feature: u8) -> Result<[u8; 512], String> {
     // Any of these non-zero means the command did not complete cleanly.
     if hdr.masked_status != 0 || hdr.host_status != 0 || (hdr.driver_status & !0x08) != 0 {
         return Err(format!(
-            "SMART command rejected (status={:#x} host={:#x} driver={:#x})",
+            "command rejected (status={:#x} host={:#x} driver={:#x})",
             hdr.masked_status, hdr.host_status, hdr.driver_status
         ));
     }
+    // Some bridges report success without moving any data. Left unchecked that
+    // parses as a drive with an empty SMART table rather than as a failure.
+    if hdr.resid >= data.len() as libc::c_int || data.iter().all(|&b| b == 0) {
+        return Err("pass-through returned no data".to_string());
+    }
     Ok(data)
+}
+
+/// Send a non-data ATA command and return the sense buffer it came back with.
+///
+/// `CK_COND` makes the translator report CHECK CONDITION with sense key
+/// RECOVERED ERROR *on success*, carrying the ATA register block — so unlike
+/// [`sg_ata_pio_in`], a non-zero status here is the expected outcome.
+fn sg_ata_non_data(fd: libc::c_int, cdb: &[u8; 16]) -> Result<[u8; 32], String> {
+    let mut cdb = *cdb;
+    let mut sense = [0u8; 32];
+    let mut hdr: SgIoHdr = unsafe { std::mem::zeroed() };
+    hdr.interface_id = 'S' as libc::c_int;
+    hdr.dxfer_direction = SG_DXFER_NONE;
+    hdr.cmd_len = cdb.len() as libc::c_uchar;
+    hdr.mx_sb_len = sense.len() as libc::c_uchar;
+    hdr.cmdp = cdb.as_mut_ptr();
+    hdr.sbp = sense.as_mut_ptr();
+    hdr.timeout = 5000; // ms
+
+    let rc = unsafe { libc::ioctl(fd, SG_IO, &mut hdr) };
+    if rc != 0 {
+        return Err(format!("SG_IO failed: {}", std::io::Error::last_os_error()));
+    }
+    if hdr.host_status != 0 {
+        return Err(format!("command rejected (host={:#x})", hdr.host_status));
+    }
+    if hdr.sb_len_wr == 0 {
+        return Err("no sense data returned".to_string());
+    }
+    Ok(sense)
+}
+
+/// Whether the drive is spun down, asked with ATA CHECK POWER MODE — the one
+/// command that does not wake it (known-issues KI-58).
+///
+/// `Unknown` on anything that is not an ATA drive, and whenever the register
+/// block does not come back (no root, no `CK_COND` support): the caller polls
+/// in that case, so a stubborn bridge loses the optimisation, not its
+/// monitoring.
+pub fn power_mode(device_path: &str, bus: crate::detected_drive::BusKind) -> super::PowerMode {
+    use crate::detected_drive::BusKind;
+    match bus {
+        // No spindle, and no such command.
+        BusKind::Nvme | BusKind::Ufs => super::PowerMode::Unknown,
+        BusKind::Sata | BusKind::Usb => {
+            let Ok(file) = std::fs::File::open(device_path) else {
+                return super::PowerMode::Unknown;
+            };
+            match sg_ata_non_data(file.as_raw_fd(), &super::ata16_check_power_mode_cdb()) {
+                Ok(sense) => super::ata_sector_count_from_sense(&sense)
+                    .map(super::power_mode_from_sector_count)
+                    .unwrap_or(super::PowerMode::Unknown),
+                Err(e) => {
+                    log::debug!(target: "diskoria", "power_mode: path={device_path} {e}");
+                    super::PowerMode::Unknown
+                }
+            }
+        }
+    }
 }
 
 fn query_ata(device_path: &str) -> SmartReport {
@@ -126,7 +209,7 @@ fn query_ata(device_path: &str) -> SmartReport {
     };
     let fd = file.as_raw_fd();
 
-    let attr_payload = match sg_smart_read(fd, 0xD0) {
+    let attr_payload = match sg_ata_pio_in(fd, &super::ata16_smart_cdb(0xD0)) {
         Ok(d) => d,
         Err(e) => {
             log::warn!(target: "diskoria", "query_ata: SMART READ DATA failed path={device_path}: {e}");
@@ -136,7 +219,7 @@ fn query_ata(device_path: &str) -> SmartReport {
         }
     };
     // Thresholds are best-effort, exactly like the Windows path.
-    let thr_payload = sg_smart_read(fd, 0xD1).ok();
+    let thr_payload = sg_ata_pio_in(fd, &super::ata16_smart_cdb(0xD1)).ok();
 
     let report = super::parse_ata_smart(&attr_payload, thr_payload.as_ref().map(|t| t.as_slice()));
     if let SmartReport::Ata(ref d) = report {
@@ -270,22 +353,5 @@ fn query_ufs(device_path: &str) -> SmartReport {
     }
     SmartReport::Unavailable {
         reason: "This kernel does not expose the UFS health descriptor in sysfs.".to_string(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::ata16_smart_cdb;
-
-    #[test]
-    fn ata16_cdb_shape() {
-        let cdb = ata16_smart_cdb(0xD0);
-        assert_eq!(cdb[0], 0x85);
-        assert_eq!(cdb[1], 0x08); // PIO Data-In
-        assert_eq!(cdb[2], 0x0E);
-        assert_eq!(cdb[4], 0xD0);
-        assert_eq!(cdb[6], 1);
-        assert_eq!((cdb[10], cdb[12]), (0x4F, 0xC2)); // SMART magic
-        assert_eq!(cdb[14], 0xB0);
     }
 }

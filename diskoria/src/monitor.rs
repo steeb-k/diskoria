@@ -587,7 +587,7 @@ pub use imp::spawn_monitor_thread;
 mod imp {
     use super::*;
     use crate::alert_engine::AlertCooldownTracker;
-    use crate::detected_drive::{BusKind, DetectedDrive};
+    use crate::detected_drive::{DetectedDrive, MediaKind};
     use crate::history_db;
     use crate::smart_reader;
     use std::sync::{
@@ -629,6 +629,7 @@ mod imp {
         alert_temp_warn: i32,
         alert_temp_critical: i32,
         alert_wear_threshold: u8,
+        include_usb: bool,
     ) -> Arc<AtomicBool> {
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel2 = Arc::clone(&cancel);
@@ -653,10 +654,10 @@ mod imp {
             // desktop session still gets picked up.
             #[cfg(target_os = "linux")]
             let mut service_db: Option<rusqlite::Connection> = None;
-            let internal_drives: Vec<&DetectedDrive> = drives
-                .iter()
-                .filter(|d| matches!(d.bus, BusKind::Nvme | BusKind::Sata | BusKind::Ufs))
-                .collect();
+            // USB drives are opt-in, behind the same switch that puts them in
+            // the tray — see `DetectedDrive::is_monitored`.
+            let monitored_drives: Vec<&DetectedDrive> =
+                drives.iter().filter(|d| d.is_monitored(include_usb)).collect();
 
             loop {
                 if cancel2.load(Ordering::SeqCst) {
@@ -676,7 +677,7 @@ mod imp {
                     }
                 }
 
-                for drive in &internal_drives {
+                for drive in &monitored_drives {
                     if cancel2.load(Ordering::SeqCst) {
                         break;
                     }
@@ -706,6 +707,24 @@ mod imp {
                             log::warn!(target: "diskoria::monitor", "Insert snapshot failed: {e}");
                         }
                         snapshots.push(snap);
+                        continue;
+                    }
+
+                    // Never spin a sleeping disk back up just to log its
+                    // temperature. CHECK POWER MODE is answered by the drive's
+                    // electronics without touching the medium; a SMART read is
+                    // not, and at a three-minute cadence that is enough to stop
+                    // an external drive ever spinning down (KI-58). Skipping
+                    // leaves a gap in the history, which is the honest record:
+                    // the drive was asleep, not at some invented temperature.
+                    if drive.media == MediaKind::Hdd
+                        && smart_reader::power_mode(&drive.device_id, drive.bus)
+                            == smart_reader::PowerMode::Standby
+                    {
+                        log::debug!(
+                            target: "diskoria::monitor",
+                            "{} is in standby; skipping this poll", drive.serial
+                        );
                         continue;
                     }
 

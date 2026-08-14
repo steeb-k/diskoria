@@ -111,6 +111,21 @@ assets/                appicon2.ico (window + notification icon, About page —
 - **`drive_enumeration.rs`** (WMI), **`surface_test.rs` / `destructive_test.rs` /
   `speed_test.rs`** (IOCTL disk workers), **`smart_reader.rs`** (raw SMART/NVMe/UFS
   via `DeviceIoControl`), **`smart_health.rs`** (WMI predict-fail).
+  **Two readers, different reach** — `smart_reader` is the raw data behind the
+  Drive Health page, `smart_health` the one-line verdict on the Sector and
+  Benchmark cards. Fixing one does not fix the other (known-issues KI-60);
+  `smart_health` now falls back to `smart_reader` for drives WMI's predict-fail
+  class does not enumerate.
+  `smart_reader` also reaches drives in USB enclosures via **SAT pass-through** —
+  an ATA PASS-THROUGH CDB over `IOCTL_SCSI_PASS_THROUGH_DIRECT` (Windows) or
+  `SG_IO` (Linux); the CDBs are shared pure logic in its `mod.rs`. The same path
+  answers IDENTIFY DEVICE word 217, which is what tells enumeration a USB disk
+  spins — Windows reports `MediaType = Unspecified` for everything behind a
+  bridge and Linux's `queue/rotational` is a default, not an answer
+  (known-issues KI-57). Media classification is a ladder that only issues a
+  device command when the free signals leave it ambiguous. Before any poll of a
+  spinning disk, `power_mode` asks ATA CHECK POWER MODE and a drive in standby
+  is skipped rather than woken (KI-58) — only a *clear* standby answer skips.
 - **`monitor.rs`, `alert_engine.rs`, `history_db.rs`, `tray.rs`, `flyout.rs`,
   `toast.rs`** — Pro-Monitoring (mostly `#[cfg(windows)]`).
 - Support: `app_settings.rs`, `detected_drive.rs`, `partition_info.rs`,
@@ -307,6 +322,11 @@ stays local and signed (`docs/releasing.md`).
   non-last window always just drops that window. Two things gate the installed
   defaults and they're kept independent: the scheduled task (`autostart.rs`) and
   the registry marker (`install_mode.rs`).
+- Which drives the monitor polls and which get a tray icon is **one** predicate,
+  `DetectedDrive::is_monitored(include_usb)` — don't re-inline the bus filter at
+  either site. USB is opt-in via `Settings::tray_usb_drives` (off by default);
+  if the two sites ever disagree you get a tray icon with nothing polling behind
+  it, permanently grey.
 - One test per physical drive across all windows: each window publishes its
   drive-under-test to `SharedAppState::test_locks` every frame and clears it on
   close (via `cancel_all_tests`). Test-page dropdowns gray drives locked by

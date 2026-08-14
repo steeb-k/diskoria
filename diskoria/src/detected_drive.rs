@@ -145,6 +145,19 @@ impl DetectedDrive {
         }
     }
 
+    /// Whether background monitoring and the tray should cover this drive.
+    ///
+    /// `include_usb` is [`crate::app_settings::Settings::tray_usb_drives`]. The
+    /// poll and the tray must ask the *same* question — an icon whose drive
+    /// nothing polls would sit there permanently grey — which is why this is
+    /// one function rather than a filter repeated at each site.
+    pub fn is_monitored(&self, include_usb: bool) -> bool {
+        match self.bus {
+            BusKind::Nvme | BusKind::Sata | BusKind::Ufs => true,
+            BusKind::Usb => include_usb,
+        }
+    }
+
     pub fn format_size(bytes: i64) -> String {
         if bytes <= 0 {
             return "—".to_string();
@@ -180,6 +193,20 @@ mod tests {
             partitions: Vec::new(),
             partition_style: PartitionTableStyle::Unknown,
         }
+    }
+
+    fn on_bus(bus: BusKind) -> DetectedDrive {
+        DetectedDrive { bus, ..drive("S", 0) }
+    }
+
+    #[test]
+    fn usb_is_the_only_opt_in_bus() {
+        for bus in [BusKind::Nvme, BusKind::Sata, BusKind::Ufs] {
+            assert!(on_bus(bus).is_monitored(false), "{bus:?} is always monitored");
+            assert!(on_bus(bus).is_monitored(true));
+        }
+        assert!(!on_bus(BusKind::Usb).is_monitored(false));
+        assert!(on_bus(BusKind::Usb).is_monitored(true));
     }
 
     #[test]

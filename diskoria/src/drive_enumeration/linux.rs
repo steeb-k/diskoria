@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 use crate::detected_drive::{BusKind, DetectedDrive, MediaKind, PartitionTableStyle};
 use crate::partition_info::{EncryptionStatus, PartitionInfo};
+use crate::smart_reader::RotationRate;
 
 // ── small sysfs helpers ──────────────────────────────────────────────────────
 
@@ -63,20 +64,52 @@ pub(crate) fn bus_from_syspath(syspath: &str) -> BusKind {
 }
 
 /// Media classification from rotational flag, bus, and sysfs hints.
-fn media_kind(name: &str, sys: &Path, bus: BusKind, model: &str) -> MediaKind {
-    if sys_read_u64(sys.join("queue/rotational")) == Some(1) {
-        return MediaKind::Hdd;
-    }
-    if name.starts_with("mmcblk") {
+///
+/// `rotation` is the drive's own IDENTIFY DEVICE answer and is only consulted
+/// for USB, where `queue/rotational` cannot be trusted: the kernel leaves it at
+/// 1 unless the bridge exposes the block-limits VPD page, so an SSD in an
+/// enclosure looks like a spinning disk and a spinning disk looks like one for
+/// the wrong reason (KI-57).
+fn classify_media(
+    is_mmc: bool,
+    mmc_type: Option<&str>,
+    removable: bool,
+    rotational: Option<bool>,
+    bus: BusKind,
+    model: &str,
+    rotation: impl FnOnce() -> Option<RotationRate>,
+) -> MediaKind {
+    if is_mmc {
         // /sys/block/mmcblkN/device/type is "SD" or "MMC".
-        return match sys_read(sys.join("device/type")).as_deref() {
+        return match mmc_type {
             Some("SD") => MediaKind::SdCard,
             Some("MMC") => MediaKind::EMmc,
             _ => MediaKind::Flash,
         };
     }
+    if bus == BusKind::Nvme {
+        return MediaKind::Ssd;
+    }
+    // The SCSI removable-media bit: thumb drives and card readers set it, an
+    // external disk in an enclosure does not. This is the Linux counterpart of
+    // Windows' "Removable Media" vs "External hard disk media".
+    if removable {
+        return MediaKind::Flash;
+    }
+    if bus == BusKind::Usb {
+        match rotation() {
+            Some(RotationRate::NonRotating) => return MediaKind::Ssd,
+            Some(RotationRate::Rpm(_)) => return MediaKind::Hdd,
+            None => {}
+        }
+    }
+    if rotational == Some(true) {
+        return MediaKind::Hdd;
+    }
     match bus {
-        BusKind::Nvme => MediaKind::Ssd,
+        // A bridge that refused IDENTIFY but did report non-rotating, or whose
+        // model string admits what it is.
+        BusKind::Usb if rotational == Some(false) => MediaKind::Ssd,
         BusKind::Usb => {
             let m = model.to_ascii_lowercase();
             if m.contains("ssd") || m.contains("nvme") {
@@ -87,6 +120,26 @@ fn media_kind(name: &str, sys: &Path, bus: BusKind, model: &str) -> MediaKind {
         }
         _ => MediaKind::Ssd,
     }
+}
+
+fn media_kind(name: &str, sys: &Path, dev_path: &Path, bus: BusKind, model: &str) -> MediaKind {
+    let is_mmc = name.starts_with("mmcblk");
+    // Only meaningful for mmcblk — on a SCSI disk `device/type` holds the SCSI
+    // peripheral type instead, which says nothing about the medium.
+    let mmc_type = if is_mmc {
+        sys_read(sys.join("device/type"))
+    } else {
+        None
+    };
+    classify_media(
+        is_mmc,
+        mmc_type.as_deref(),
+        sys_read_u64(sys.join("removable")) == Some(1),
+        sys_read_u64(sys.join("queue/rotational")).map(|r| r == 1),
+        bus,
+        model,
+        || crate::smart_reader::nominal_rotation_rate(&dev_path.to_string_lossy(), bus),
+    )
 }
 
 // ── mountinfo ────────────────────────────────────────────────────────────────
@@ -381,9 +434,9 @@ pub fn enumerate_physical_disks() -> Result<Vec<DetectedDrive>, String> {
         let model = model_for(&sys, name);
         let serial = serial_for(&sys);
         let size_bytes = sys_read_u64(sys.join("size")).unwrap_or(0) as i64 * 512;
-        let media = media_kind(name, &sys, bus, &model);
-        let logical_block = sys_read_u64(sys.join("queue/logical_block_size")).unwrap_or(512);
         let dev_path = PathBuf::from("/dev").join(name);
+        let media = media_kind(name, &sys, &dev_path, bus, &model);
+        let logical_block = sys_read_u64(sys.join("queue/logical_block_size")).unwrap_or(512);
         let partition_style = partition_table_style(&dev_path, logical_block);
         let partitions = partitions_for(name, &sys, &mounts, &labels);
 
@@ -416,6 +469,102 @@ pub fn enumerate_physical_disks() -> Result<Vec<DetectedDrive>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No IDENTIFY answer — the bridge refused, or there is no root.
+    fn blind() -> Option<RotationRate> {
+        None
+    }
+
+    /// For the cases the ladder must settle without touching the drive.
+    fn never_probed() -> Option<RotationRate> {
+        panic!("this case must not cost a device command");
+    }
+
+    /// The bug this ladder was rebuilt for: a 4 TB USB hard disk. The kernel
+    /// leaves `rotational` at 1 for USB whatever the medium, so the label was
+    /// right for the wrong reason; the drive's own answer is what settles it.
+    #[test]
+    fn usb_hard_disk_is_a_disk() {
+        assert_eq!(
+            classify_media(false, None, false, Some(true), BusKind::Usb, "Expansion", || {
+                Some(RotationRate::Rpm(5526))
+            }),
+            MediaKind::Hdd
+        );
+    }
+
+    /// The mirror case, and the one `queue/rotational` gets wrong: an SSD in an
+    /// enclosure that the kernel also flags as rotating.
+    #[test]
+    fn usb_ssd_enclosure_is_not_a_hard_disk() {
+        assert_eq!(
+            classify_media(false, None, false, Some(true), BusKind::Usb, "ASMT 2115", || {
+                Some(RotationRate::NonRotating)
+            }),
+            MediaKind::Ssd
+        );
+    }
+
+    /// Flash is for a genuinely removable medium — the SCSI removable-media
+    /// bit — not for everything that happens to be plugged into USB.
+    #[test]
+    fn removable_bit_means_flash() {
+        assert_eq!(
+            classify_media(false, None, true, Some(true), BusKind::Usb, "Corvid Pocket", never_probed),
+            MediaKind::Flash
+        );
+    }
+
+    #[test]
+    fn internal_disks_trust_the_rotational_flag_without_a_probe() {
+        // Only USB needs the drive's own answer.
+        assert_eq!(
+            classify_media(false, None, false, Some(true), BusKind::Sata, "ST2000DM008", never_probed),
+            MediaKind::Hdd
+        );
+        assert_eq!(
+            classify_media(false, None, false, Some(false), BusKind::Sata, "CT1000MX500", never_probed),
+            MediaKind::Ssd
+        );
+        assert_eq!(
+            classify_media(false, None, false, Some(true), BusKind::Nvme, "SN810", never_probed),
+            MediaKind::Ssd
+        );
+    }
+
+    #[test]
+    fn usb_without_an_answer_keeps_the_old_hints() {
+        // The bridge did report non-rotating even though it refused IDENTIFY.
+        assert_eq!(
+            classify_media(false, None, false, Some(false), BusKind::Usb, "Generic", blind),
+            MediaKind::Ssd
+        );
+        // Nothing to go on but the model string.
+        assert_eq!(
+            classify_media(false, None, false, None, BusKind::Usb, "Corvid Portable SSD", blind),
+            MediaKind::Ssd
+        );
+        assert_eq!(
+            classify_media(false, None, false, None, BusKind::Usb, "Generic", blind),
+            MediaKind::Flash
+        );
+    }
+
+    #[test]
+    fn mmc_type_picks_card_or_embedded() {
+        assert_eq!(
+            classify_media(true, Some("SD"), true, Some(false), BusKind::Sata, "SD32G", blind),
+            MediaKind::SdCard
+        );
+        assert_eq!(
+            classify_media(true, Some("MMC"), false, Some(false), BusKind::Sata, "BJTD4R", blind),
+            MediaKind::EMmc
+        );
+        assert_eq!(
+            classify_media(true, None, false, Some(false), BusKind::Sata, "?", blind),
+            MediaKind::Flash
+        );
+    }
 
     #[test]
     fn physical_disk_name_filter() {

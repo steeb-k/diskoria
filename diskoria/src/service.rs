@@ -90,6 +90,20 @@ pub fn run() -> i32 {
             .iter()
             .filter(|d| matches!(d.bus, BusKind::Nvme | BusKind::Sata | BusKind::Ufs))
         {
+            // Same rule as the session monitor: a sleeping disk is left alone
+            // rather than spun up for a temperature reading (KI-58). The
+            // service polls unattended, so this matters more here, not less.
+            if drive.media == crate::detected_drive::MediaKind::Hdd
+                && crate::smart_reader::power_mode(&drive.device_id, drive.bus)
+                    == crate::smart_reader::PowerMode::Standby
+            {
+                log::debug!(
+                    target: "diskoria::service",
+                    "{} is in standby; skipping this poll", drive.serial
+                );
+                continue;
+            }
+
             let report = crate::smart_reader::query_smart_detail(&drive.device_id, drive.bus);
             let mut snap = crate::monitor::extract_snapshot(drive, &report);
             // Same fallback the GUI uses: hwmon still has a temperature even

@@ -387,6 +387,15 @@ state and schedules `request_repaint_after` for the pending transition — a
 pointer that has come to rest generates no further events, so the transition has
 to book its own frame.
 
+**The pointer is the only thing that closes it.** Picking a row does *not*
+collapse the overlay — `rail_hover_step` alone decides, so it stays until the
+pointer leaves and the close delay elapses. It used to close on click, on the
+reasoning that the page behind is what the user just asked to see; in the hand
+that reads as the labels being yanked away from a pointer that never moved, and
+a second choice costs another hover plus another open delay. The mobile menu is
+the opposite case and still closes on pick: it covers the whole window, so there
+is nowhere to move out to.
+
 **The mobile menu covers the whole window**, title bar included, and is drawn
 *after* the content so it wins the input — but *before* the modals, which still
 have to be able to cover it. Its header strip keeps the drag gesture so the

@@ -199,6 +199,105 @@ This is the NVMe equivalent of the SATA SMART table.
 
 ---
 
+# STEP 5b — USB enclosures: ATA over SCSI pass-through (SAT)
+
+`SMART_RCV_DRIVE_DATA` is not implemented by the USBSTOR/UASP stack, so the
+STEP 3 path returns nothing for an external drive. Most bridges *do* implement
+SAT (SCSI/ATA Translation), which forwards an ATA command descriptor block to
+the drive unchanged.
+
+## Call
+
+```cpp
+DeviceIoControl(
+    IOCTL_SCSI_PASS_THROUGH_DIRECT      // 0x0004D014
+)
+```
+
+`SCSI_PASS_THROUGH_DIRECT` is not in `windows-sys`; Diskoria declares it in
+`smart_reader/windows.rs`. Allocate the header and its sense buffer as one
+block and set `SenseInfoOffset` to `sizeof(SCSI_PASS_THROUGH_DIRECT)`. The
+handle must be `GENERIC_READ | GENERIC_WRITE` (so: elevated).
+
+## The CDB
+
+ATA PASS-THROUGH (16), opcode `0x85`. Retry with ATA PASS-THROUGH (12), opcode
+`0xA1`, for older bridges that only implement the short form — the register
+fields sit at different offsets, which is why the two CDB builders are separate
+functions in `smart_reader/mod.rs`.
+
+```
+byte 0  0x85              opcode
+byte 1  0x08              protocol 4 (PIO Data-In) << 1
+byte 2  0x0E              T_DIR = from device, BYT_BLOK = blocks,
+                          T_LENGTH = sector count field
+byte 6  0x01              SECTOR_COUNT
+byte 10 0x4F / byte 12 0xC2   LBA_MID/LBA_HIGH — the SMART magic
+                              (zero for IDENTIFY DEVICE)
+byte 13 0xA0              DEVICE
+byte 14 0xB0 / 0xEC       COMMAND: SMART / IDENTIFY DEVICE
+```
+
+## What you get
+
+* `0xB0` with FEATURES `0xD0`/`0xD1` returns the same 512-byte SMART attribute
+  and threshold payloads as STEP 3, so the STEP 3 parser is reused verbatim.
+* `0xEC` (IDENTIFY DEVICE) returns the drive's real identity — the model string
+  at words 27..46 is the *drive*, not the enclosure's marketing name — and
+  **word 217, nominal media rotation rate**: `1` = solid state, `0x0401..0xFFFE`
+  = RPM, `0` = not reported. This is the only reliable way to tell a spinning
+  disk from an SSD inside a USB enclosure; `MSFT_PhysicalDisk.MediaType` reports
+  Unspecified and the seek-penalty query in STEP 1 is rejected outright. See
+  known-issues KI-57.
+
+USB-NVMe enclosures speak a vendor-specific protocol instead and will fail
+every CDB above; treat that as "no data", not as an error state.
+
+## Asking whether the drive is awake (`CK_COND`)
+
+Every command above touches the medium and will spin a sleeping disk back up.
+**CHECK POWER MODE (`0xE5`)** will not — it is answered by the drive's
+electronics — so it goes first, and a drive in standby is left alone
+(known-issues KI-58; the same rule as `smartctl -n standby`).
+
+It is a *non-data* command, so its answer arrives in a register rather than a
+payload:
+
+```
+byte 1  0x06              protocol 3 (Non-data) << 1
+byte 2  0x20              CK_COND set, T_LENGTH = 0
+byte 14 0xE5              COMMAND: CHECK POWER MODE
+```
+
+`CK_COND` tells the translator to return the ATA output registers as sense data.
+The command then reports **CHECK CONDITION** with sense key RECOVERED ERROR and
+ASC/ASCQ `00/1D` *on success*, so a non-zero SCSI status here is the expected
+outcome — a data-in helper that treats it as failure will throw the answer away.
+Set `DataIn = SCSI_IOCTL_DATA_UNSPECIFIED` with a null buffer on Windows, or
+`SG_DXFER_NONE` on Linux.
+
+The registers come back in descriptor-format sense (SPC-4 §4.5.2) as an **ATA
+Status Return descriptor**:
+
+```
+byte 0  0x72 / 0x73       descriptor-format sense
+byte 7  additional length; descriptors start at byte 8
+  desc byte 0  0x09       ATA Status Return descriptor
+  desc byte 1  0x0C       descriptor length
+  desc byte 5  ...        SECTOR_COUNT (7:0)  <- the power mode
+```
+
+`SECTOR_COUNT`: `0x00` standby, `0x40` NV cache with the spindle stopped,
+`0x80..0x83` idle, `0x41`/`0xFF` active. Anything else — or fixed-format sense,
+which carries no register block — means "no answer": poll anyway rather than
+mistake silence for sleep.
+
+The Linux equivalent is `SG_IO` with the identical 16-byte CDB — same bytes,
+different transport — which is why the CDB builders are shared pure logic in
+`smart_reader/mod.rs` rather than living in either platform file.
+
+---
+
 # STEP 6 — Optional (but extremely useful for a testing app)
 
 These are not strictly SMART calls, but they make a storage testing application significantly more useful.

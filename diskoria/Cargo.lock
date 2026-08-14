@@ -819,7 +819,7 @@ dependencies = [
 
 [[package]]
 name = "diskoria"
-version = "1.7.1"
+version = "1.7.2"
 dependencies = [
  "chrono",
  "egui",

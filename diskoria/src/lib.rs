@@ -1983,9 +1983,10 @@ impl App {
                 .unwrap_or(false);
 
             if has_drives && self.shared.take_drive_icons_dirty() {
+                let include_usb = self.shared.settings_snapshot().tray_usb_drives;
                 if let (Some(tray), Some(renderer)) = (&mut self.tray, self.renderers.values_mut().next()) {
                     crate::watchdog::scope(crate::watchdog::Phase::TrayUpdate, || {
-                        tray.rebuild_drive_icons(&renderer.app.drives)
+                        tray.rebuild_drive_icons(&renderer.app.drives, include_usb)
                     });
                 }
             }

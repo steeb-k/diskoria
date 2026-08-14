@@ -695,6 +695,130 @@ moves. Cosmetic: the greyed row reads correctly as unavailable. The wiki's
 mockgen carries the measured value as `theme.NAV_LOCKED_ALPHA` with the
 arithmetic written out.
 
+### KI-57 — Every USB disk was "Flash", because "external" was matched before "hard disk" `bug` `fixed`
+Reported against a 4 TB Seagate Expansion, which the drive selector chipped as
+**Flash**. `drive_enumeration::windows::map_media` tested
+`wl.contains("removable") || wl.contains("external")` *before* it tested for a
+hard disk, and `Win32_DiskDrive.MediaType` for that drive is
+`"External hard disk media"` — a string that satisfies both. The "external" arm
+won and every USB disk that wasn't caught by an earlier model-string rule became
+Flash. Nothing downstream corrected it: `MSFT_PhysicalDisk.MediaType` is `0`
+(Unspecified) for anything behind a USB bridge, so the authoritative branch above
+never fired.
+
+`SpindleSpeed` looks like the missing signal and is not: measured on the
+reporting machine it reads **0 for the USB hard disk** and **0xFFFFFFFF
+(unknown) for an internal 7200 RPM one**. `IOCTL_STORAGE_QUERY_PROPERTY` /
+`StorageDeviceSeekPenaltyProperty` is trustworthy but the USB bridge rejects it
+outright (`ERROR_INVALID_FUNCTION`), while answering correctly for both internal
+drives.
+
+What does work is asking the drive: **IDENTIFY DEVICE word 217** (nominal media
+rotation rate) over SAT pass-through — `IOCTL_SCSI_PASS_THROUGH_DIRECT` with an
+ATA PASS-THROUGH (16) CDB, which the bridge forwards unchanged. It returns the
+drive's real identity (`ST4000LM024-2AN17V`, not the enclosure's marketing name)
+and `217 = 5526` RPM. `map_media` is now a ladder — MSFT MediaType, then bus and
+card hints, then the probe, then the strings — and the probe is a closure so a
+drive Windows already describes costs no device command. The string rung is also
+reordered: `"hard disk"` beats `"external"`, and `Flash` is reserved for
+`"Removable media"`, the SCSI removable-media bit that thumb drives and card
+readers set and external disks do not.
+
+Linux had the mirror of the same bug. `queue/rotational` is 1 for anything on
+USB unless the bridge exposes the block-limits VPD page, so the 4 TB disk was
+right by accident and an SSD in an enclosure was simply wrong; `classify_media`
+now consults IDENTIFY (via the existing `SG_IO` path) for USB, and reads
+`/sys/block/<dev>/removable` as the Linux counterpart of "Removable media".
+
+The same pass-through also retired the flat *"SMART is not available over USB
+connections"* both transports used to return — see `smart-telemetry-reference.md`
+§ STEP 5b. Verified on the reporting machine: media `Hdd`, and 26 SMART
+attributes at 36 °C / 4393 power-on hours from a drive that previously showed
+none.
+
+### KI-58 — A health poll spun sleeping disks back up `bug` `fixed`
+Filed against the SMART-over-USB work in KI-57 with a claim that turned out to
+be wrong — *"monitoring now polls USB drives"* — and worth recording because the
+correction is the interesting part. `monitor.rs` and `service.rs` both filtered
+their drive list to `Nvme | Sata | Ufs`, so external drives were never polled
+at all; SMART reaching them changed what the **Drive Health page** could show,
+not what the background thread did.
+
+The underlying problem was real for internal disks and became real for external
+ones the moment `tray_usb_drives` could add them to the poll: at
+`poll_interval_mins` (default **3**) every SMART read touches the drive, which
+is far inside any idle timer. A disk that had spun down was spun back up to be
+asked its temperature, and each round trip is another load/unload cycle on a
+drive whose Load Cycle Count is already a SMART attribute people watch.
+
+Fixed the way `smartctl -n standby` does it: **ATA CHECK POWER MODE** (`0xE5`)
+goes first, and a drive answering standby is skipped for that pass. The command
+is answered by the drive's electronics without touching the medium, so asking
+costs nothing. It is a *non-data* command — the answer arrives in the output
+SECTOR_COUNT register — so the CDB sets `CK_COND`, which makes the translator
+return the ATA register block as an ATA Status Return descriptor (code `0x09`)
+inside descriptor-format sense; `ata_sector_count_from_sense` walks the
+descriptor list for it. Both transports needed a new non-data path
+(`sat_non_data` / `sg_ata_non_data`), because `CK_COND` reports CHECK CONDITION
+with sense key RECOVERED ERROR *on success* and the data-in helpers correctly
+treat a non-zero status as failure.
+
+The gate is deliberately one-sided: only `MediaKind::Hdd` is checked (nothing
+else has a spindle to protect), and anything other than a clear standby answer —
+including a bridge that will not do `CK_COND` — polls as before. Reading a
+missing answer as "asleep" would silently stop monitoring a healthy drive, which
+is far worse than a spin-up. Skipping leaves a gap in the temperature history,
+which is the honest record: the drive was asleep, not at some invented
+temperature.
+
+Verified live on both transports — the internal SATA disk and the USB bridge
+each return `0xFF` (Active) while spinning. The standby branch itself is covered
+by unit tests over the sense layout rather than by putting the reporting
+machine's 4 TB drive through a spin-down cycle.
+
+### KI-59 — Linux never saved a single monitoring setting `bug` `fixed`
+`DiskoriaApp` keeps editing drafts of the monitor settings
+(`monitoring_enabled`, `poll_interval_mins`, the three alert thresholds) and
+syncs them *from* shared state at the top of every `draw()` under
+`#[cfg(any(windows, target_os = "linux"))]` — but `save_app_settings` wrote them
+back under `#[cfg(windows)]` alone, with `#[cfg(not(windows))] let _ = s;`
+silently swallowing the other half. On Linux every monitoring edit was therefore
+reverted one frame later: the toggle sprang back, the poll interval snapped to
+whatever was on disk, and the sliders would not hold. Found while adding
+`tray_usb_drives`, which rides the same path and would have been dead on arrival.
+Fixed by widening the `cfg` to match the one that reads them — the two must
+always be the same predicate, which is the actual lesson.
+
+### KI-60 — The Sector pages still said SMART was unavailable after KI-57 `bug` `fixed`
+Reported against the 1.7.2 test build: the Drive Health page showed a full SMART
+table for the 4 TB USB drive while the Sector and Benchmark pages, one click
+away, still read **"S.M.A.R.T. Status: Unavailable"** for the same drive. Two
+different readers, and KI-57 only fixed one of them.
+
+`smart_health.rs` is the summary verdict those cards show, and on Windows it
+never went near `smart_reader`. It reads `MSFT_PhysicalDisk.HealthStatus` and
+then looks the drive up in `MSStorageDriver_FailurePredictStatus` — a class that
+enumerates ATA drives on the storage driver and nothing behind a USB bridge.
+Measured on the reporting machine: all three disks report `HealthStatus = 0`
+(Healthy), but predict-fail lists only disks 0 and 1. So `smart_available` was
+false, and the `health == 0` arm deliberately returned `Disabled` rather than
+claim health it could not see.
+
+That reasoning was right when it was written and stale afterwards: there *is*
+telemetry for USB drives now. The arm now falls back to
+`health_from_report(query_smart_detail(..))` — the derivation Linux already used
+for everything, lifted out of the Linux-only path so both platforms share it —
+and only reports `Disabled` when that comes back empty too, which is still the
+honest answer for a real flash drive, a card reader, or a bridge that blocks
+SAT. Drives that *are* in predict-fail are untouched: that source is tested and
+authoritative, and this is a fallback, not a replacement.
+
+Verified: the USB drive now reads `Healthy` on the Sector pages, with disks 0
+and 1 unchanged. Worth remembering that Diskoria has **two** SMART readers with
+different reach — `smart_health` (verdict, WMI-first on Windows) and
+`smart_reader` (raw data, ioctl/pass-through) — and a change to one does not
+reach the other.
+
 ## Resolved
 
 Condensed; see git history for full detail.

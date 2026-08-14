@@ -137,7 +137,12 @@ mod windows {
         None
     }
 
-    pub fn query_smart_health(disk_number: u32, pnp_device_id: &str) -> Result<SmartHealth, String> {
+    pub fn query_smart_health(
+        disk_number: u32,
+        pnp_device_id: &str,
+        device_path: &str,
+        bus: crate::detected_drive::BusKind,
+    ) -> Result<SmartHealth, String> {
         let wmi = WMIConnection::with_namespace_path(r"ROOT\Microsoft\Windows\Storage")
             .map_err(|e| e.to_string())?;
 
@@ -199,10 +204,20 @@ mod windows {
         match health {
             0 => {
                 if !smart_available {
-                    // The storage provider reports no issues but this drive does not expose
-                    // SMART data (common for USB flash drives, SD cards, external enclosures).
-                    // Reporting "Healthy" here would be misleading — we have no actual telemetry.
-                    Ok(SmartHealth::Disabled)
+                    // The storage provider reports no issues, but this drive is
+                    // not in `MSStorageDriver_FailurePredictStatus` — which
+                    // enumerates ATA drives on the storage driver and nothing
+                    // behind a USB bridge. Answering "Healthy" off the provider
+                    // alone would still be a guess, so ask the drive directly;
+                    // SAT pass-through reaches enclosures that WMI does not
+                    // (KI-60). Only when that comes back empty too — a genuine
+                    // flash drive, a card reader, a bridge that blocks SAT — is
+                    // there no telemetry to report.
+                    super::health_from_report(crate::smart_reader::query_smart_detail(
+                        device_path,
+                        bus,
+                    ))
+                    .or(Ok(SmartHealth::Disabled))
                 } else if predict_failure {
                     Ok(SmartHealth::Failing {
                         reasons: if reason_lines.is_empty() {
@@ -236,22 +251,20 @@ mod windows {
 #[cfg(windows)]
 pub use windows::query_smart_health;
 
-/// Linux: no WMI predict-fail source exists, so the verdict is derived from
-/// the same SMART data the Drive Health page shows — a failed ATA attribute,
-/// an NVMe critical-warning bit, or a UFS pre-EOL warning means `Failing`.
-/// `hw_id` is the resolved sysfs device path (the `pnp_device_id` slot).
-#[cfg(target_os = "linux")]
-pub fn query_smart_health(_disk_number: u32, hw_id: &str) -> Result<SmartHealth, String> {
+/// Derive the verdict from the drive's own SMART data — a failed ATA
+/// attribute, an NVMe critical-warning bit, or a UFS pre-EOL warning means
+/// `Failing`.
+///
+/// This is the whole story on Linux, which has no predict-fail source. On
+/// Windows it is the fallback for drives `MSStorageDriver_FailurePredictStatus`
+/// does not enumerate — everything behind a USB bridge (known-issues KI-60).
+#[cfg(any(windows, target_os = "linux"))]
+pub(crate) fn health_from_report(
+    report: crate::smart_reader::SmartReport,
+) -> Result<SmartHealth, String> {
     use crate::smart_reader::{AttrStatus, SmartReport};
 
-    let name = std::path::Path::new(hw_id)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .ok_or_else(|| "No sysfs device path recorded for this drive.".to_string())?;
-    let device_path = format!("/dev/{name}");
-    let bus = crate::drive_enumeration::bus_from_syspath(hw_id);
-
-    match crate::smart_reader::query_smart_detail(&device_path, bus) {
+    match report {
         SmartReport::Ata(d) => {
             let reasons: Vec<String> = d
                 .attributes
@@ -290,7 +303,50 @@ pub fn query_smart_health(_disk_number: u32, hw_id: &str) -> Result<SmartHealth,
     }
 }
 
+/// Linux: no WMI predict-fail source exists, so the verdict comes from the same
+/// SMART data the Drive Health page shows.
+#[cfg(target_os = "linux")]
+pub fn query_smart_health(
+    _disk_number: u32,
+    _pnp_device_id: &str,
+    device_path: &str,
+    bus: crate::detected_drive::BusKind,
+) -> Result<SmartHealth, String> {
+    health_from_report(crate::smart_reader::query_smart_detail(device_path, bus))
+}
+
 #[cfg(not(any(windows, target_os = "linux")))]
-pub fn query_smart_health(_disk_number: u32, _pnp_device_id: &str) -> Result<SmartHealth, String> {
+pub fn query_smart_health(
+    _disk_number: u32,
+    _pnp_device_id: &str,
+    _device_path: &str,
+    _bus: crate::detected_drive::BusKind,
+) -> Result<SmartHealth, String> {
     Err("Storage health is not implemented on this platform.".to_string())
+}
+
+#[cfg(all(test, any(windows, target_os = "linux")))]
+mod hardware_tests {
+    /// Diagnostic, not CI: the verdict the Sector and Benchmark pages show for
+    /// every real drive. A USB drive reading `Disabled` here is KI-60.
+    #[test]
+    #[ignore = "inspects real hardware; run elevated with --ignored --nocapture"]
+    fn print_real_smart_health() {
+        let drives = crate::drive_enumeration::enumerate_physical_disks().expect("enumerate");
+        for d in &drives {
+            let verdict = super::query_smart_health(
+                d.disk_number,
+                &d.pnp_device_id,
+                &d.device_id,
+                d.bus,
+            );
+            println!(
+                "#{} {:?} {} -> {:?}",
+                d.disk_number,
+                d.bus,
+                d.model.trim(),
+                verdict
+            );
+        }
+    }
 }
